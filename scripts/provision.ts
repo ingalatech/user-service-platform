@@ -19,8 +19,8 @@
 //
 // Provisioning never deploys application code, never creates a placeholder
 // Worker, never reads/writes/copies/prints secret values, never commits or
-// pushes, and never uses Wrangler `--update-config`: the repository target
-// registry stays authoritative.
+// pushes, and never uses Wrangler `--update-config`: the selected environment
+// file stays authoritative.
 //
 // Secret boundary: Wrangler child processes inherit Cloudflare credentials
 // from the operator environment only. Provider output is reduced to

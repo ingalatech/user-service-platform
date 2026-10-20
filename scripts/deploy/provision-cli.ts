@@ -9,14 +9,13 @@ import { parseDeployEnvironment, type DeployableEnvironment } from './naming.js'
 // npm run provision -- --env sandbox --apply
 // ```
 //
-// Plan is the default no-mutation mode when neither `--plan` nor `--apply`
-// is supplied. Production `--apply` requires `--confirm` equal to the target
-// Worker name; the orchestration boundary enforces it before any remote
-// mutation, while production planning stays read-only without confirmation.
+// Provisioning supports sandbox only. Plan is the default no-mutation mode
+// when neither `--plan` nor `--apply` is supplied. Production provisioning is
+// rejected by the orchestration boundary.
 //
 // This module only parses and validates the selection. It never reads secret
 // values: the only environment values consulted are the non-secret
-// `PROVISION_ENV` and `PROVISION_CONFIRM` automation
+// `PROVISION_ENV` automation
 // selectors. Secret values are never accepted as CLI flags.
 
 export type ProvisionMode = 'plan' | 'apply';
@@ -122,13 +121,12 @@ export function resolveProvisionSelection(
 export const PROVISION_HELP = `Usage: npm run provision -- [options]
 
 Options:
-  --env <sandbox|production>  Canonical environment (staging is never offered)
+  --env <sandbox>             Sandbox provisioning environment
   --plan                      Report intended changes without remote mutation (default)
   --apply                     Create/adopt declared dependencies and stage non-secret ids
-  --confirm <worker-name>     Required for production apply: the target Worker name
   --help                      Show this help
 
-Automation: PROVISION_ENV and PROVISION_CONFIRM select the
-same inputs without prompts. Provisioning never reads, writes, copies or
+Automation: PROVISION_ENV selects the sandbox environment without prompts.
+Provisioning never reads, writes, copies or
 prints secret values, never deploys application code, and never commits.
 `;

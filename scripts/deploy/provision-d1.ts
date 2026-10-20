@@ -31,7 +31,7 @@ export function d1ListArgs(): readonly string[] {
 // Exact-name D1 creation invocation. Creation output is opaque success
 // text plus a config snippet (never JSON): the caller ignores it and
 // rediscovers the created id with `d1 list --json`. Config updates are
-// explicitly disabled so the repository target registry stays authoritative.
+// explicitly disabled so the selected environment file stays authoritative.
 export function d1CreateArgs(databaseName: string): readonly string[] {
   return ['wrangler', 'd1', 'create', databaseName, '--update-config=false'];
 }
