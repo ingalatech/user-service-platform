@@ -12,6 +12,114 @@ export const HANDOFF_PATCH_PATH = '.agent-ticket/workflow-handoff.patch';
 export const HANDOFF_RECORD_PATH = '.agent-ticket/workflow-handoff.json';
 export const TRUSTED_PUBLICATION_MARKER = 'trusted-publication-required';
 
+// Retained for the dormant local approval utility. These helpers validate
+// historical handoff evidence but are not invoked by the local ticket or
+// review cycles and do not publish workflow changes.
+export const TRUSTED_HANDOFF_MARKER_PREFIX = '<!-- trusted-workflow-handoff:v1 ';
+export const TRUSTED_HANDOFF_MARKER_SUFFIX = ' -->';
+export const TRUSTED_PUBLISHER_APP_SLUG = 'chatgpt-codex-connector';
+
+export interface TrustedHandoffMarker {
+  v: 1;
+  ticket: number;
+  branch: string;
+  base: string;
+  head: string;
+  files: string[];
+}
+
+const EXACT_SHA_PATTERN = /^[0-9a-fA-F]{40}$/;
+
+function isExactSha(value: unknown): value is string {
+  return typeof value === 'string' && EXACT_SHA_PATTERN.test(value.trim());
+}
+
+export function parseTrustedHandoffMarker(
+  body: string | undefined | null,
+): TrustedHandoffMarker | null {
+  if (typeof body !== 'string') {
+    return null;
+  }
+  const start = body.indexOf(TRUSTED_HANDOFF_MARKER_PREFIX);
+  if (start === -1) {
+    return null;
+  }
+  const jsonStart = start + TRUSTED_HANDOFF_MARKER_PREFIX.length;
+  const end = body.indexOf(TRUSTED_HANDOFF_MARKER_SUFFIX, jsonStart);
+  if (end === -1) {
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body.slice(jsonStart, end).trim()) as unknown;
+  } catch {
+    return null;
+  }
+  if (typeof parsed !== 'object' || parsed === null) {
+    return null;
+  }
+  const candidate = parsed as Record<string, unknown>;
+  if (
+    candidate.v !== 1 ||
+    typeof candidate.ticket !== 'number' ||
+    !Number.isInteger(candidate.ticket) ||
+    candidate.ticket <= 0 ||
+    typeof candidate.branch !== 'string' ||
+    candidate.branch.trim() === '' ||
+    !isExactSha(candidate.base) ||
+    !isExactSha(candidate.head) ||
+    !Array.isArray(candidate.files)
+  ) {
+    return null;
+  }
+  const files: string[] = [];
+  for (const entry of candidate.files) {
+    if (typeof entry !== 'string') {
+      return null;
+    }
+    const normalized = normalizeHandoffPath(entry);
+    if (!isWorkflowFile(normalized)) {
+      return null;
+    }
+    files.push(normalized);
+  }
+  return {
+    v: 1,
+    ticket: candidate.ticket,
+    branch: candidate.branch,
+    base: candidate.base.trim(),
+    head: candidate.head.trim(),
+    files: [...new Set(files)].sort(),
+  };
+}
+
+function isHandoffCovering(
+  marker: TrustedHandoffMarker,
+  workflowFiles: readonly string[],
+): boolean {
+  if (workflowFiles.length === 0) {
+    return false;
+  }
+  const covered = new Set(marker.files);
+  return workflowFiles.every((file) => covered.has(normalizeHandoffPath(file)));
+}
+
+export function findMatchingHandoffMarker(
+  markers: readonly TrustedHandoffMarker[],
+  options: { ticket: number; branch: string; workflowFiles: readonly string[] },
+): TrustedHandoffMarker | null {
+  for (const marker of markers) {
+    if (
+      marker.ticket === options.ticket &&
+      marker.branch === options.branch &&
+      isHandoffCovering(marker, options.workflowFiles)
+    ) {
+      return marker;
+    }
+  }
+  return null;
+}
+
 export function normalizeHandoffPath(path: string): string {
   let normalized = path.trim();
   while (normalized.startsWith('./')) {
