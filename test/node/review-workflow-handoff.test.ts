@@ -77,10 +77,10 @@ describe('workflow handoff commands and evidence', () => {
   });
 
   it('marks the handoff reason as trusted-publication-required with file names', () => {
-    const reason = formatHandoffReason(['.github/workflows/agent-fix-cycle.yml']);
+    const reason = formatHandoffReason(['.github/workflows/ci.yml']);
 
     expect(reason).toContain(TRUSTED_PUBLICATION_MARKER);
-    expect(reason).toContain('.github/workflows/agent-fix-cycle.yml');
+    expect(reason).toContain('.github/workflows/ci.yml');
     expect(reason).not.toMatch(/push refused|safe-push/i);
   });
 
@@ -102,7 +102,7 @@ describe('workflow handoff commands and evidence', () => {
       branch: 'ticket/36-workflow-handoff',
       base,
       head,
-      files: ['.github/workflows/agent-fix-cycle.yml'],
+      files: ['.github/workflows/ci.yml'],
       createdAt: '2026-09-12T00:00:00.000Z',
     });
 
@@ -111,7 +111,7 @@ describe('workflow handoff commands and evidence', () => {
       branch: 'ticket/36-workflow-handoff',
       base,
       head,
-      files: ['.github/workflows/agent-fix-cycle.yml'],
+      files: ['.github/workflows/ci.yml'],
       patchPath: HANDOFF_PATCH_PATH,
     });
     expect(JSON.stringify(record)).toContain(TRUSTED_PUBLICATION_MARKER);
@@ -128,7 +128,7 @@ describe('agent:ticket workflow handoff at the push stage', () => {
     state: 'OPEN',
     labels: [{ name: 'ready-for-agent' }],
   });
-  const WORKFLOW_FILE = '.github/workflows/agent-fix-cycle.yml';
+  const WORKFLOW_FILE = '.github/workflows/ci.yml';
 
   function handoffFixture(captured: {
     pushes: string[];
@@ -164,7 +164,7 @@ describe('agent:ticket workflow handoff at the push stage', () => {
       if (key === `git diff ${MAIN_HEAD}...${NEXT_HEAD} --`) {
         return Promise.resolve({
           stdout:
-            'diff --git a/.github/workflows/agent-fix-cycle.yml b/.github/workflows/agent-fix-cycle.yml\n' +
+            'diff --git a/.github/workflows/ci.yml b/.github/workflows/ci.yml\n' +
             'diff --git a/scripts/x.ts b/scripts/x.ts\n',
           stderr: '',
         });
@@ -236,13 +236,11 @@ describe('agent:ticket workflow handoff at the push stage', () => {
       head: NEXT_HEAD,
       files: [WORKFLOW_FILE],
     });
-    expect(captured.handoffs[0]?.patch).toContain(
-      'diff --git a/.github/workflows/agent-fix-cycle.yml',
-    );
+    expect(captured.handoffs[0]?.patch).toContain('diff --git a/.github/workflows/ci.yml');
     expect(captured.handoffs[0]?.patch).toContain('diff --git a/scripts/x.ts');
-    // Ticket #82: the run also leaves the machine-readable marker for the
-    // trusted approver alongside the human-readable BLOCKED message.
-    expect(captured.bodies.some((body) => body.includes('trusted-workflow-handoff:v1'))).toBe(true);
+    expect(captured.bodies.some((body) => body.includes('trusted-workflow-handoff:v1'))).toBe(
+      false,
+    );
     expect(captured.outcomes).toHaveLength(1);
     expect(captured.outcomes[0]).toMatchObject({ outcome: 'BLOCKED', stage: 'push' });
     expect(captured.outcomes[0]?.actionRequired).toMatch(/trusted/i);

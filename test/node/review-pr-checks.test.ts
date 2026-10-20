@@ -5,7 +5,6 @@ import {
   CHECK_POLL_DELAY_MS,
   commitChecksPass,
   decideCheckPoll,
-  hasApprovalWaitingRuns,
   MAX_CONSECUTIVE_CHECK_READ_ERRORS,
   pollCommitCheckRunsWithReadRecovery,
   type CommitCheckRun,
@@ -87,32 +86,21 @@ describe('check polling policy', () => {
     ).toBe('fail');
   });
 
-  it('never treats action_required as success (tickets #44/#47)', () => {
-    // Exact-HEAD CI stays authoritative: an awaiting-approval run must wait
-    // for trusted approval (pending), never pass and never fail fast.
+  it('fails fast when exact-HEAD checks require unavailable hosted approval', () => {
+    // A local review cannot resolve hosted approval requirements.
     expect(
       decideCheckPoll([
         { name: 'quality gates', status: 'completed', conclusion: 'action_required' },
       ]),
-    ).toBe('pending');
+    ).toBe('fail');
     expect(
       commitChecksPass([
         { name: 'quality gates', status: 'completed', conclusion: 'action_required' },
       ]),
     ).toBe(false);
-    expect(
-      hasApprovalWaitingRuns([
-        { name: 'quality gates', status: 'completed', conclusion: 'action_required' },
-      ]),
-    ).toBe(true);
-    expect(
-      hasApprovalWaitingRuns([
-        { name: 'quality gates', status: 'completed', conclusion: 'success' },
-      ]),
-    ).toBe(false);
   });
 
-  it('still fails fast on real failures even when approval is also waiting', () => {
+  it('fails fast when approval and a genuine CI failure are both present', () => {
     expect(
       decideCheckPoll([
         { name: 'quality gates', status: 'completed', conclusion: 'action_required' },
@@ -121,9 +109,7 @@ describe('check polling policy', () => {
     ).toBe('fail');
   });
 
-  it('waits with margin beyond the 10-minute schedule interval (tickets #47/#82)', () => {
-    // The approver poll runs at most every 10 minutes; the review-cycle wait
-    // must leave margin for the next tick plus queue/startup/approval.
+  it('keeps bounded polling within the established CI observation window', () => {
     expect(CHECK_POLL_DELAY_MS).toBe(10000);
     expect(CHECK_POLL_ATTEMPTS * CHECK_POLL_DELAY_MS).toBeGreaterThanOrEqual(12 * 60 * 1000);
   });
@@ -139,10 +125,6 @@ function pendingRun(): CommitCheckRun[] {
 
 function failedRun(): CommitCheckRun[] {
   return [{ name: 'quality gates', status: 'completed', conclusion: 'failure' }];
-}
-
-function approvalWaitingRun(): CommitCheckRun[] {
-  return [{ name: 'quality gates', status: 'completed', conclusion: 'action_required' }];
 }
 
 function readError(): Error {
@@ -299,7 +281,7 @@ describe('bounded check-run read recovery (ticket #141)', () => {
       readError(),
       [],
       readError(),
-      approvalWaitingRun(),
+      pendingRun(),
       successfulRun(),
     ]);
 

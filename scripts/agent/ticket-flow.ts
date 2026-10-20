@@ -7,7 +7,6 @@ import {
   TRUSTED_PUBLICATION_MARKER,
   buildHandoffRecord,
   formatHandoffAction,
-  formatTrustedHandoffMarker,
   getWorkflowPatch,
   listChangedWorkflowFiles,
   persistWorkflowHandoffBundle,
@@ -24,7 +23,6 @@ import {
   type CommandExecutor,
 } from '../review/runner.js';
 import { checkSafePush, type SafePushCheck } from '../review/safe-push.js';
-import { requestApprovalDispatch } from '../review/approve-agent-ci.js';
 import {
   buildEvidenceInvocation,
   commandSessionExporter,
@@ -45,7 +43,6 @@ import {
 import { runWorkerStream } from '../review/worker-stream.js';
 import { isWorkerTimeout, timeoutForWorker, type WorkerLabel } from '../review/worker-timeout.js';
 import { publishStageStatus, type RunStatusOutcome, type StatusEnv } from '../review/run-status.js';
-import { getRepoSlug } from '../review/pr-checks.js';
 
 // Headroom above the snapshot byte bound for a single bounded Git command:
 // the patch itself is capped at RECOVERY_MAX_TOTAL_BYTES inside the capture,
@@ -1095,31 +1092,6 @@ export async function runAgentTicket(
     } catch (error) {
       console.error(`AGENT-TICKET handoff persistence failed: ${errorMessage(error)}`);
     }
-    // Ticket #82: leave a deterministic machine-readable marker on the source
-    // ticket so the trusted approver can prove handoff provenance from
-    // canonical GitHub metadata. Created by `github-actions[bot]` from this
-    // run; the human-readable BLOCKED message remains. Best-effort: a comment
-    // failure never changes the BLOCKED outcome.
-    try {
-      const marker = formatTrustedHandoffMarker({
-        ticket,
-        branch,
-        base: originHead,
-        head: headAfter,
-        files: workflowFiles,
-      });
-      await execute('gh', [
-        'issue',
-        'comment',
-        String(ticket),
-        '--body',
-        `${record.reason}\n\n${marker}`,
-      ]);
-    } catch (error) {
-      console.error(
-        `AGENT-TICKET handoff marker comment skipped (${errorMessage(error)}); artifacts remain.`,
-      );
-    }
     console.error(`AGENT-TICKET BLOCKED (push): ${record.reason}`);
     console.error(`Handoff evidence: ${HANDOFF_PATCH_PATH} ${HANDOFF_RECORD_PATH}`);
     reportDurableState({ branch });
@@ -1207,27 +1179,6 @@ export async function runAgentTicket(
     `Draft PR #${String(prNumber)}${prUrl === undefined ? '' : `: ${prUrl}`} (base main).`,
   );
   completedStages.push('PR creation');
-
-  // Ticket #47 liveness: emit one immediate trusted-approver hint right after
-  // PR creation so approval does not wait for the 10-minute scheduled
-  // backstop (ticket #82).
-  // Best-effort only: a hint failure degrades to the review-cycle emission
-  // plus the scheduled backstop and never blocks the delivery flow.
-  try {
-    const repoSlug = await getRepoSlug(execute);
-    await requestApprovalDispatch(execute, repoSlug, {
-      pr: prNumber,
-      headSha: headAfter,
-      ticket,
-    });
-    console.log(
-      `Requested trusted CI approval via repository_dispatch for PR #${String(prNumber)} at ${headAfter}.`,
-    );
-  } catch {
-    console.log(
-      'Approval dispatch hint skipped (review-cycle request and scheduled backstop remain).',
-    );
-  }
 
   let review: WorkerOutput;
   reportStage('review');

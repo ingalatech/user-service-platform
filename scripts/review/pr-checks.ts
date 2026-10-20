@@ -22,28 +22,11 @@ export type CheckPollDecision = 'pass' | 'fail' | 'pending';
 export const CHECK_POLL_ATTEMPTS = 72;
 export const CHECK_POLL_DELAY_MS = 10000;
 
-// Ticket #47: an `action_required` conclusion means the exact-HEAD `ci` run is
-// awaiting trusted approval, not that it failed. The poll must wait for the
-// scheduled approver (10-minute cadence plus queue/startup, ticket #82)
-// instead of failing fast, so a normally approved run can still reach READY in
-// the same `review:cycle` execution. 72 attempts at 10s bound the wait to 12
-// minutes, strictly inside the worst-case backstop tick plus startup margin.
-export function hasApprovalWaitingRuns(runs: CommitCheckRun[]): boolean {
-  return runs.some((run) => run.conclusion === 'action_required');
-}
-
 // Polling policy for exact-SHA checks: pending/absent/awaiting-approval runs
-// wait, a completed non-success other than `action_required` fails fast, and
-// only a non-empty all-success set passes.
+// wait, completed non-success runs fail fast, and only a non-empty all-success
+// set passes. `action_required` cannot be resolved by the local workflow.
 export function decideCheckPoll(runs: CommitCheckRun[]): CheckPollDecision {
-  if (
-    runs.some(
-      (run) =>
-        run.status === 'completed' &&
-        run.conclusion !== 'success' &&
-        run.conclusion !== 'action_required',
-    )
-  ) {
+  if (runs.some((run) => run.status === 'completed' && run.conclusion !== 'success')) {
     return 'fail';
   }
   if (commitChecksPass(runs)) {
@@ -88,6 +71,43 @@ export async function fetchCommitCheckRuns(
     }
   }
   return runs;
+}
+
+interface GhWorkflowRun {
+  head_sha?: unknown;
+  conclusion?: unknown;
+}
+
+// A zero-job CI run may have no commit check-run to report its terminal
+// `action_required` conclusion. Observe the canonical CI workflow for this
+// exact SHA so local review can fail clearly in that case too. This is a
+// read-only observation; there is deliberately no approval or dispatch path.
+export async function fetchHeadWorkflowRequiresApproval(
+  repoSlug: string,
+  headSha: string,
+  execute: CommandExecutor = runCommand,
+): Promise<boolean> {
+  const { stdout } = await execute('gh', [
+    'api',
+    `repos/${repoSlug}/actions/workflows/ci.yml/runs?head_sha=${headSha}&per_page=20`,
+    '--jq',
+    '.workflow_runs[] | {head_sha: .head_sha, conclusion: .conclusion}',
+  ]);
+  for (const line of stdout.split('\n')) {
+    if (line.trim() === '') {
+      continue;
+    }
+    let run: GhWorkflowRun;
+    try {
+      run = JSON.parse(line) as GhWorkflowRun;
+    } catch {
+      continue;
+    }
+    if (run.head_sha === headSha && run.conclusion === 'action_required') {
+      return true;
+    }
+  }
+  return false;
 }
 
 export async function getRepoSlug(execute: CommandExecutor = runCommand): Promise<string> {

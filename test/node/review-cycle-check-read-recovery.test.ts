@@ -48,8 +48,6 @@ interface CycleResult {
 const passedCheck = '{"name":"quality gates","status":"completed","conclusion":"success"}\n';
 const pendingCheck = '{"name":"quality gates","status":"in_progress","conclusion":null}\n';
 const failedCheck = '{"name":"quality gates","status":"completed","conclusion":"failure"}\n';
-const approvalCheck = '{"name":"ci","status":"completed","conclusion":"action_required"}\n';
-
 const tmpRoots: string[] = [];
 
 afterEach(async () => {
@@ -406,21 +404,22 @@ describe('review-cycle CI read recovery (ticket #141)', () => {
     await expectRequestedPollDelays(result.stateDir, 1);
   });
 
-  it('waits on approval-waiting checks with a single approval dispatch', async () => {
+  it('blocks immediately on action_required without dispatching or waiting for hosted approval', async () => {
     const result = await runScenario({
-      checks: [
-        { exit: 0, out: approvalCheck },
-        { exit: 0, out: passedCheck },
-      ],
+      checks: [{ exit: 0, out: '' }],
+      workflowsOut: `${JSON.stringify({ head_sha: HEAD, conclusion: 'action_required' })}\n`,
     });
 
-    expect(result.code).toBe(0);
+    expect(result.code).not.toBe(0);
+    expect(result.stderr).toContain('unavailable hosted approval (action_required)');
     const summary = await readSummary(result.workDir);
-    expect(summary.outcome).toBe('READY');
-    await expectExactHeadQueries(result.stateDir, 2);
+    expect(summary.outcome).toBe('BLOCKED');
+    expect(summary.detail).toContain('unavailable hosted approval');
+    await expectExactHeadQueries(result.stateDir, 1);
     await expectSingleReviewPass(result.stateDir);
-    await expectRequestedPollDelays(result.stateDir, 1);
-    expect(await readLines(result.stateDir, 'dispatch.log')).toHaveLength(1);
+    await expectRequestedPollDelays(result.stateDir, 0);
+    expect(await readLines(result.stateDir, 'dispatch.log')).toHaveLength(0);
+    expect(await readLines(result.stateDir, 'workflow.log')).toHaveLength(1);
   });
 });
 
