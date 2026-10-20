@@ -35,6 +35,9 @@ function passingDeps(overrides: Partial<PreflightDeps> = {}): PreflightDeps {
       if (command === 'git') {
         return Promise.resolve({ exitCode: 0, stdout: '' });
       }
+      if (command === 'npx' && args.includes('deployments')) {
+        return Promise.resolve({ exitCode: 0, stdout: '[{"id":"deployment-1"}]' });
+      }
       if (command === 'npx' && args.includes('secret')) {
         // Ticket #106: names/types-only listing for the resend-transport
         // RESOLVED fixture (`BETTER_AUTH_SECRET` + `RESEND_API_KEY`).
@@ -64,6 +67,9 @@ function secretListDeps(entries: unknown, exitCode = 0): PreflightDeps {
       commands.push({ command, args: [...args] });
       if (command === 'git') {
         return Promise.resolve({ exitCode: 0, stdout: '' });
+      }
+      if (command === 'npx' && args.includes('deployments')) {
+        return Promise.resolve({ exitCode: 0, stdout: '[{"id":"deployment-1"}]' });
       }
       if (command === 'npx' && args.includes('secret')) {
         return Promise.resolve({
@@ -103,8 +109,42 @@ describe('deployment preflight', () => {
       'worktree',
       'target-config',
       'worker-name',
+      'worker-presence',
       'worker-secrets',
     ]);
+  });
+
+  it('allows an absent Worker without attempting remote secret listing', async () => {
+    const deps = passingDeps({
+      run: (command, args) => {
+        if (command === 'git') return Promise.resolve({ exitCode: 0, stdout: '' });
+        if (args.includes('deployments')) return Promise.resolve({ exitCode: 0, stdout: '[]' });
+        if (args.includes('secret')) {
+          throw new Error('secret listing is not applicable to an absent Worker');
+        }
+        return Promise.resolve({ exitCode: 0, stdout: 'ok' });
+      },
+    });
+    const checks = await runPreflight({ resolved: RESOLVED }, deps);
+    expect(preflightFailed(checks)).toBe(false);
+    expect(checks.find((check) => check.name === 'worker-secrets')?.detail).toMatch(/absent/);
+  });
+
+  it('fails closed on existing Worker secret listing failure', async () => {
+    const deps = passingDeps({
+      run: (command, args) => {
+        if (command === 'npx' && args.includes('deployments')) {
+          return Promise.resolve({ exitCode: 0, stdout: '[{"id":"deployment-1"}]' });
+        }
+        if (command === 'npx' && args.includes('secret')) {
+          return Promise.resolve({ exitCode: 1, stdout: '' });
+        }
+        return Promise.resolve({ exitCode: 0, stdout: '' });
+      },
+    });
+    const checks = await runPreflight({ resolved: RESOLVED }, deps);
+    expect(preflightFailed(checks)).toBe(true);
+    expect(formatPreflightError(checks).message).toMatch(/worker-secrets/);
   });
 
   it('refuses when Cloudflare account access fails', async () => {
@@ -128,7 +168,7 @@ describe('deployment preflight', () => {
     await runPreflight({ resolved: RESOLVED }, deps);
     for (const { command, args } of deps.commands) {
       const text = `${command} ${args.join(' ')}`;
-      expect(text).not.toMatch(/deploy|migrate|delete/);
+      expect(text).not.toMatch(/migrate|delete/);
       expect(text).not.toMatch(/secret (put|delete|bulk)/);
     }
     // Ticket #106: the only secret operation is the names/types-only listing

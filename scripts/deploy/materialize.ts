@@ -82,6 +82,7 @@ export interface TargetD1Binding {
 
 export interface TargetWranglerConfig {
   readonly name: string;
+  readonly account_id?: string;
   readonly main: string;
   readonly compatibility_date: typeof BASE_COMPATIBILITY_DATE;
   readonly compatibility_flags: readonly string[];
@@ -107,6 +108,7 @@ export function buildTargetWranglerConfig(
   }
   return {
     name: resolved.workerName,
+    ...(resolved.accountId === undefined ? {} : { account_id: resolved.accountId }),
     main,
     compatibility_date: BASE_COMPATIBILITY_DATE,
     compatibility_flags: [...BASE_COMPATIBILITY_FLAGS],

@@ -82,6 +82,14 @@ describe('wrangler config materialization', () => {
     });
   });
 
+  it('materializes the selected Cloudflare account as Wrangler account_id', () => {
+    const config = buildTargetWranglerConfig({
+      ...SANDBOX_RESOLVED,
+      accountId: '22222222222222222222222222222222',
+    });
+    expect(config.account_id).toBe('22222222222222222222222222222222');
+  });
+
   it('serves the same built administration assets on every target (ticket #124)', () => {
     // Local and generated target-specific deploy configurations include the
     // same built assets: the stable ASSETS binding with an absolute

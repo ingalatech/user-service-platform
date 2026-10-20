@@ -22,7 +22,7 @@
 // or uploads secret values; Cloudflare credentials pass to Wrangler through
 // process inheritance only.
 import { execFile, spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
@@ -49,6 +49,11 @@ import {
   type ResolvedDeployment,
   type TargetsFile,
 } from './deploy/targets.js';
+import {
+  applyAccountOverrides,
+  loadAccountOverrides,
+  resolveCloudflareAccountId,
+} from './deploy/account-config.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -57,8 +62,19 @@ function repoRoot(): string {
 }
 
 function loadTargets(): TargetsFile {
-  const raw = readFileSync(join(repoRoot(), 'deploy', 'targets.json'), 'utf8');
-  return loadTargetsFile(JSON.parse(raw) as unknown);
+  const root = repoRoot();
+  const raw = readFileSync(join(root, 'deploy', 'targets.json'), 'utf8');
+  const overridePath = join(root, 'deploy', 'targets.local.json');
+  const overrides = loadAccountOverrides(
+    existsSync(overridePath)
+      ? (JSON.parse(readFileSync(overridePath, 'utf8')) as unknown)
+      : { version: 1, targets: {} },
+  );
+  return applyAccountOverrides(
+    loadTargetsFile(JSON.parse(raw) as unknown),
+    overrides,
+    process.env.CLOUDFLARE_ACCOUNT_ID,
+  );
 }
 
 function isInteractive(): boolean {
@@ -117,9 +133,16 @@ async function promptSelection(
 // Runs a deployment step with inherited stdio so the operator sees Wrangler
 // output directly. Credentials pass through process inheritance only; this
 // command never reads secret values.
-function runInherited(command: string, commandArgs: string[]): Promise<{ exitCode: number }> {
+function runInherited(
+  command: string,
+  commandArgs: string[],
+  accountId: string,
+): Promise<{ exitCode: number }> {
   return new Promise((resolvePromise) => {
-    const child = spawn(command, commandArgs, { env: process.env, stdio: 'inherit' });
+    const child = spawn(command, commandArgs, {
+      env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: accountId },
+      stdio: 'inherit',
+    });
     child.on('error', () => {
       resolvePromise({ exitCode: 1 });
     });
@@ -145,7 +168,15 @@ async function main(): Promise<void> {
     targets: listTargetKeys(targets),
     interactive: isInteractive() && !args.nonInteractive,
   });
-  const resolved = resolveTargetDeployment(targets, selection);
+  const target = resolveTargetDeployment(targets, selection);
+  const resolved = {
+    ...target,
+    accountId: resolveCloudflareAccountId(
+      target.accountId ?? '',
+      undefined,
+      process.env.CLOUDFLARE_ACCOUNT_ID,
+    ),
+  };
 
   if (args.writeConfig !== undefined) {
     const destination = resolve(args.writeConfig);
@@ -183,7 +214,7 @@ async function main(): Promise<void> {
           run: async (command, commandArgs) => {
             try {
               const { stdout } = await execFileAsync(command, commandArgs, {
-                env: process.env,
+                env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: target.accountId },
               });
               return { exitCode: 0, stdout };
             } catch {
@@ -199,6 +230,30 @@ async function main(): Promise<void> {
     log: (message: string) => {
       console.log(message);
     },
+    sourceMetadata: async () => {
+      const [commit, branch] = await Promise.all([
+        execFileAsync('git', ['rev-parse', '--short', 'HEAD'], { cwd: deployRepoRoot }),
+        execFileAsync('git', ['branch', '--show-current'], { cwd: deployRepoRoot }),
+      ]);
+      return { commit: commit.stdout.trim(), branch: branch.stdout.trim() || 'detached' };
+    },
+    confirmFirstDeployment: async (workerName) => {
+      if (!isInteractive()) {
+        return false;
+      }
+      const readline = createInterface({ input: process.stdin, output: process.stdout });
+      try {
+        const expected = `FIRST DEPLOY ${workerName}`;
+        console.log(
+          'Cloudflare activates a Worker’s first version immediately; no inactive candidate is possible.',
+        );
+        return (
+          (await readline.question(`Type exactly "${expected}" to continue: `)).trim() === expected
+        );
+      } finally {
+        readline.close();
+      }
+    },
     // Sandbox-only diagnostics (ticket #96): the deploy boundary starts this
     // tail immediately before `smoke-sandbox` and always stops it afterward.
     // Production `runDeployment` paths never consult this hook, so production
@@ -213,7 +268,19 @@ async function main(): Promise<void> {
   const outcome = await runDeployment(
     { resolved, confirm: args.confirm, dryRun: args.dryRun },
     io,
-    (command, commandArgs) => runInherited(command, commandArgs),
+    async (command, commandArgs) => {
+      if (commandArgs.includes('list') && commandArgs.includes('--json')) {
+        try {
+          const { stdout } = await execFileAsync(command, commandArgs, {
+            env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: resolved.accountId },
+          });
+          return { exitCode: 0, stdout };
+        } catch {
+          return { exitCode: 1, stdout: '' };
+        }
+      }
+      return runInherited(command, commandArgs, resolved.accountId);
+    },
   );
   console.log(`deployment complete worker=${outcome.workerName}`);
 }

@@ -7,6 +7,7 @@ import {
   secretListArgs,
 } from './secret-bindings.js';
 import { requiredWorkerSecrets } from './secrets.js';
+import { parseWorkerDeploymentsOutput, workerDeploymentsListArgs } from './provision-worker.js';
 import { isProvisionedDatabaseId, type ResolvedDeployment } from './targets.js';
 
 // Deployment preflight (ticket #78, ADR-0008).
@@ -137,7 +138,9 @@ export async function runPreflight(
     detail: workerOk ? 'worker name valid' : 'worker name invalid',
   });
 
-  checks.push(await checkWorkerSecrets(input.resolved, deps));
+  const workerPresence = await checkWorkerPresence(input.resolved, deps);
+  checks.push(workerPresence.check);
+  checks.push(await checkWorkerSecrets(input.resolved, workerPresence.exists, deps));
 
   return checks;
 }
@@ -155,6 +158,7 @@ export function preflightFailed(checks: readonly PreflightCheck[]): boolean {
 // required names/status only, never values or provider output.
 async function checkWorkerSecrets(
   resolved: ResolvedDeployment,
+  exists: boolean | undefined,
   deps: PreflightDeps,
 ): Promise<PreflightCheck> {
   const required = requiredWorkerSecrets({
@@ -163,6 +167,13 @@ async function checkWorkerSecrets(
   });
   if (required.length === 0) {
     return { name: 'worker-secrets', ok: true, detail: 'no required Worker secrets' };
+  }
+  if (exists === false) {
+    return {
+      name: 'worker-secrets',
+      ok: true,
+      detail: 'Worker absent; secret bindings will be checked after the first deploy',
+    };
   }
   const listed = await deps.run('npx', [...secretListArgs(resolved.workerName)]);
   if (listed.exitCode !== 0) {
@@ -195,6 +206,43 @@ async function checkWorkerSecrets(
     ok: true,
     detail: 'required Worker secrets present as secret_text bindings',
   };
+}
+
+async function checkWorkerPresence(
+  resolved: ResolvedDeployment,
+  deps: PreflightDeps,
+): Promise<{ readonly check: PreflightCheck; readonly exists: boolean | undefined }> {
+  const listed = await deps.run('npx', [...workerDeploymentsListArgs(resolved.workerName)]);
+  if (listed.exitCode !== 0) {
+    return {
+      check: {
+        name: 'worker-presence',
+        ok: false,
+        detail: 'Worker existence could not be determined',
+      },
+      exists: undefined,
+    };
+  }
+  try {
+    const discovery = parseWorkerDeploymentsOutput(listed.stdout);
+    return {
+      check: {
+        name: 'worker-presence',
+        ok: true,
+        detail: discovery.found ? 'Worker exists' : 'Worker absent; first deploy is allowed',
+      },
+      exists: discovery.found,
+    };
+  } catch {
+    return {
+      check: {
+        name: 'worker-presence',
+        ok: false,
+        detail: 'Worker existence could not be determined',
+      },
+      exists: undefined,
+    };
+  }
 }
 
 // Formats only check names plus static details: command output (which may

@@ -25,7 +25,7 @@
 // pass/fail plus names/ids at the orchestration boundary; raw provider
 // bodies never reach logs or errors.
 import { execFile } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
@@ -36,6 +36,7 @@ import {
 } from './deploy/provision-cli.js';
 import { runProvision, type ProvisionCommandResult } from './deploy/provision.js';
 import { listTargetKeys, loadTargetsFile, type TargetsFile } from './deploy/targets.js';
+import { applyAccountOverrides, loadAccountOverrides } from './deploy/account-config.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -47,8 +48,22 @@ function targetsPath(): string {
   return join(repoRoot(), 'deploy', 'targets.json');
 }
 
-function readTargetsFile(): TargetsFile {
+function readVersionedTargetsFile(): TargetsFile {
   return loadTargetsFile(JSON.parse(readFileSync(targetsPath(), 'utf8')) as unknown);
+}
+
+function readTargetsFile(): TargetsFile {
+  const root = repoRoot();
+  const overridePath = join(root, 'deploy', 'targets.local.json');
+  return applyAccountOverrides(
+    readVersionedTargetsFile(),
+    loadAccountOverrides(
+      existsSync(overridePath)
+        ? (JSON.parse(readFileSync(overridePath, 'utf8')) as unknown)
+        : { version: 1, targets: {} },
+    ),
+    process.env.CLOUDFLARE_ACCOUNT_ID,
+  );
 }
 
 // Runs a Wrangler read/create step, capturing machine-readable stdout for
@@ -58,9 +73,12 @@ function readTargetsFile(): TargetsFile {
 async function runProvisionCommand(
   command: string,
   args: readonly string[],
+  accountId: string,
 ): Promise<ProvisionCommandResult> {
   try {
-    const { stdout } = await execFileAsync(command, [...args], { env: process.env });
+    const { stdout } = await execFileAsync(command, [...args], {
+      env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: accountId },
+    });
     return { exitCode: 0, stdout };
   } catch {
     return { exitCode: 1, stdout: '' };
@@ -91,6 +109,7 @@ async function main(): Promise<void> {
     },
     {
       loadTargets: () => readTargetsFile(),
+      loadVersionedTargets: () => readVersionedTargetsFile(),
       writeTargets: (file) => {
         writeFileSync(targetsPath(), `${JSON.stringify(file, null, 2)}\n`, 'utf8');
       },
@@ -98,7 +117,12 @@ async function main(): Promise<void> {
         console.log(message);
       },
     },
-    (command, args) => runProvisionCommand(command, args),
+    (command, args, scope) =>
+      runProvisionCommand(
+        command,
+        args,
+        scope?.accountId ?? process.env.CLOUDFLARE_ACCOUNT_ID ?? '',
+      ),
   );
   if (outcome.configUpdated) {
     console.log(

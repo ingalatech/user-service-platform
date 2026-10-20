@@ -1,4 +1,5 @@
 import type { ResolvedDeployment } from './targets.js';
+import { parseWorkerVersions } from './versions.js';
 import {
   drainSessionFailureTail,
   parseTailLines,
@@ -47,15 +48,95 @@ export interface DeployRequest {
 
 export interface DeployCommandResult {
   readonly exitCode: number;
+  readonly stdout?: string;
 }
 
 export type DeployCommandRunner = (command: string, args: string[]) => Promise<DeployCommandResult>;
+
+export interface PromotionRequest {
+  readonly resolved: ResolvedDeployment;
+  readonly versionId: string;
+  readonly confirm?: string;
+}
+
+export interface PromotionIo extends Pick<
+  DeployIo,
+  'materialize' | 'cleanup' | 'preflight' | 'log'
+> {
+  readonly smoke: (resolved: ResolvedDeployment) => Promise<void>;
+}
+
+export function promotionSmokeCommand(
+  environment: ResolvedDeployment['environment'],
+): readonly [string, readonly string[]] {
+  return ['npm', ['run', environment === 'production' ? 'smoke:production' : 'smoke:sandbox']];
+}
+
+export async function runPromotion(
+  request: PromotionRequest,
+  io: PromotionIo,
+  runner: DeployCommandRunner,
+): Promise<void> {
+  const versionId = request.versionId.trim();
+  if (!/^[a-zA-Z0-9-]+$/.test(versionId)) {
+    throw new Error('A valid immutable Worker Version ID must be selected.');
+  }
+  const configPath = io.materialize(request.resolved);
+  try {
+    if (
+      request.resolved.environment === 'production' &&
+      request.confirm !== request.resolved.workerName
+    ) {
+      throw new Error(
+        `Refusing production promotion; type the exact Worker name "${request.resolved.workerName}" to confirm.`,
+      );
+    }
+    await io.preflight(request.resolved);
+    const listed = await runner('npx', [
+      'wrangler',
+      'versions',
+      'list',
+      '--json',
+      '--config',
+      configPath,
+    ]);
+    if (listed.exitCode !== 0) {
+      throw new Error('list-worker-versions failed.');
+    }
+    let versions: unknown;
+    try {
+      versions = JSON.parse(listed.stdout ?? '[]') as unknown;
+    } catch {
+      throw new Error('Unable to read Worker versions.');
+    }
+    if (!parseWorkerVersions(versions).some((version) => version.id === versionId)) {
+      throw new Error('The selected immutable Worker Version ID is not available for this Worker.');
+    }
+    const promoted = await runner('npx', [
+      'wrangler',
+      'versions',
+      'deploy',
+      `${versionId}@100%`,
+      '--config',
+      configPath,
+    ]);
+    if (promoted.exitCode !== 0) {
+      throw new Error('promote-worker-version failed.');
+    }
+    await io.smoke(request.resolved);
+    io.log(`promoted worker=${request.resolved.workerName} version=${versionId}`);
+  } finally {
+    io.cleanup(configPath);
+  }
+}
 
 export interface DeployIo {
   readonly materialize: (resolved: ResolvedDeployment) => string;
   readonly cleanup: (path: string) => void;
   readonly preflight: (resolved: ResolvedDeployment) => Promise<void>;
   readonly log: (message: string) => void;
+  readonly sourceMetadata?: () => Promise<{ readonly commit: string; readonly branch: string }>;
+  readonly confirmFirstDeployment?: (workerName: string) => Promise<boolean>;
   // Optional bounded diagnostic tail for the sandbox smoke window (ticket
   // #96). When present and the environment is sandbox, the deploy boundary
   // starts the tail immediately before `smoke-sandbox` and always terminates
@@ -74,7 +155,10 @@ export function productionConfirmFor(resolved: ResolvedDeployment): string {
   return resolved.workerName;
 }
 
-export function planDeploymentSteps(request: DeployRequest): DeploymentStep[] {
+export function planDeploymentSteps(
+  request: DeployRequest,
+  options: { readonly firstDeployment?: boolean } = {},
+): DeploymentStep[] {
   const steps: DeploymentStep[] = [
     'preflight',
     'build-admin-assets',
@@ -83,7 +167,7 @@ export function planDeploymentSteps(request: DeployRequest): DeploymentStep[] {
     'deploy-worker',
     'record-deployment',
   ];
-  if (request.resolved.environment === 'sandbox') {
+  if (request.resolved.environment === 'sandbox' && options.firstDeployment !== false) {
     steps.push('smoke-sandbox');
   }
   return steps;
@@ -233,7 +317,7 @@ export async function runDeployment(
   try {
     assertProductionConfirmed(request);
     await io.preflight(request.resolved);
-    const steps = planDeploymentSteps(request);
+    let steps = planDeploymentSteps(request);
     if (request.dryRun === true) {
       io.log(
         `dry-run target=${request.resolved.targetKey} environment=${request.resolved.environment} worker=${request.resolved.workerName} database=${request.resolved.databaseName} steps=${steps.join(',')}`,
@@ -243,6 +327,41 @@ export async function runDeployment(
     io.log(
       `deploy target=${request.resolved.targetKey} environment=${request.resolved.environment} worker=${request.resolved.workerName}`,
     );
+    // Determine whether this is the Cloudflare-required active first deploy
+    // before building or applying migrations: the operator's confirmation
+    // must precede every remote mutation.
+    const versions = await runner('npx', [
+      'wrangler',
+      'versions',
+      'list',
+      '--json',
+      '--config',
+      configPath,
+    ]);
+    if (versions.exitCode !== 0) {
+      throw new Error('list-worker-versions failed.');
+    }
+    let existingVersions: unknown;
+    try {
+      existingVersions = JSON.parse(versions.stdout ?? '[]') as unknown;
+    } catch {
+      throw new Error('Unable to determine whether the Worker already exists.');
+    }
+    if (!Array.isArray(existingVersions)) {
+      throw new Error('Unable to determine whether the Worker already exists.');
+    }
+    const isFirstDeployment = existingVersions.length === 0;
+    steps = planDeploymentSteps(request, { firstDeployment: isFirstDeployment });
+    if (isFirstDeployment) {
+      io.log(
+        `first deployment for worker=${request.resolved.workerName} will activate its first version; Cloudflare does not support an inactive initial version`,
+      );
+      if ((await io.confirmFirstDeployment?.(request.resolved.workerName)) !== true) {
+        throw new Error(
+          'First deployment cancelled; explicit activation confirmation is required.',
+        );
+      }
+    }
     // Administration SPA assets (ticket #124, ADR-0012): rebuild `admin/dist`
     // from versioned sources before any remote mutation so every deployment
     // serves the current built assets through the materialized ASSETS binding.
@@ -261,15 +380,39 @@ export async function runDeployment(
       ['wrangler', 'd1', 'migrations', 'apply', 'DB', '--remote', '--config', configPath],
       runner,
     );
-    await runStep('deploy-worker', 'npx', ['wrangler', 'deploy', '--config', configPath], runner);
+    if (isFirstDeployment) {
+      await runStep('deploy-worker', 'npx', ['wrangler', 'deploy', '--config', configPath], runner);
+    } else {
+      const source = (await io.sourceMetadata?.()) ?? { commit: 'unknown', branch: 'unknown' };
+      const tag = new Date().toISOString();
+      const readableTag = `candidate-${source.commit}-${tag.replace(/[:.]/g, '-')}`;
+      await runStep(
+        'deploy-worker',
+        'npx',
+        [
+          'wrangler',
+          'versions',
+          'upload',
+          '--message',
+          `commit=${source.commit} branch=${source.branch} uploaded=${tag}`,
+          '--tag',
+          readableTag,
+          '--config',
+          configPath,
+        ],
+        runner,
+      );
+    }
     await runStep(
       'record-deployment',
       'npx',
       ['wrangler', 'deployments', 'list', '--config', configPath],
       runner,
     );
-    if (request.resolved.environment === 'sandbox') {
+    if (request.resolved.environment === 'sandbox' && isFirstDeployment) {
       await runSandboxSmokeWithDiagnostics(request.resolved, configPath, io, runner);
+    } else if (request.resolved.environment === 'sandbox') {
+      io.log('candidate uploaded; stable-origin smoke is deferred until promotion');
     }
     io.log(`deployed worker=${request.resolved.workerName}`);
     return { workerName: request.resolved.workerName, steps };

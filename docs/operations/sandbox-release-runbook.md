@@ -49,9 +49,26 @@ credentials.
 ## 2. First-time target provisioning
 
 Prerequisites: a Cloudflare account with Workers Paid (D1 Time Travel
-retention beyond Free), local Wrangler authentication or a local
-`CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`, and a
-mail-provider-authorized sender for the target environment.
+retention beyond Free), an account ID configured for the selected target and
+environment, Wrangler OAuth login (default) or an optional local
+`CLOUDFLARE_API_TOKEN`, and a mail-provider-authorized sender for the target.
+
+Cloudflare account IDs are non-secret 32-character hexadecimal identifiers.
+Set each target/environment's `accountId` in `deploy/targets.json` for the
+team default. To use a personal account without changing shared configuration,
+copy the sample and edit only the desired environment:
+
+```bash
+cp deploy/targets.local.example.json deploy/targets.local.json
+```
+
+`deploy/targets.local.json` is git-ignored. Resolution precedence is
+versioned `deploy/targets.json`, then the matching local override, then
+`CLOUDFLARE_ACCOUNT_ID` from the current process (highest precedence). The
+selected ID is materialized as Wrangler `account_id` and supplied to every
+Wrangler/provisioning executor call. Never put `CLOUDFLARE_API_TOKEN` or any
+other credential in either target file. The example IDs are placeholders, not
+usable Cloudflare accounts.
 
 Provisioning is owned by one repository entry point (ticket #80), which
 derives physical resource names from the canonical deployment key so the
@@ -101,9 +118,18 @@ npm run deploy -- --target rch-rugbychampagne --env sandbox --dry-run
 ```
 
 Provisioning reports when the Worker is not deployed yet; that is expected
-for a new target and is not an error. The first normal deploy
-(`npm run deploy -- --target rch-rugbychampagne --env sandbox
---non-interactive`) creates/publishes it. When the Worker already exists,
+for a new target and is not an error. The first normal deploy must be
+interactive:
+
+```bash
+npm run deploy -- --target rch-rugbychampagne --env sandbox
+```
+
+It explains the unavoidable activation and requires the exact confirmation
+`FIRST DEPLOY rch-rugbychampagne-user-service-sandbox` before it
+creates/publishes the Worker. Do not use `--non-interactive` for the first
+deployment; it fails closed because no inactive first version is possible.
+When the Worker already exists,
 provisioning additionally reports each required secret name as
 present/missing (names/types only, never values).
 
@@ -118,12 +144,15 @@ npm run provision -- --target rch-rugbychampagne --env production --apply \
 ```
 
 If the provisioning command cannot safely complete a step (ambiguous
-discovery, a configured id that disagrees with the remote exact-name
-resource, or an unreachable provider), it fails closed and prints the exact
+discovery, a configured D1 ID absent from the selected account, a configured
+ID that disagrees with the remote exact-name resource, or an unreachable
+provider), it fails closed and prints the exact
 next operator action. The manual fallback for D1 creation is:
 
 ```bash
-npx wrangler d1 create rch-rugbychampagne-user-service-sandbox-db --update-config=false
+export CLOUDFLARE_ACCOUNT_ID="<selected-32-hex-account-id>"
+npx wrangler d1 create \
+  rch-rugbychampagne-user-service-sandbox-db --update-config=false
 # Creation prints human-readable text (pinned Wrangler has no --json flag for
 # this command) and never touches versioned config. Rerun provisioning to
 # rediscover the exact-name database and stage its id, then commit:
@@ -200,36 +229,42 @@ npx wrangler d1 delete user-service-sandbox
 #    references its workers.dev origin.
 ```
 
-## 3. Release procedure
+## 3. Local candidate release procedure
 
 ### 3.1 Sandbox release (local operator action)
 
-GitHub Actions does not deploy sandbox. From the isolated release worktree,
-the operator explicitly invokes the repository deploy boundary:
+GitHub Actions does not deploy sandbox. Releases are operator initiated from a
+developer workstation in the isolated release worktree. Use the local
+Wrangler OAuth login by default; `CLOUDFLARE_API_TOKEN` is optional and must
+remain in the local process environment, never in repository configuration.
+`npm run deploy` validates and applies compatible D1 migrations, then uploads
+an immutable Worker Version for an existing Worker without changing traffic.
+The upload message carries the source commit, branch and UTC upload time. Use
+the version preview URL shown by Wrangler to inspect service behavior before
+promotion.
 
 ```bash
-npm run deploy -- --target rch-rugbychampagne --env sandbox --non-interactive
+npm run deploy -- --target rch-rugbychampagne --env sandbox
+npx wrangler versions list --name rch-rugbychampagne-user-service-sandbox
+npm run promote -- --target rch-rugbychampagne --env sandbox
 ```
 
-The deployer, in order:
+The first Worker Version is the unavoidable exception: Cloudflare activates it
+immediately. The deploy command explains this and requires the exact text
+`FIRST DEPLOY <worker-name>` before making that initial mutation. Promotion
+selects an existing immutable Version ID and routes 100% of traffic to it; it
+does not build assets, apply D1 migrations, or create a Worker Version. Sandbox
+candidate upload does not run stable-origin smoke because the stable origin
+still serves the previous version. Promotion runs `npm run smoke:sandbox`
+against the stable origin after routing the selected version. The first deploy
+retains its stable-origin smoke after the unavoidable activation. For
+production, enter the exact production Worker name when prompted. Worker
+rollback does not roll back D1; use the data recovery procedure in section 5
+only when a separate, explicitly confirmed database recovery is needed.
 
-1. runs preflight (Node/Wrangler/auth/account access, clean worktree, target
-   config, Worker-name and D1 checks) before any remote mutation;
-2. validates D1 migrations against a disposable local D1
-   (`wrangler d1 migrations apply DB --local`);
-3. applies versioned migrations to the target database
-   (`wrangler d1 migrations apply DB --remote --config <generated>`);
-4. deploys the Worker (`wrangler deploy --config <generated>`);
-5. records the deployment (`wrangler deployments list --config <generated>`);
-6. runs the sandbox smoke test (`npm run smoke:sandbox`).
-
-Identify the serving version at any time with:
-
-```bash
-npm run deploy -- --target rch-rugbychampagne --env sandbox \
-  --write-config /tmp/rch-sandbox.json
-npx wrangler deployments list --config /tmp/rch-sandbox.json
-```
+Keep account identifiers in non-secret target configuration where available;
+Cloudflare credentials remain in Wrangler OAuth or the local
+`CLOUDFLARE_API_TOKEN` process environment and never enter version control.
 
 ### 3.2 Worker code rollback (code only, never data)
 
@@ -253,20 +288,24 @@ newer data shape can produce errors instead of silently succeeding.
 
 ### 3.3 Production promotion (explicit, human-controlled)
 
-Production is never deployed by merging or by a GitHub Actions trigger.
-Promotion is an explicit local operator action. Select the target and provide
-the exact production Worker name (for example
-`rch-rugbychampagne-user-service-production`) as confirmation. The deployer
+Production is never deployed by merging, by a GitHub Actions trigger, or by
+the sandbox workflow. Promotion is an explicit local operator action. Select
+the target and provide the exact production Worker name (for example
+`rch-rugbychampagne-user-service-production`) as confirmation. The promoter
 enforces that confirmation before any remote mutation:
 
 ```bash
-npm run deploy:production -- --target rch-rugbychampagne \
+npm run promote -- --target rch-rugbychampagne --env production \
   --confirm rch-rugbychampagne-user-service-production
 ```
 
-The promotion applies production D1 migrations, deploys the production
-Worker, and prints the source commit plus the resulting deployment list as
-the release record. Record both identifiers in the release notes.
+Promotion applies no migrations and does not build or upload a version. Record
+the selected immutable Version ID and source commit in the release notes. After
+promotion, it runs the non-mutating production smoke: `GET /v1/health` must
+return `{ "status": "ok" }`, and anonymous `GET /v1/me` must return `401`
+with `unauthenticated`. Set `SMOKE_PRODUCTION_BASE_URL` to the production
+Worker origin before promotion. This smoke performs no registration, email,
+login or other user mutation.
 
 ## 4. D1 migrations
 

@@ -1,0 +1,9 @@
+{
+  "version": 1,
+  "targets": {
+    "rch-rugbychampagne": {
+      "sandbox": "0123456789abcdef0123456789abcdef",
+      "production": "fedcba9876543210fedcba9876543210"
+    }
+  }
+}
