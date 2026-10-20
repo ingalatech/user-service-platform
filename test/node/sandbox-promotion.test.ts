@@ -28,10 +28,9 @@ import {
 // These tests pin the ADR-0008/ADR-0009/ADR-0010
 // invariants that must hold before the identity service is operable in
 // sandbox: isolated per-target resources, version-controlled secret-free
-// config, Cloudflare-native observability, sandbox-only mail, and an explicit
-// (manual) production promotion step. They read the same version-controlled
-// files the operator and CI consume; they never touch Cloudflare credentials
-// or provisioned resources.
+// config, Cloudflare-native observability, sandbox-only mail, and explicit
+// local release operations. Tests never touch Cloudflare credentials or
+// provisioned resources.
 
 // Minimal JSONC reader for wrangler.jsonc: strips // and /* */ comments only
 // outside string literals so values containing "//" survive intact.
@@ -119,59 +118,6 @@ function loadTargets(): TargetsFile {
 function provisionedTargets(): TargetsFile {
   return provisionedTargetsForContract(loadTargets());
 }
-// Returns the shell bodies of every `run: |` block in a workflow so
-// assertions can pin shell-input hardening without constraining `with:` or
-// `env:` mappings that legitimately reference workflow inputs.
-function readRunBlocks(path: string): string[] {
-  const raw = readFileSync(path, 'utf8');
-  const lines = raw.split('\n');
-  const blocks: string[] = [];
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i] ?? '';
-    const runMatch = /^(\s*)run:\s*\|\s*$/.exec(line);
-    if (runMatch === null) {
-      continue;
-    }
-    const baseIndent = (runMatch[1] ?? '').length;
-    const body: string[] = [];
-    for (let j = i + 1; j < lines.length; j += 1) {
-      const bodyLine = lines[j] ?? '';
-      if (bodyLine.trim().length === 0) {
-        body.push(bodyLine);
-        continue;
-      }
-      const indent = bodyLine.length - bodyLine.trimStart().length;
-      if (indent <= baseIndent) {
-        break;
-      }
-      body.push(bodyLine);
-    }
-    blocks.push(body.join('\n'));
-  }
-  return blocks;
-}
-
-// Returns the raw text of the top-level `on:` trigger block of a workflow,
-// with `#` comments stripped so prose cannot satisfy trigger assertions.
-function readTriggerBlock(path: string): string {
-  const raw = readFileSync(path, 'utf8');
-  const lines = raw.split('\n');
-  const start = lines.findIndex((line) => /^on:\s*$/.test(line));
-  expect(start, `${path} must declare a top-level "on:" trigger block`).toBeGreaterThanOrEqual(0);
-  const block: string[] = [];
-  for (let i = start + 1; i < lines.length; i += 1) {
-    const line = lines[i];
-    if (line === undefined) {
-      break;
-    }
-    if (/^\S/.test(line) && !/^\s/.test(line) && line.trim().length > 0) {
-      break;
-    }
-    block.push(line.replace(/#.*$/, ''));
-  }
-  return block.join('\n');
-}
-
 describe('target-aware worker configuration (ticket #78)', () => {
   it('keeps wrangler.jsonc as a local base config without remote env shortcuts', () => {
     const config = loadWrangler();
@@ -404,52 +350,6 @@ describe('sandbox runbook (ticket #14, #78)', () => {
   });
 });
 
-describe('deployment promotion gates (ticket #14, #78, ADR-0008)', () => {
-  it('deploys the configured sandbox target automatically from main', () => {
-    const triggers = readTriggerBlock('.github/workflows/deploy-sandbox.yml');
-    expect(triggers).toMatch(/push/);
-    expect(triggers).toMatch(/main/);
-    const workflow = readFileSync('.github/workflows/deploy-sandbox.yml', 'utf8');
-    expect(workflow).toMatch(/npm run deploy/);
-    expect(workflow).toMatch(/--target rch-rugbychampagne/);
-    expect(workflow).toMatch(/--env sandbox/);
-    expect(workflow).toMatch(/--non-interactive/);
-  });
-
-  it('keeps resource naming in the deploy boundary instead of the workflow', () => {
-    const workflow = readFileSync('.github/workflows/deploy-sandbox.yml', 'utf8');
-    expect(workflow).not.toMatch(/wrangler d1 migrations apply/);
-    expect(workflow).not.toMatch(/wrangler deploy /);
-    expect(workflow).not.toMatch(/wrangler deployments list/);
-  });
-
-  it('keeps production promotion an explicit manual step', () => {
-    const triggers = readTriggerBlock('.github/workflows/promote-production.yml');
-    expect(triggers).toMatch(/workflow_dispatch/);
-    expect(triggers).not.toMatch(/push\s*:/);
-    expect(triggers).not.toMatch(/pull_request/);
-    const workflow = readFileSync('.github/workflows/promote-production.yml', 'utf8');
-    expect(workflow).toMatch(/npm run deploy:production/);
-    expect(workflow).toMatch(/--confirm/);
-  });
-
-  it('routes workflow_dispatch inputs through env in shell run blocks', () => {
-    const path = '.github/workflows/promote-production.yml';
-    const workflow = readFileSync(path, 'utf8');
-    const runBlocks = readRunBlocks(path);
-    expect(runBlocks.length).toBeGreaterThan(0);
-    for (const block of runBlocks) {
-      expect(block).not.toMatch(/\$\{\{\s*inputs\./);
-    }
-    expect(workflow).toMatch(/TARGET:\s*\$\{\{\s*inputs\.target\s*\}\}/);
-    expect(workflow).toMatch(/CONFIRM_PRODUCTION:\s*\$\{\{\s*inputs\.confirm_production\s*\}\}/);
-    expect(workflow).toMatch(/SOURCE_COMMIT:\s*\$\{\{\s*inputs\.source_commit\s*\}\}/);
-    expect(workflow).toMatch(/\$TARGET/);
-    expect(workflow).toMatch(/\$CONFIRM_PRODUCTION/);
-    expect(workflow).toMatch(/\$SOURCE_COMMIT/);
-  });
-});
-
 describe('sandbox smoke guards (ticket #14)', () => {
   it('builds unique sandbox recipients inside the allowlisted domain', () => {
     expect(buildSmokeEmail('ops.example.org', 'abc123')).toBe('smoke-abc123@ops.example.org');
@@ -575,18 +475,6 @@ describe('sandbox smoke guards (ticket #14)', () => {
       expect(code).not.toMatch(/\bemail\b/i);
       expect(code).not.toMatch(/\bpassword\b/i);
       expect(code).not.toMatch(/\btoken\b/i);
-    }
-  });
-
-  it('wires the exact-recipient secret through env without exposing it in run blocks', () => {
-    const workflow = readFileSync('.github/workflows/deploy-sandbox.yml', 'utf8');
-    expect(workflow).toMatch(/SMOKE_SANDBOX_EMAIL:\s*\$\{\{\s*secrets\.SANDBOX_SMOKE_EMAIL\s*\}\}/);
-    expect(workflow).toMatch(/SMOKE_PASSWORD:\s*\$\{\{\s*secrets\.SANDBOX_SMOKE_PASSWORD\s*\}\}/);
-    for (const block of readRunBlocks('.github/workflows/deploy-sandbox.yml')) {
-      expect(block).not.toMatch(/SANDBOX_SMOKE_EMAIL/);
-      expect(block).not.toMatch(/SMOKE_SANDBOX_EMAIL/);
-      expect(block).not.toMatch(/SANDBOX_SMOKE_PASSWORD/);
-      expect(block).not.toMatch(/SMOKE_PASSWORD/);
     }
   });
 

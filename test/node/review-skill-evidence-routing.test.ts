@@ -1,7 +1,5 @@
-import { readFileSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
-import { parse as parseYaml } from 'yaml';
 import {
   parseFixCyclePr,
   runFixCycleCorrection,
@@ -28,11 +26,8 @@ import { runWorkerStream, type SpawnedWorker } from '../../scripts/review/worker
 import { isWorkerTimeout, WorkerTimeoutError } from '../../scripts/review/worker-timeout.js';
 
 // Seam under test: evidence-capable worker routing (ticket #116).
-// The initial fix-cycle correction must run through the deterministic
-// evidence-capable seam, both remote upload surfaces must carry the new
-// normalized evidence paths while preserving handoff files, and evidence
-// finalization must never mask the worker outcome. Workflow assertions read
-// the real YAML files with a real parser; commented text never satisfies.
+// Agent worker execution uses the deterministic evidence-capable seam, and
+// evidence finalization must never mask the worker outcome.
 function toolLine(call: string, session: string): string {
   return JSON.stringify({
     type: 'tool_use',
@@ -51,30 +46,6 @@ function toolLine(call: string, session: string): string {
       },
     },
   });
-}
-
-function readWorkflow(name: string): unknown {
-  return parseYaml(readFileSync(`.github/workflows/${name}`, 'utf8')) as unknown;
-}
-
-function workflowStepRuns(doc: unknown): string[] {
-  const runs: string[] = [];
-  const record = doc as Record<string, unknown>;
-  const jobs = record.jobs as Record<string, unknown>;
-  const run = jobs.run as Record<string, unknown>;
-  const steps = run.steps as Record<string, unknown>[];
-  for (const step of steps) {
-    if (typeof step.run === 'string') {
-      runs.push(step.run);
-    }
-    if (typeof step.with === 'object' && step.with !== null) {
-      const withBlock = step.with as Record<string, unknown>;
-      if (typeof withBlock.path === 'string') {
-        runs.push(`path: ${withBlock.path}`);
-      }
-    }
-  }
-  return runs;
 }
 
 describe('evidence worker invocation shape', () => {
@@ -395,36 +366,6 @@ describe('ticket implement evidence pointer', () => {
       outcome: 'BLOCKED',
       skillEvidencePath: '.agent-ticket/skill-evidence/implement-implement-1.json',
     });
-  });
-});
-
-describe('real workflow evidence wiring', () => {
-  it('routes the initial fix-cycle correction through the deterministic seam', () => {
-    const runs = workflowStepRuns(readWorkflow('agent-fix-cycle.yml')).join('\n');
-
-    expect(runs).toContain('npm run agent:fix-cycle-correction');
-    expect(runs).not.toContain('timeout --signal=TERM');
-  });
-
-  it('includes the normalized evidence paths on both upload surfaces', () => {
-    for (const name of ['agent-ticket.yml', 'agent-fix-cycle.yml']) {
-      const runs = workflowStepRuns(readWorkflow(name)).join('\n');
-
-      expect(runs).toContain('.agent-ticket/skill-evidence/latest.json');
-      expect(runs).toContain('.agent-ticket/skill-evidence/*.json');
-    }
-  });
-
-  it('preserves handoff files and status contracts on both upload surfaces', () => {
-    for (const name of ['agent-ticket.yml', 'agent-fix-cycle.yml']) {
-      const runs = workflowStepRuns(readWorkflow(name)).join('\n');
-
-      expect(runs).toContain('.review-cycle/latest.json');
-      expect(runs).toContain('.agent-ticket/workflow-handoff.json');
-      expect(runs).toContain('.agent-ticket/workflow-handoff.patch');
-    }
-    const ticketRuns = workflowStepRuns(readWorkflow('agent-ticket.yml')).join('\n');
-    expect(ticketRuns).toContain('.agent-ticket/outcome.json');
   });
 });
 

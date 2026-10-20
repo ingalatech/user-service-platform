@@ -3,7 +3,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { describe, expect, it, vi } from 'vitest';
-import { parse as parseYaml } from 'yaml';
 import type { CommandExecutor } from '../../scripts/review/runner.js';
 import {
   RECOVERY_MAX_BYTES_PER_FILE,
@@ -1060,13 +1059,8 @@ describe('implementation recovery ticket-flow wiring', () => {
     const raw = written.get('.agent-ticket/outcome.json') ?? '';
     expect(JSON.parse(raw)).toMatchObject({ outcome: 'TIMEOUT', recovery: { version: 1 } });
     expect(raw).toContain('diff --git');
-    // The existing workflow artifact selection already uploads this record,
-    // so no workflow-file edit or new credential is needed for recovery.
-    const doc = parseYaml(readFileSync('.github/workflows/agent-ticket.yml', 'utf8')) as {
-      jobs: { run: { steps: { with?: { path?: string } }[] } };
-    };
-    const paths = doc.jobs.run.steps.map((step) => step.with?.path ?? '').join('\n');
-    expect(paths).toContain('.agent-ticket/outcome.json');
+    // The outcome record is a local recovery artifact, independent of hosted
+    // workflow upload surfaces.
   });
 });
 

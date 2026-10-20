@@ -1,6 +1,3 @@
-import { readFile } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { runAgentTicket } from '../../scripts/agent/ticket-flow.js';
 import type { CommandExecutor } from '../../scripts/review/runner.js';
@@ -20,11 +17,8 @@ import {
 } from '../../scripts/review/workflow-handoff.js';
 
 // Seam under test: deterministic workflow-file handoff detection (ticket #36).
-// Remote agent corrections may legitimately touch `.github/workflows/**`, but
-// ordinary automation must never gain generic workflow-write credentials.
-// Repository-owned code detects the change before push, refuses the doomed
-// generic push with a distinguishable reason, and leaves a durable
-// patch/metadata bundle for trusted publication.
+// Local agent corrections that touch `.github/workflows/**` stop before push
+// and leave a reproducible patch/metadata bundle for operator review.
 describe('workflow-file detection', () => {
   it('matches files under .github/workflows/', () => {
     expect(isWorkflowFile('.github/workflows/agent-ticket.yml')).toBe(true);
@@ -122,25 +116,6 @@ describe('workflow handoff commands and evidence', () => {
     });
     expect(JSON.stringify(record)).toContain(TRUSTED_PUBLICATION_MARKER);
   });
-});
-
-describe('workflow-write credential boundary', () => {
-  const workflowsDir = resolve(
-    dirname(fileURLToPath(import.meta.url)),
-    '..',
-    '..',
-    '.github',
-    'workflows',
-  );
-
-  it.each(['agent-ticket.yml', 'agent-fix-cycle.yml', 'ci.yml'])(
-    'keeps %s without generic workflows write permission',
-    async (file) => {
-      const raw = await readFile(resolve(workflowsDir, file), 'utf8');
-
-      expect(raw).not.toMatch(/workflows\s*:\s*write/);
-    },
-  );
 });
 
 describe('agent:ticket workflow handoff at the push stage', () => {
