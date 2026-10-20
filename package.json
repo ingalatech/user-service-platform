@@ -34,6 +34,8 @@
     "openapi:compat": "tsx scripts/openapi-compat.ts",
     "db:generate": "drizzle-kit generate",
     "smoke:sandbox": "tsx scripts/smoke-sandbox.ts",
+    "smoke:health": "tsx scripts/smoke-health.ts",
+    "smoke:readiness": "tsx scripts/smoke-readiness.ts",
     "smoke:production": "tsx scripts/smoke-production.ts",
     "deploy": "tsx scripts/deploy.ts",
     "promote": "tsx scripts/promote.ts",

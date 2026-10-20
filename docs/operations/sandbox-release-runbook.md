@@ -17,11 +17,12 @@ operator-managed outside the repository.
 3. Run `npm run provision -- --env sandbox --apply`.
 4. Review the staged `D1_ID` diff in `.env.sandbox` and commit it.
 5. Run `npm run deploy -- --env sandbox` and confirm the first deployment.
-6. Configure the required secrets in Cloudflare. Provisioning and deployment
-   preflight may list secret metadata (names and `secret_text` types) and report
-   missing or incorrectly typed bindings, but never read, print or mutate secret
-   values. If the Worker does not exist yet, provisioning reports the required
-   secret names and `wrangler secret put` instructions for after deployment.
+6. Configure the runtime secrets in the Cloudflare Dashboard. Release tooling
+   never lists, validates, uploads, prints or instructs CLI mutation of secrets.
+7. Run `npm run smoke:readiness` to verify public health and anonymous Identity.
+   During the temporary Identity-unavailable window, only `/v1/health` is
+   expected to pass. Record the resulting Worker version after Dashboard
+   secret changes.
 
 Provisioning supports sandbox D1 only. It discovers or creates the exact
 database named by `D1_NAME`, then stages the discovered UUID into `.env.sandbox`
@@ -32,8 +33,10 @@ promotion commands with the production environment file.
 ## Subsequent releases
 
 Use `npm run deploy -- --env sandbox --dry-run` to inspect a release, then run
-the same command without `--dry-run`. Candidate upload, migration ordering,
-first-deploy confirmation and immutable promotion remain unchanged.
+the same command without `--dry-run`. The first deployment migrates, deploys
+and checks only `/v1/health`; later candidate uploads do not run an automatic
+smoke. Candidate upload, migration ordering, first-deploy confirmation and
+immutable promotion remain unchanged.
 
 Promotion is an explicit local operator action. Promote an immutable Worker
 version with `npm run promote -- --env sandbox`.

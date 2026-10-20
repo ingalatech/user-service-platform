@@ -204,10 +204,8 @@ async function main(): Promise<void> {
         readline.close();
       }
     },
-    // Sandbox-only diagnostics (ticket #96): the deploy boundary starts this
-    // tail immediately before `smoke-sandbox` and always stops it afterward.
-    // Production `runDeployment` paths never consult this hook, so production
-    // gains no automatic tailing.
+    // Diagnostic tailing is retained for the full privileged sandbox smoke;
+    // bootstrap and public readiness do not inspect runtime secret state.
     startSessionFailureTail: (target: ResolvedDeployment, configPath: string) => {
       if (target.environment !== 'sandbox') {
         return Promise.reject(new Error('Diagnostic tailing is sandbox-only.'));

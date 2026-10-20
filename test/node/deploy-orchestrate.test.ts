@@ -95,7 +95,7 @@ function createHarness(failOn?: RegExp, failPreflight = false): Harness {
 // always removed, even on failure.
 describe('deployment orchestration', () => {
   it('selects the non-mutating smoke command per promotion environment', () => {
-    expect(promotionSmokeCommand('sandbox')).toEqual(['npm', ['run', 'smoke:sandbox']]);
+    expect(promotionSmokeCommand('sandbox')).toEqual(['npm', ['run', 'smoke:readiness']]);
     expect(promotionSmokeCommand('production')).toEqual(['npm', ['run', 'smoke:production']]);
   });
   it('plans the sandbox release in migration-first order with smoke last', () => {
@@ -152,7 +152,7 @@ describe('deployment orchestration', () => {
     const text = harness.commands.map(({ command, args }) => `${command} ${args.join(' ')}`);
     const migrateIndex = text.findIndex((entry) => entry.includes('migrations apply DB --remote'));
     const deployIndex = text.findIndex((entry) => entry.includes('wrangler deploy'));
-    const smokeIndex = text.findIndex((entry) => entry.includes('smoke:sandbox'));
+    const smokeIndex = text.findIndex((entry) => entry.includes('smoke:health'));
     expect(migrateIndex).toBeGreaterThanOrEqual(0);
     expect(deployIndex).toBeGreaterThan(migrateIndex);
     expect(smokeIndex).toBe(-1);
@@ -168,7 +168,7 @@ describe('deployment orchestration', () => {
     const text = harness.commands.map(({ command, args }) => `${command} ${args.join(' ')}`);
     expect(text.some((entry) => entry.includes('wrangler versions upload'))).toBe(true);
     expect(text.some((entry) => entry.includes('wrangler deploy --config'))).toBe(false);
-    expect(text.some((entry) => entry.includes('smoke:sandbox'))).toBe(false);
+    expect(text.some((entry) => entry.includes('smoke:health'))).toBe(false);
     expect(harness.logs).toContain(
       'candidate uploaded; stable-origin smoke is deferred until promotion',
     );
@@ -190,7 +190,7 @@ describe('deployment orchestration', () => {
 
     await runDeployment({ resolved: SANDBOX }, io, runner);
 
-    expect(harness.commands.some(({ args }) => args.includes('smoke:sandbox'))).toBe(true);
+    expect(harness.commands.some(({ args }) => args.includes('smoke:health'))).toBe(true);
   });
 
   it('requires explicit confirmation before the unavoidable first active deployment', async () => {
