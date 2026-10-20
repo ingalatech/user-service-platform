@@ -1,10 +1,11 @@
-// Bounded implementation recovery evidence (ticket #127).
+// Bounded local implementation recovery evidence (ticket #127).
 //
 // When an `/implement` worker times out or fails, the failed ticket branch
 // may hold unpublished authored changes. This module captures a small,
 // secret-safe, portable recovery record from the actual failed worktree state
-// so an operator can inspect and reapply eligible source changes on a fresh
-// isolated worktree without rerunning implementation blindly.
+// so an operator can inspect the local outcome record and reapply eligible
+// source changes on a fresh isolated worktree without rerunning implementation
+// blindly.
 //
 // Safety invariants (all tested):
 // - explicit path allowlist for source/docs/non-secret build config;
@@ -32,8 +33,8 @@ import { listWorkflowFiles, parseNameOnlyOutput } from './workflow-handoff.js';
 
 export const RECOVERY_VERSION = 1 as const;
 
-// Bounded snapshot limits so the record stays embeddable in the existing
-// uploaded `.agent-ticket/outcome.json` artifact without workflow-file edits.
+// Bounded snapshot limits so the record stays in the local
+// `.agent-ticket/outcome.json` outcome file without workflow-file edits.
 // `*_BYTES` bounds are enforced as UTF-8 bytes: truncation never splits a
 // character (surrogate pair or multi-byte sequence).
 export const RECOVERY_MAX_FILES = 50;
@@ -123,14 +124,14 @@ const ALLOWED_TOP_LEVEL_FILES = new Set([
   '.editorconfig',
   '.nvmrc',
   // `.npmrc` is deliberately absent: a worker-modified copy commonly carries
-  // `_authToken` lines that must never enter the uploaded outcome record.
+  // `_authToken` lines that must never enter the local outcome record.
   'README.md',
   'AGENTS.md',
   'GLOSSARY.md',
   'skills-lock.json',
   // No dotenv-shaped file is admitted, including `.env.example`: a failed
   // worker's modified copy may carry secret values, so the committed template
-  // being non-secret does not make the worktree copy safe for the uploaded
+  // being non-secret does not make the worktree copy safe for the local
   // outcome record. `isDeniedBasename` denies all `.env*` variants by path.
 ]);
 
@@ -243,7 +244,7 @@ export function isEligibleRecoveryPath(raw: unknown): boolean {
   // Deny rules apply to every segment, not just the basename: a directory
   // itself named `.env`, `.dev.vars`, `debug.log` or `key.pem` must not admit
   // its children, or `src/.env/foo.ts` would carry secret-named state into the
-  // uploaded outcome record.
+  // local outcome record.
   const segments = path.split('/');
   for (const segment of segments) {
     if (DENIED_DIR_SEGMENTS.has(segment.toLowerCase())) {
@@ -686,7 +687,7 @@ export function summarizeWorkerLifecycle(lines: readonly string[]): RecoveryDiag
 
 // Fixed safe console/status surface: presence, completeness and counts only.
 // Patch content and file contents never appear here; they stay in the
-// uploaded outcome record for operator inspection.
+// local outcome record for operator inspection.
 export function formatRecoverySummary(record: ImplementationRecoveryRecord): string {
   const present =
     record.combinedPatch !== '' || record.untrackedFiles.length > 0 ? 'present' : 'absent';

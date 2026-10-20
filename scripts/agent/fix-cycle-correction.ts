@@ -1,13 +1,13 @@
-// Deterministic initial fix-cycle correction through the evidence-capable
+// Explicit bounded local fix-cycle correction through the evidence-capable
 // worker seam (ticket #116).
 //
-// Remote `/agent-fix-cycle` runs the first address-review correction here
-// instead of a raw shell `opencode run` so the correction produces versioned
-// minimal attributable skill evidence like every other worker. Bounds,
-// live output, clean-worktree policy and the timeout sentinel contract are
+// The operator invokes this utility explicitly from an isolated local
+// worktree. It runs `opencode` instead of a raw shell command so the
+// correction produces versioned minimal attributable skill evidence like
+// every other worker. Bounds, live output and clean-worktree policy are
 // preserved: a hung correction is terminated with a distinguishable TIMEOUT
-// and leaves `.address-review-timeout` for the workflow terminal step, while
-// evidence failures never mask the correction outcome.
+// and leaves `.address-review-timeout` as an operator-visible local marker,
+// while evidence failures never mask the correction outcome.
 import * as fs from 'node:fs/promises';
 import { buildAddressReviewArgs, getCurrentHead } from '../review/runner.js';
 import {
@@ -21,6 +21,7 @@ import { isWorkerTimeout, timeoutForWorker } from '../review/worker-timeout.js';
 import { runWorkerStream } from '../review/worker-stream.js';
 
 export const FIX_CYCLE_TIMEOUT_SENTINEL = '.address-review-timeout';
+// Stable local operator artifact; no automation consumes it.
 export const FIX_CYCLE_TIMEOUT_MESSAGE = 'address-review timed out after 20m';
 
 export function parseFixCyclePr(raw: string | undefined): number {
@@ -159,8 +160,7 @@ export async function runFixCycleCorrection(
       try {
         await writeSentinel(FIX_CYCLE_TIMEOUT_SENTINEL, FIX_CYCLE_TIMEOUT_MESSAGE);
       } catch {
-        // Best-effort: the sentinel mirrors the previous shell contract but
-        // never masks the timeout itself.
+        // Best-effort local operator marker; never mask the timeout itself.
       }
       console.error(`AGENT-FIX-CYCLE-CORRECTION TIMEOUT: ${FIX_CYCLE_TIMEOUT_MESSAGE}.`);
       return {

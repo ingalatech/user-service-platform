@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import {
   parseFixCyclePr,
@@ -182,6 +183,15 @@ describe('evidence finalization preserves the worker outcome', () => {
 });
 
 describe('fix-cycle correction seam', () => {
+  it('documents an explicit local correction utility and local timeout marker', () => {
+    const source = readFileSync('scripts/agent/fix-cycle-correction.ts', 'utf8');
+
+    expect(source).toContain('Explicit bounded local fix-cycle correction');
+    expect(source).toContain('operator-visible local marker');
+    expect(source).not.toContain('Remote `/agent-fix-cycle`');
+    expect(source).not.toContain('workflow terminal step');
+  });
+
   it('validates the PR number without side effects', () => {
     expect(parseFixCyclePr('42')).toBe(42);
     expect(() => parseFixCyclePr('0')).toThrow(/PR number/);
