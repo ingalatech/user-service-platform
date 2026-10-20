@@ -7,7 +7,11 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { removeTempWranglerConfig, writeTempWranglerConfig } from './deploy/materialize.js';
 import { formatPreflightError, preflightFailed, runPreflight } from './deploy/preflight.js';
-import { runPromotion, type DeployCommandRunner } from './deploy/orchestrate.js';
+import {
+  promotionSmokeCommand,
+  runPromotion,
+  type DeployCommandRunner,
+} from './deploy/orchestrate.js';
 import { listTargetKeys, loadTargetsFile, resolveTargetDeployment } from './deploy/targets.js';
 import {
   applyAccountOverrides,
@@ -129,7 +133,8 @@ async function main(): Promise<void> {
           log: console.log,
           smoke: async () => {
             await new Promise<void>((resolve, reject) => {
-              const child = spawn('npm', ['run', 'smoke:sandbox'], {
+              const [command, commandArgs] = promotionSmokeCommand(resolved.environment);
+              const child = spawn(command, commandArgs, {
                 env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: resolved.accountId },
                 stdio: 'inherit',
               });

@@ -118,9 +118,18 @@ npm run deploy -- --target rch-rugbychampagne --env sandbox --dry-run
 ```
 
 Provisioning reports when the Worker is not deployed yet; that is expected
-for a new target and is not an error. The first normal deploy
-(`npm run deploy -- --target rch-rugbychampagne --env sandbox
---non-interactive`) creates/publishes it. When the Worker already exists,
+for a new target and is not an error. The first normal deploy must be
+interactive:
+
+```bash
+npm run deploy -- --target rch-rugbychampagne --env sandbox
+```
+
+It explains the unavoidable activation and requires the exact confirmation
+`FIRST DEPLOY rch-rugbychampagne-user-service-sandbox` before it
+creates/publishes the Worker. Do not use `--non-interactive` for the first
+deployment; it fails closed because no inactive first version is possible.
+When the Worker already exists,
 provisioning additionally reports each required secret name as
 present/missing (names/types only, never values).
 
@@ -291,7 +300,12 @@ npm run promote -- --target rch-rugbychampagne --env production \
 ```
 
 Promotion applies no migrations and does not build or upload a version. Record
-the selected immutable Version ID and source commit in the release notes.
+the selected immutable Version ID and source commit in the release notes. After
+promotion, it runs the non-mutating production smoke: `GET /v1/health` must
+return `{ "status": "ok" }`, and anonymous `GET /v1/me` must return `401`
+with `unauthenticated`. Set `SMOKE_PRODUCTION_BASE_URL` to the production
+Worker origin before promotion. This smoke performs no registration, email,
+login or other user mutation.
 
 ## 4. D1 migrations
 

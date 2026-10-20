@@ -1,4 +1,5 @@
 import type { ResolvedDeployment } from './targets.js';
+import { parseWorkerVersions } from './versions.js';
 import {
   drainSessionFailureTail,
   parseTailLines,
@@ -65,6 +66,12 @@ export interface PromotionIo extends Pick<
   readonly smoke: (resolved: ResolvedDeployment) => Promise<void>;
 }
 
+export function promotionSmokeCommand(
+  environment: ResolvedDeployment['environment'],
+): readonly [string, readonly string[]] {
+  return ['npm', ['run', environment === 'production' ? 'smoke:production' : 'smoke:sandbox']];
+}
+
 export async function runPromotion(
   request: PromotionRequest,
   io: PromotionIo,
@@ -102,17 +109,7 @@ export async function runPromotion(
     } catch {
       throw new Error('Unable to read Worker versions.');
     }
-    if (
-      !Array.isArray(versions) ||
-      !versions.some(
-        (version: unknown) =>
-          typeof version === 'object' &&
-          version !== null &&
-          'version_id' in version &&
-          typeof version.version_id === 'string' &&
-          version.version_id === versionId,
-      )
-    ) {
+    if (!parseWorkerVersions(versions).some((version) => version.id === versionId)) {
       throw new Error('The selected immutable Worker Version ID is not available for this Worker.');
     }
     const promoted = await runner('npx', [
@@ -126,9 +123,7 @@ export async function runPromotion(
     if (promoted.exitCode !== 0) {
       throw new Error('promote-worker-version failed.');
     }
-    if (request.resolved.environment === 'sandbox') {
-      await io.smoke(request.resolved);
-    }
+    await io.smoke(request.resolved);
     io.log(`promoted worker=${request.resolved.workerName} version=${versionId}`);
   } finally {
     io.cleanup(configPath);

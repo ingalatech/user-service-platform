@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   planDeploymentSteps,
+  promotionSmokeCommand,
   productionConfirmFor,
   runPromotion,
   runDeployment,
@@ -75,7 +76,9 @@ function createHarness(failOn?: RegExp, failPreflight = false): Harness {
       }
       return Promise.resolve({
         exitCode: 0,
-        stdout: text.includes('wrangler versions list') ? '[{"version_id":"v1"}]' : '',
+        stdout: text.includes('wrangler versions list')
+          ? '[{"id":"v1","metadata":{"created_on":"2026-10-20T12:00:00Z"},"annotations":{"workers/message":"test"}}]'
+          : '',
       });
     },
     commands,
@@ -91,6 +94,10 @@ function createHarness(failOn?: RegExp, failPreflight = false): Harness {
 // confirmation and is never an automatic side effect. Temporary configs are
 // always removed, even on failure.
 describe('deployment orchestration', () => {
+  it('selects the non-mutating smoke command per promotion environment', () => {
+    expect(promotionSmokeCommand('sandbox')).toEqual(['npm', ['run', 'smoke:sandbox']]);
+    expect(promotionSmokeCommand('production')).toEqual(['npm', ['run', 'smoke:production']]);
+  });
   it('plans the sandbox release in migration-first order with smoke last', () => {
     expect(planDeploymentSteps({ resolved: SANDBOX })).toEqual([
       'preflight',
@@ -226,7 +233,11 @@ describe('deployment orchestration', () => {
         commands.push(args.join(' '));
         return Promise.resolve(
           args.includes('list')
-            ? { exitCode: 0, stdout: '[{"version_id":"immutable-v1"}]' }
+            ? {
+                exitCode: 0,
+                stdout:
+                  '[{"id":"immutable-v1","metadata":{"created_on":"2026-10-20T12:00:00Z"},"annotations":{"workers/tag":"candidate"}}]',
+              }
             : { exitCode: 0 },
         );
       },
@@ -237,6 +248,41 @@ describe('deployment orchestration', () => {
       'smoke',
     ]);
     expect(harness.removed).toContain('/tmp/promotion.json');
+  });
+
+  it('promotes production and runs the non-mutating production smoke after routing', async () => {
+    const harness = createHarness();
+    const commands: string[] = [];
+    await runPromotion(
+      { resolved: PRODUCTION, versionId: 'immutable-v1', confirm: PRODUCTION.workerName },
+      {
+        materialize: () => '/tmp/production-promotion.json',
+        cleanup: (path) => harness.removed.push(path),
+        preflight: () => Promise.resolve(),
+        log: (message) => harness.logs.push(message),
+        smoke: () => {
+          commands.push('smoke:production');
+          return Promise.resolve();
+        },
+      },
+      (_command, args) => {
+        commands.push(args.join(' '));
+        return Promise.resolve(
+          args.includes('list')
+            ? {
+                exitCode: 0,
+                stdout:
+                  '[{"id":"immutable-v1","metadata":{"created_on":"2026-10-20T12:00:00Z"},"annotations":{}}]',
+              }
+            : { exitCode: 0 },
+        );
+      },
+    );
+    expect(commands).toEqual([
+      'wrangler versions list --json --config /tmp/production-promotion.json',
+      'wrangler versions deploy immutable-v1@100% --config /tmp/production-promotion.json',
+      'smoke:production',
+    ]);
   });
 
   it('builds the administration assets before any remote mutation (ticket #124)', async () => {
