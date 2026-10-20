@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   planDeploymentSteps,
   productionConfirmFor,
+  runPromotion,
   runDeployment,
   type DeployCommandRunner,
   type DeployIo,
@@ -72,7 +73,10 @@ function createHarness(failOn?: RegExp, failPreflight = false): Harness {
       if (failOn?.test(text) === true) {
         return Promise.resolve({ exitCode: 1 });
       }
-      return Promise.resolve({ exitCode: 0 });
+      return Promise.resolve({
+        exitCode: 0,
+        stdout: text.includes('wrangler versions list') ? '[{"version_id":"v1"}]' : '',
+      });
     },
     commands,
     removed,
@@ -151,13 +155,74 @@ describe('deployment orchestration', () => {
     expect(harness.removed).toEqual(['/tmp/wrangler.deploy-test.json']);
   });
 
+  it('uploads a candidate for an existing Worker without changing traffic', async () => {
+    const harness = createHarness();
+    await runDeployment({ resolved: SANDBOX }, harness.io, harness.runner);
+    const text = harness.commands.map(({ command, args }) => `${command} ${args.join(' ')}`);
+    expect(text.some((entry) => entry.includes('wrangler versions upload'))).toBe(true);
+    expect(text.some((entry) => entry.includes('wrangler deploy --config'))).toBe(false);
+  });
+
+  it('requires explicit confirmation before the unavoidable first active deployment', async () => {
+    const harness = createHarness();
+    const commands: string[] = [];
+    const io: DeployIo = {
+      ...harness.io,
+      confirmFirstDeployment: () => Promise.resolve(false),
+    };
+    const runner: DeployCommandRunner = (command, args) => {
+      commands.push(`${command} ${args.join(' ')}`);
+      return Promise.resolve({
+        exitCode: 0,
+        stdout: args.includes('list') ? '[]' : '',
+      });
+    };
+    await expect(runDeployment({ resolved: SANDBOX }, io, runner)).rejects.toThrow(
+      /first deployment cancelled/i,
+    );
+    expect(commands.some((entry) => entry.includes('wrangler deploy --config'))).toBe(false);
+    expect(harness.removed).toEqual(['/tmp/wrangler.deploy-test.json']);
+  });
+
+  it('promotes only the selected existing version to 100% and does not build or migrate', async () => {
+    const harness = createHarness();
+    const commands: string[] = [];
+    await runPromotion(
+      { resolved: SANDBOX, versionId: 'immutable-v1' },
+      {
+        materialize: () => '/tmp/promotion.json',
+        cleanup: (path) => harness.removed.push(path),
+        preflight: () => Promise.resolve(),
+        log: (message) => harness.logs.push(message),
+        smoke: () => {
+          commands.push('smoke');
+          return Promise.resolve();
+        },
+      },
+      (_command, args) => {
+        commands.push(args.join(' '));
+        return Promise.resolve(
+          args.includes('list')
+            ? { exitCode: 0, stdout: '[{"version_id":"immutable-v1"}]' }
+            : { exitCode: 0 },
+        );
+      },
+    );
+    expect(commands).toEqual([
+      'wrangler versions list --json --config /tmp/promotion.json',
+      'wrangler versions deploy immutable-v1@100% --config /tmp/promotion.json',
+      'smoke',
+    ]);
+    expect(harness.removed).toContain('/tmp/promotion.json');
+  });
+
   it('builds the administration assets before any remote mutation (ticket #124)', async () => {
     const harness = createHarness();
     await runDeployment({ resolved: SANDBOX }, harness.io, harness.runner);
     const text = harness.commands.map(({ command, args }) => `${command} ${args.join(' ')}`);
     const buildIndex = text.findIndex((entry) => entry === 'npm run build:admin');
     const remoteIndex = text.findIndex((entry) => entry.includes('migrations apply DB --remote'));
-    expect(buildIndex).toBe(0);
+    expect(buildIndex).toBeGreaterThanOrEqual(0);
     expect(remoteIndex).toBeGreaterThan(buildIndex);
   });
 
@@ -166,7 +231,20 @@ describe('deployment orchestration', () => {
     await expect(runDeployment({ resolved: SANDBOX }, harness.io, harness.runner)).rejects.toThrow(
       /build-admin-assets/,
     );
-    expect(harness.commands).toEqual([{ command: 'npm', args: ['run', 'build:admin'] }]);
+    expect(harness.commands).toEqual([
+      {
+        command: 'npx',
+        args: [
+          'wrangler',
+          'versions',
+          'list',
+          '--json',
+          '--config',
+          '/tmp/wrangler.deploy-test.json',
+        ],
+      },
+      { command: 'npm', args: ['run', 'build:admin'] },
+    ]);
     expect(harness.removed).toEqual(['/tmp/wrangler.deploy-test.json']);
   });
 
@@ -181,7 +259,7 @@ describe('deployment orchestration', () => {
   });
 
   it('removes the temporary config even when deployment fails', async () => {
-    const harness = createHarness(/wrangler deploy/);
+    const harness = createHarness(/wrangler versions upload/);
     await expect(runDeployment({ resolved: SANDBOX }, harness.io, harness.runner)).rejects.toThrow(
       /deploy-worker/,
     );

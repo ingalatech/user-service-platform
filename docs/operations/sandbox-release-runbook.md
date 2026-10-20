@@ -200,36 +200,39 @@ npx wrangler d1 delete user-service-sandbox
 #    references its workers.dev origin.
 ```
 
-## 3. Release procedure
+## 3. Local candidate release procedure
 
 ### 3.1 Sandbox release (local operator action)
 
-GitHub Actions does not deploy sandbox. From the isolated release worktree,
-the operator explicitly invokes the repository deploy boundary:
+GitHub Actions does not deploy sandbox. Releases are operator initiated from a
+developer workstation in the isolated release worktree. Use the local
+Wrangler OAuth login by default; `CLOUDFLARE_API_TOKEN` is optional and must
+remain in the local process environment, never in repository configuration.
+`npm run deploy` validates and applies compatible D1 migrations, then uploads
+an immutable Worker Version for an existing Worker without changing traffic.
+The upload message carries the source commit, branch and UTC upload time. Use
+the version preview URL shown by Wrangler to inspect service behavior before
+promotion.
 
 ```bash
-npm run deploy -- --target rch-rugbychampagne --env sandbox --non-interactive
+npm run deploy -- --target rch-rugbychampagne --env sandbox
+npx wrangler versions list --name rch-rugbychampagne-user-service-sandbox
+npm run promote -- --target rch-rugbychampagne --env sandbox
 ```
 
-The deployer, in order:
+The first Worker Version is the unavoidable exception: Cloudflare activates it
+immediately. The deploy command explains this and requires the exact text
+`FIRST DEPLOY <worker-name>` before making that initial mutation. Promotion
+selects an existing immutable Version ID and routes 100% of traffic to it; it
+does not build assets, apply D1 migrations, or create a Worker Version. Sandbox
+promotion runs `npm run smoke:sandbox` against the stable origin. For
+production, enter the exact production Worker name when prompted. Worker
+rollback does not roll back D1; use the data recovery procedure in section 5
+only when a separate, explicitly confirmed database recovery is needed.
 
-1. runs preflight (Node/Wrangler/auth/account access, clean worktree, target
-   config, Worker-name and D1 checks) before any remote mutation;
-2. validates D1 migrations against a disposable local D1
-   (`wrangler d1 migrations apply DB --local`);
-3. applies versioned migrations to the target database
-   (`wrangler d1 migrations apply DB --remote --config <generated>`);
-4. deploys the Worker (`wrangler deploy --config <generated>`);
-5. records the deployment (`wrangler deployments list --config <generated>`);
-6. runs the sandbox smoke test (`npm run smoke:sandbox`).
-
-Identify the serving version at any time with:
-
-```bash
-npm run deploy -- --target rch-rugbychampagne --env sandbox \
-  --write-config /tmp/rch-sandbox.json
-npx wrangler deployments list --config /tmp/rch-sandbox.json
-```
+Keep account identifiers in non-secret target configuration where available;
+Cloudflare credentials remain in Wrangler OAuth or the local
+`CLOUDFLARE_API_TOKEN` process environment and never enter version control.
 
 ### 3.2 Worker code rollback (code only, never data)
 
@@ -253,20 +256,19 @@ newer data shape can produce errors instead of silently succeeding.
 
 ### 3.3 Production promotion (explicit, human-controlled)
 
-Production is never deployed by merging or by a GitHub Actions trigger.
-Promotion is an explicit local operator action. Select the target and provide
-the exact production Worker name (for example
-`rch-rugbychampagne-user-service-production`) as confirmation. The deployer
+Production is never deployed by merging, by a GitHub Actions trigger, or by
+the sandbox workflow. Promotion is an explicit local operator action. Select
+the target and provide the exact production Worker name (for example
+`rch-rugbychampagne-user-service-production`) as confirmation. The promoter
 enforces that confirmation before any remote mutation:
 
 ```bash
-npm run deploy:production -- --target rch-rugbychampagne \
+npm run promote -- --target rch-rugbychampagne --env production \
   --confirm rch-rugbychampagne-user-service-production
 ```
 
-The promotion applies production D1 migrations, deploys the production
-Worker, and prints the source commit plus the resulting deployment list as
-the release record. Record both identifiers in the release notes.
+Promotion applies no migrations and does not build or upload a version. Record
+the selected immutable Version ID and source commit in the release notes.
 
 ## 4. D1 migrations
 

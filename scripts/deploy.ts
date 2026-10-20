@@ -199,6 +199,30 @@ async function main(): Promise<void> {
     log: (message: string) => {
       console.log(message);
     },
+    sourceMetadata: async () => {
+      const [commit, branch] = await Promise.all([
+        execFileAsync('git', ['rev-parse', '--short', 'HEAD'], { cwd: deployRepoRoot }),
+        execFileAsync('git', ['branch', '--show-current'], { cwd: deployRepoRoot }),
+      ]);
+      return { commit: commit.stdout.trim(), branch: branch.stdout.trim() || 'detached' };
+    },
+    confirmFirstDeployment: async (workerName) => {
+      if (!isInteractive()) {
+        return false;
+      }
+      const readline = createInterface({ input: process.stdin, output: process.stdout });
+      try {
+        const expected = `FIRST DEPLOY ${workerName}`;
+        console.log(
+          'Cloudflare activates a Worker’s first version immediately; no inactive candidate is possible.',
+        );
+        return (
+          (await readline.question(`Type exactly "${expected}" to continue: `)).trim() === expected
+        );
+      } finally {
+        readline.close();
+      }
+    },
     // Sandbox-only diagnostics (ticket #96): the deploy boundary starts this
     // tail immediately before `smoke-sandbox` and always stops it afterward.
     // Production `runDeployment` paths never consult this hook, so production
@@ -213,7 +237,17 @@ async function main(): Promise<void> {
   const outcome = await runDeployment(
     { resolved, confirm: args.confirm, dryRun: args.dryRun },
     io,
-    (command, commandArgs) => runInherited(command, commandArgs),
+    async (command, commandArgs) => {
+      if (commandArgs.includes('list') && commandArgs.includes('--json')) {
+        try {
+          const { stdout } = await execFileAsync(command, commandArgs, { env: process.env });
+          return { exitCode: 0, stdout };
+        } catch {
+          return { exitCode: 1, stdout: '' };
+        }
+      }
+      return runInherited(command, commandArgs);
+    },
   );
   console.log(`deployment complete worker=${outcome.workerName}`);
 }
