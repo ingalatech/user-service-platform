@@ -89,4 +89,127 @@ describe('sandbox D1 provisioning', () => {
     ).rejects.toThrow(/duplicate/);
     expect(commands.calls).toHaveLength(1);
   });
+
+  it('is idempotent for an existing exact-name D1 and reports Worker/secret metadata', async () => {
+    const file = environment({ D1_ID });
+    const logs: string[] = [];
+    const commands = runner([
+      JSON.stringify([{ name: file.D1_NAME, uuid: D1_ID }]),
+      JSON.stringify([{ id: 'deployment-1' }]),
+      JSON.stringify([
+        { name: 'BETTER_AUTH_SECRET', type: 'secret_text' },
+        { name: 'SMTP_USER', type: 'secret_text' },
+        { name: 'SMTP_PASSWORD', type: 'secret_text' },
+      ]),
+    ]);
+    const outcome = await runProvision(
+      { environment: 'sandbox', mode: 'apply' },
+      {
+        loadEnvironment: () => file,
+        writeEnvironment: () => {
+          throw new Error('must not write');
+        },
+        log: (message) => logs.push(message),
+      },
+      commands.run,
+    );
+    expect(outcome).toMatchObject({
+      d1Action: 'ok',
+      workerState: 'found',
+      secretStatus: 'ok',
+      configUpdated: false,
+    });
+    expect(commands.calls.some((args) => args.includes('create'))).toBe(false);
+    expect(commands.calls.some((args) => args.includes('secret') && args.includes('list'))).toBe(
+      true,
+    );
+    expect(logs.join('\n')).toContain('worker found');
+    expect(logs.join('\n')).not.toContain('secret_text');
+  });
+
+  it('reports required secret names when the Worker is absent without listing secrets', async () => {
+    const file = environment();
+    const logs: string[] = [];
+    const commands = runner(['[]', '[]']);
+    const outcome = await runProvision(
+      { environment: 'sandbox', mode: 'plan' },
+      {
+        loadEnvironment: () => file,
+        writeEnvironment: () => undefined,
+        log: (message) => logs.push(message),
+      },
+      commands.run,
+    );
+    expect(outcome).toMatchObject({ workerState: 'absent', secretStatus: 'worker-not-deployed' });
+    expect(commands.calls.some((args) => args.includes('secret'))).toBe(false);
+    expect(logs.join('\n')).toContain('SMTP_USER');
+    expect(logs.join('\n')).toContain('SMTP_PASSWORD');
+    expect(logs.join('\n')).not.toContain('secret_text');
+  });
+
+  it('fails closed on post-create rediscovery failure without staging config', async () => {
+    const file = environment();
+    let writes = 0;
+    const commands = runner(['[]', '{}', 'not json']);
+    await expect(
+      runProvision(
+        { environment: 'sandbox', mode: 'apply' },
+        {
+          loadEnvironment: () => file,
+          writeEnvironment: () => {
+            writes += 1;
+          },
+          log: () => undefined,
+        },
+        commands.run,
+      ),
+    ).rejects.toThrow(/rediscovery/i);
+    expect(writes).toBe(0);
+    expect(
+      commands.calls.filter((args) => args.includes('d1') && args.includes('list')),
+    ).toHaveLength(2);
+  });
+
+  it('does not expose provider output when discovery or secret reporting fails', async () => {
+    const file = environment({ D1_ID });
+    const canary = 'provider-secret-canary';
+    const logs: string[] = [];
+    const commands = runner([JSON.stringify([{ name: file.D1_NAME, uuid: D1_ID }]), canary]);
+    const outcome = await runProvision(
+      { environment: 'sandbox', mode: 'plan' },
+      {
+        loadEnvironment: () => file,
+        writeEnvironment: () => undefined,
+        log: (message) => logs.push(message),
+      },
+      commands.run,
+    );
+    expect(outcome.secretStatus).toBe('unverified');
+    expect(logs.join('\n')).not.toContain(canary);
+  });
+});
+
+describe('provisioning boundaries', () => {
+  it('rejects production before invoking the provider or changing the environment file', async () => {
+    let writes = 0;
+    let calls = 0;
+    await expect(
+      runProvision(
+        { environment: 'production', mode: 'apply' },
+        {
+          loadEnvironment: () => environment(),
+          writeEnvironment: () => {
+            writes += 1;
+          },
+          log: () => undefined,
+        },
+        () => {
+          calls += 1;
+          return Promise.resolve({ exitCode: 0, stdout: '[]' });
+        },
+      ),
+    ).rejects.toThrow(/production provisioning is not supported/i);
+    expect(calls).toBe(0);
+    expect(writes).toBe(0);
+  });
 });

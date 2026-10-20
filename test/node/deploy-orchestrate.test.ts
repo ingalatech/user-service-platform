@@ -285,6 +285,88 @@ describe('deployment orchestration', () => {
     ]);
   });
 
+  it('refuses production promotion before listing or mutating and still cleans up', async () => {
+    const commands: string[] = [];
+    const cleaned: string[] = [];
+    await expect(
+      runPromotion(
+        { resolved: PRODUCTION, versionId: 'immutable-v1' },
+        {
+          materialize: () => '/tmp/production-promotion-boundary.json',
+          cleanup: (path) => cleaned.push(path),
+          preflight: () => Promise.resolve(),
+          log: () => undefined,
+          smoke: () => Promise.resolve(),
+        },
+        (_command, args) => {
+          commands.push(args.join(' '));
+          return Promise.resolve({ exitCode: 0, stdout: '[]' });
+        },
+      ),
+    ).rejects.toThrow(/exact Worker name/);
+    expect(commands).toEqual([]);
+    expect(cleaned).toEqual(['/tmp/production-promotion-boundary.json']);
+  });
+
+  it('cleans up and does not promote or smoke when version discovery fails', async () => {
+    const commands: string[] = [];
+    const logs: string[] = [];
+    const cleaned: string[] = [];
+    await expect(
+      runPromotion(
+        { resolved: SANDBOX, versionId: 'immutable-v1' },
+        {
+          materialize: () => '/tmp/promotion-discovery-failure.json',
+          cleanup: (path) => cleaned.push(path),
+          preflight: () => Promise.resolve(),
+          log: (message) => logs.push(message),
+          smoke: () => {
+            throw new Error('smoke must not run');
+          },
+        },
+        (_command, args) => {
+          commands.push(args.join(' '));
+          return Promise.resolve({ exitCode: 1, stdout: 'provider-canary' });
+        },
+      ),
+    ).rejects.toThrow(/list-worker-versions/);
+    expect(commands).toHaveLength(1);
+    expect(cleaned).toEqual(['/tmp/promotion-discovery-failure.json']);
+    expect(logs.join('\n')).not.toContain('provider-canary');
+  });
+
+  it('cleans up and does not smoke when immutable promotion fails', async () => {
+    const commands: string[] = [];
+    const cleaned: string[] = [];
+    let smokeCalls = 0;
+    await expect(
+      runPromotion(
+        { resolved: SANDBOX, versionId: 'immutable-v1' },
+        {
+          materialize: () => '/tmp/promotion-failure.json',
+          cleanup: (path) => cleaned.push(path),
+          preflight: () => Promise.resolve(),
+          log: () => undefined,
+          smoke: () => {
+            smokeCalls += 1;
+            return Promise.resolve();
+          },
+        },
+        (_command, args) => {
+          commands.push(args.join(' '));
+          return Promise.resolve(
+            args.includes('list')
+              ? { exitCode: 0, stdout: JSON.stringify([{ id: 'immutable-v1' }]) }
+              : { exitCode: 1, stdout: 'provider-canary' },
+          );
+        },
+      ),
+    ).rejects.toThrow(/promote-worker-version/);
+    expect(commands).toHaveLength(2);
+    expect(smokeCalls).toBe(0);
+    expect(cleaned).toEqual(['/tmp/promotion-failure.json']);
+  });
+
   it('builds the administration assets before any remote mutation (ticket #124)', async () => {
     const harness = createHarness();
     await runDeployment({ resolved: SANDBOX }, harness.io, harness.runner);

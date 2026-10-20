@@ -8,12 +8,14 @@
 // npm run provision -- --env sandbox --apply
 // ```
 //
-// Plan is the default no-mutation mode. Apply discovers the exact canonical
-// D1 database (creating it when absent), reports read-only Worker/deployment
-// state, reports required secrets by names/types only, and stages the
-// non-secret database id in `config/environments/.env.sandbox` as a reviewable worktree
-// diff. Production apply requires `--confirm` equal to the target Worker
-// name; production planning stays read-only.
+// Plan is the default no-mutation mode. The selected environment file is the
+// authority for names, account scope and non-secret values. Sandbox apply
+// discovers the exact canonical D1 database (creating it when absent), reports
+// read-only Worker/deployment state, reports required secret names/types only,
+// and stages the non-secret database id in
+// `config/environments/.env.sandbox` as a reviewable worktree diff.
+// Production provisioning is rejected; production uses the deploy/promotion
+// flow after its environment file is complete.
 //
 // Provisioning never deploys application code, never creates a placeholder
 // Worker, never reads/writes/copies/prints secret values, never commits or

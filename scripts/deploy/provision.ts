@@ -107,10 +107,15 @@ export async function runProvision(
       if (created.exitCode !== 0) throw new Error('D1 creation failed.');
       const rediscovered = await scopedRunner('npx', [...d1ListArgs()]);
       if (rediscovered.exitCode !== 0) throw new Error('D1 rediscovery failed after creation.');
-      const postMatches = matchExactDatabase(
-        parseD1ListOutput(rediscovered.stdout),
-        resolved.databaseName,
-      );
+      let postMatches: ReturnType<typeof matchExactDatabase>;
+      try {
+        postMatches = matchExactDatabase(
+          parseD1ListOutput(rediscovered.stdout),
+          resolved.databaseName,
+        );
+      } catch {
+        throw new Error('D1 rediscovery failed after creation.');
+      }
       const postMatch = postMatches[0];
       if (postMatch === undefined || !isAcceptedRemoteDatabaseId(postMatch.uuid)) {
         throw new Error('D1 rediscovery did not return one valid exact-name resource.');
@@ -195,7 +200,12 @@ async function discoverWorker(
 ): Promise<ProvisionWorkerState> {
   const result = await runner('npx', [...workerDeploymentsListArgs(resolved.workerName)]);
   if (result.exitCode !== 0) return 'unknown';
-  const discovery = parseWorkerDeploymentsOutput(result.stdout);
+  let discovery: ReturnType<typeof parseWorkerDeploymentsOutput>;
+  try {
+    discovery = parseWorkerDeploymentsOutput(result.stdout);
+  } catch {
+    return 'unknown';
+  }
   const state = discovery.found ? 'found' : 'absent';
   io.log(`worker ${state} worker=${resolved.workerName}`);
   return state;
