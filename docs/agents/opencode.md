@@ -132,4 +132,4 @@ Repository-owned remote workflows may perform narrowly validated branch publicat
 
 Do not hardcode a product frontier in this process document. Read `docs/agents/project-state.md` for the last verified checkpoint, then confirm it against live GitHub issue/PR state before launching work.
 
-After issue #31 is accepted, GitHub-triggered `/agent-ticket` and `/agent-fix-cycle` are the default execution path. Local OpenCode remains the fallback/debug path.
+Implementation and review agents run locally through OpenCode/Herdr in isolated ticket worktrees. Follow the existing ticket, TDD, and independent Standards/Spec review requirements above; do not execute agent workflows from GitHub Actions.

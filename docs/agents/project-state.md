@@ -26,8 +26,8 @@ wayfinder -> to-spec -> to-tickets -> implement
 ## Operating agreement
 
 - **ChatGPT** owns design discussion, Wayfinder/spec/ticket planning, orchestration decisions, inspection of durable GitHub evidence, trusted publication where required, final acceptance/verification, and may perform the final PR merge through a separately authorized GitHub operation once the agreed gates are satisfied and no human decision remains pending.
-- **OpenCode agents** are the primary implementation/correction and adversarial-review workers.
-- GitHub-triggered `/agent-ticket` and `/agent-fix-cycle` are the default remote execution paths; local OpenCode is fallback/debug.
+- **OpenCode agents** are the primary implementation/correction and adversarial-review workers, run locally through Herdr in isolated ticket worktrees.
+- GitHub Actions is a deterministic CI boundary only; implementation, correction, and review agents do not run on GitHub-hosted runners.
 - OpenCode/model-run agents and repository automation do **not** merge, deploy, publish production infrastructure, mutate secrets, or receive unrestricted push/workflow-write credentials. They stop at `READY FOR FINAL ACCEPTANCE`.
 - “No automated merge” means the agent/workflow cannot self-merge. It does not prohibit ChatGPT, acting as the separately authorized final operator, from merging an accepted PR with an exact expected HEAD.
 - Deployment, production-infrastructure mutation, and secret mutation remain separately controlled even after final acceptance; merge authority does not imply deployment authority.
@@ -53,12 +53,11 @@ commercial lifecycle details are tracked by decision #147. Consumer transport
 and reusable-token behavior are settled by decision #149 and spec #150. No consumer
 repository or service-copy repository is required for this backend increment.
 
-Product work takes priority over further tooling. The operator authorizes
-local development with their help as proxy when hosted bots, errors or Actions
-delay delivery. Preserve isolated work, meaningful checks and review evidence;
-production promotion and real charges remain separately controlled. The
-previous default hosted execution path remains available rather than being a
-prerequisite for progress.
+Product work takes priority over further tooling. Implementation/review work
+runs locally in isolated Herdr worktrees. Preserve meaningful checks and
+independent review evidence; sandbox and production release commands are
+explicit local operator actions. GitHub Actions remains limited to deterministic
+repository CI.
 
 Maintenance #143/#144 is implemented by PR #145 (remove wall-clock CI
 polling waits from the real review-cycle regression tests), pending final
@@ -239,29 +238,25 @@ READY recovery reapplication through run 38255595340, are historical and
 superseded by the accepted PR #131 merge above; they must not be treated as
 current blockers.
 
-## Remote execution/review gate
+## Local execution and deterministic CI
 
-Durable accepted tooling:
+GitHub Actions contains only `.github/workflows/ci.yml`, triggered by pushes
+to `main` and pull requests. It runs pinned dependency installation, lint,
+format, typecheck, OpenAPI drift, Worker tests, and harness tests with
+read-only repository permissions and no Cloudflare credentials. There are no
+agent, approval, deployment, or promotion workflows.
 
-- #31 event-driven status/watchdogs: closed.
-- #36 least-privilege trusted workflow-file publication: closed.
-- #40 complete notification-first run status: closed.
-- #44 narrow trusted exact-HEAD CI approval for eligible agent-created PRs: closed.
-- #47 action-required CI recovery: closed; PR #46 subsequently reached READY through run `34722805060` on its preserved exact HEAD.
-- #37 Node-24-native GitHub Actions upgrade: closed/completed. The #36 trusted-publication artifact was published byte-for-byte, PR #50 passed correction/gates/Standards/Spec/exact-HEAD CI on `f2d6533e03e1d16310e7a92e7ac0dbc11b76a46d`, and ChatGPT performed the final squash merge with expected-head protection. Main commit: `5e71c8b9f36a8a140916a9ec5f90719253b71204`.
-- #51 deterministic remote agent Git identity: closed/completed. `npm run agent:ticket` now relies on the npm `preagent:ticket` lifecycle hook to configure `github-actions[bot]` through repository-local `git config --local` only when `GITHUB_ACTIONS=true`; local developer identity is untouched and no extra GitHub permission or credential is introduced. PR #52 was merged before the successful #13 rerun; main commit: `7a5ae51cc0d4607eca62f43f7848bd5c766731ab`.
+Implementation and review agents run locally through OpenCode/Herdr in
+isolated ticket worktrees. Preserve approved-ticket scope, TDD where possible,
+repository gates, and independent exact-HEAD Standards and Spec reviews.
+Sandbox and production release commands are local, explicit operator actions;
+production retains its explicit confirmation boundary. See
+`docs/agents/opencode.md` and `docs/operations/sandbox-release-runbook.md`.
 
-Review/execution invariants:
-
-- Standards and Spec are independent axes.
-- review markers are exact-HEAD; stale markers never satisfy a new HEAD.
-- corrections rerun both axes.
-- repository gates plus exact-HEAD CI are required before READY.
-- `agent:ticket` remote commits depend on the repository-owned `preagent:ticket` Git-identity preflight documented in `docs/agents/opencode.md`; it must remain GitHub-Actions-only and `git config --local`.
-- safe-push is deterministic repo code; model-run agents do not get generic push.
-- `.github/workflows/**` corrections stop at the #36 trusted-publication handoff unless a separately authorized trusted operator publishes the verified artifact.
-- agent/workflow execution never self-merges, deploys, or mutates secrets.
-- final merge by ChatGPT is allowed only after final acceptance, with the expected HEAD supplied to the GitHub merge operation so a moved PR fails closed.
+The former hosted agent/deployment workflows and their approval automation
+were retired by implementation ticket #171. Their historical run evidence
+does not describe the current execution path. Local agent, review, deploy, and
+provision scripts remain available where used by local operations.
 
 ### Current orchestration state
 

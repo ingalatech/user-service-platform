@@ -202,10 +202,10 @@ npx wrangler d1 delete user-service-sandbox
 
 ## 3. Release procedure
 
-### 3.1 Sandbox release (automatic)
+### 3.1 Sandbox release (local operator action)
 
-Merging to `main` triggers `.github/workflows/deploy-sandbox.yml`, which
-invokes the same deploy boundary a local operator uses:
+GitHub Actions does not deploy sandbox. From the isolated release worktree,
+the operator explicitly invokes the repository deploy boundary:
 
 ```bash
 npm run deploy -- --target rch-rugbychampagne --env sandbox --non-interactive
@@ -253,14 +253,11 @@ newer data shape can produce errors instead of silently succeeding.
 
 ### 3.3 Production promotion (explicit, human-controlled)
 
-Production is never deployed by merging, by the sandbox workflow, or by any
-push trigger. Promotion runs only via `.github/workflows/promote-production.yml`
-(`workflow_dispatch`) with three inputs: the `source_commit` SHA (must be an
-ancestor of `main`, verified in-workflow), the `target` key (default
-`rch-rugbychampagne`), and `confirm_production` set to the exact target
-production Worker name (e.g.
-`rch-rugbychampagne-user-service-production`). The deployer enforces that
-confirmation before any remote mutation. The equivalent local command is:
+Production is never deployed by merging or by a GitHub Actions trigger.
+Promotion is an explicit local operator action. Select the target and provide
+the exact production Worker name (for example
+`rch-rugbychampagne-user-service-production`) as confirmation. The deployer
+enforces that confirmation before any remote mutation:
 
 ```bash
 npm run deploy:production -- --target rch-rugbychampagne \
