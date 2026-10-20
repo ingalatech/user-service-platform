@@ -4,8 +4,8 @@
 // companies and sites:
 //
 // ```bash
-// npm run deploy -- --target rch-rugbychampagne --env sandbox
-// npm run deploy:production -- --target rch-rugbychampagne --confirm rch-rugbychampagne-user-service-production
+// npm run deploy -- --env sandbox
+// npm run deploy:production -- --confirm rch-rugbychampagne-user-service-production
 // ```
 //
 // The deployer selects a deployment target and canonical environment
@@ -22,38 +22,28 @@
 // or uploads secret values; Cloudflare credentials pass to Wrangler through
 // process inheritance only.
 import { execFile, spawn } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import {
-  DEPLOY_HELP,
-  parseDeployArgs,
-  resolveDeploySelection,
-  type DeployArgs,
-} from './deploy/cli.js';
+import { DEPLOY_HELP, parseDeployArgs, type DeployArgs } from './deploy/cli.js';
+import type { DeployableEnvironment } from './deploy/naming.js';
 import {
   buildTargetWranglerConfig,
   removeTempWranglerConfig,
   writeTempWranglerConfig,
 } from './deploy/materialize.js';
+import {
+  environmentFilePath,
+  loadEnvironmentFile,
+  resolveEnvironmentDeployment,
+} from './deploy/environment-config.js';
 import { formatPreflightError, preflightFailed, runPreflight } from './deploy/preflight.js';
 import { runDeployment, type DeployIo } from './deploy/orchestrate.js';
 import { startSessionFailureTail } from './deploy/diagnostic-tail.js';
-import {
-  listTargetKeys,
-  loadTargetsFile,
-  resolveTargetDeployment,
-  type ResolvedDeployment,
-  type TargetsFile,
-} from './deploy/targets.js';
-import {
-  applyAccountOverrides,
-  loadAccountOverrides,
-  resolveCloudflareAccountId,
-} from './deploy/account-config.js';
+import type { ResolvedDeployment } from './deploy/targets.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -61,70 +51,34 @@ function repoRoot(): string {
   return dirname(dirname(fileURLToPath(import.meta.url)));
 }
 
-function loadTargets(): TargetsFile {
-  const root = repoRoot();
-  const raw = readFileSync(join(root, 'deploy', 'targets.json'), 'utf8');
-  const overridePath = join(root, 'deploy', 'targets.local.json');
-  const overrides = loadAccountOverrides(
-    existsSync(overridePath)
-      ? (JSON.parse(readFileSync(overridePath, 'utf8')) as unknown)
-      : { version: 1, targets: {} },
-  );
-  return applyAccountOverrides(
-    loadTargetsFile(JSON.parse(raw) as unknown),
-    overrides,
-    process.env.CLOUDFLARE_ACCOUNT_ID,
-  );
-}
-
 function isInteractive(): boolean {
   return process.stdin.isTTY && process.stdout.isTTY;
 }
 
-async function promptSelection(
-  args: DeployArgs,
-  targets: TargetsFile,
-  interactive: boolean,
-): Promise<DeployArgs> {
-  if (args.target !== undefined && args.environment !== undefined) {
+async function promptSelection(args: DeployArgs, interactive: boolean): Promise<DeployArgs> {
+  if (args.environment !== undefined) {
     return args;
   }
   if (!interactive) {
     throw new Error(
-      'Missing deployment selection: pass --target <company>-<site> and --env <sandbox|production>, or set DEPLOY_TARGET/DEPLOY_ENV.',
+      'Missing deployment environment: pass --env <sandbox|production> or set DEPLOY_ENV.',
     );
   }
   const readline = createInterface({ input: process.stdin, output: process.stdout });
   try {
-    let target = args.target;
-    if (target === undefined) {
-      const keys = listTargetKeys(targets);
-      console.log('Deployment targets:');
-      keys.forEach((key, index) => {
-        console.log(`  ${String(index + 1)}) ${key}`);
-      });
-      const answer = (await readline.question('Select a target (number): ')).trim();
-      const selected = keys[Number.parseInt(answer, 10) - 1];
-      if (selected === undefined) {
-        throw new Error('No deployment target selected.');
-      }
-      target = selected;
+    let environment: DeployableEnvironment;
+    console.log('Environments:');
+    console.log('  1) sandbox');
+    console.log('  2) production');
+    const answer = (await readline.question('Select an environment (number): ')).trim();
+    if (answer === '1') {
+      environment = 'sandbox';
+    } else if (answer === '2') {
+      environment = 'production';
+    } else {
+      throw new Error('No deployment environment selected.');
     }
-    let environment = args.environment;
-    if (environment === undefined) {
-      console.log('Environments:');
-      console.log('  1) sandbox');
-      console.log('  2) production');
-      const answer = (await readline.question('Select an environment (number): ')).trim();
-      if (answer === '1') {
-        environment = 'sandbox';
-      } else if (answer === '2') {
-        environment = 'production';
-      } else {
-        throw new Error('No deployment environment selected.');
-      }
-    }
-    return { ...args, target, environment };
+    return { ...args, environment };
   } finally {
     readline.close();
   }
@@ -136,11 +90,14 @@ async function promptSelection(
 function runInherited(
   command: string,
   commandArgs: string[],
-  accountId: string,
+  accountId?: string,
 ): Promise<{ exitCode: number }> {
   return new Promise((resolvePromise) => {
     const child = spawn(command, commandArgs, {
-      env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: accountId },
+      env:
+        accountId === undefined
+          ? process.env
+          : { ...process.env, CLOUDFLARE_ACCOUNT_ID: accountId },
       stdio: 'inherit',
     });
     child.on('error', () => {
@@ -154,7 +111,6 @@ function runInherited(
 
 async function main(): Promise<void> {
   const parsed = parseDeployArgs(process.argv.slice(2), {
-    DEPLOY_TARGET: process.env.DEPLOY_TARGET,
     DEPLOY_ENV: process.env.DEPLOY_ENV,
     DEPLOY_CONFIRM: process.env.DEPLOY_CONFIRM,
   });
@@ -162,21 +118,12 @@ async function main(): Promise<void> {
     console.log(DEPLOY_HELP);
     return;
   }
-  const targets = loadTargets();
-  const args = await promptSelection(parsed, targets, isInteractive() && !parsed.nonInteractive);
-  const selection = resolveDeploySelection(args, {
-    targets: listTargetKeys(targets),
-    interactive: isInteractive() && !args.nonInteractive,
-  });
-  const target = resolveTargetDeployment(targets, selection);
-  const resolved = {
-    ...target,
-    accountId: resolveCloudflareAccountId(
-      target.accountId ?? '',
-      undefined,
-      process.env.CLOUDFLARE_ACCOUNT_ID,
-    ),
-  };
+  const args = await promptSelection(parsed, isInteractive() && !parsed.nonInteractive);
+  if (args.environment === undefined) throw new Error('No deployment environment selected.');
+  const resolved = resolveEnvironmentDeployment(
+    loadEnvironmentFile(environmentFilePath(repoRoot(), args.environment)),
+    { requireRemoteReady: true },
+  );
 
   if (args.writeConfig !== undefined) {
     const destination = resolve(args.writeConfig);
@@ -214,7 +161,10 @@ async function main(): Promise<void> {
           run: async (command, commandArgs) => {
             try {
               const { stdout } = await execFileAsync(command, commandArgs, {
-                env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: target.accountId },
+                env:
+                  target.accountId === ''
+                    ? process.env
+                    : { ...process.env, CLOUDFLARE_ACCOUNT_ID: target.accountId },
               });
               return { exitCode: 0, stdout };
             } catch {
@@ -272,7 +222,10 @@ async function main(): Promise<void> {
       if (commandArgs.includes('list') && commandArgs.includes('--json')) {
         try {
           const { stdout } = await execFileAsync(command, commandArgs, {
-            env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: resolved.accountId },
+            env:
+              resolved.accountId === ''
+                ? process.env
+                : { ...process.env, CLOUDFLARE_ACCOUNT_ID: resolved.accountId },
           });
           return { exitCode: 0, stdout };
         } catch {

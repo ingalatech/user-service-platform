@@ -5,8 +5,8 @@ import { parseDeployEnvironment, type DeployableEnvironment } from './naming.js'
 // One entry point for first-time target provisioning:
 //
 // ```bash
-// npm run provision -- --target <company>-<site> --env sandbox --plan
-// npm run provision -- --target <company>-<site> --env sandbox --apply
+// npm run provision -- --env sandbox --plan
+// npm run provision -- --env sandbox --apply
 // ```
 //
 // Plan is the default no-mutation mode when neither `--plan` nor `--apply`
@@ -22,7 +22,6 @@ import { parseDeployEnvironment, type DeployableEnvironment } from './naming.js'
 export type ProvisionMode = 'plan' | 'apply';
 
 export interface ProvisionArgs {
-  readonly target: string | undefined;
   readonly environment: DeployableEnvironment | undefined;
   readonly mode: ProvisionMode;
   readonly confirm: string | undefined;
@@ -36,7 +35,6 @@ export interface ProvisionArgEnv {
 }
 
 const KNOWN_FLAGS: ReadonlySet<string> = new Set([
-  '--target',
   '--env',
   '--plan',
   '--apply',
@@ -61,7 +59,6 @@ function nonEmpty(value: string | undefined): string | undefined {
 }
 
 export function parseProvisionArgs(argv: string[], env: ProvisionArgEnv = {}): ProvisionArgs {
-  let target = nonEmpty(env.PROVISION_TARGET);
   let environment = nonEmpty(env.PROVISION_ENV);
   let confirm = nonEmpty(env.PROVISION_CONFIRM);
   let plan = false;
@@ -73,10 +70,7 @@ export function parseProvisionArgs(argv: string[], env: ProvisionArgEnv = {}): P
     if (flag === undefined || !KNOWN_FLAGS.has(flag)) {
       throw new Error(`Unknown provision flag "${flag ?? '(missing)'}": see --help.`);
     }
-    if (flag === '--target') {
-      target = readValue(flag, argv, index + 1);
-      index += 1;
-    } else if (flag === '--env') {
+    if (flag === '--env') {
       environment = readValue(flag, argv, index + 1);
       index += 1;
     } else if (flag === '--confirm') {
@@ -96,7 +90,6 @@ export function parseProvisionArgs(argv: string[], env: ProvisionArgEnv = {}): P
   }
 
   return {
-    target,
     environment: environment === undefined ? undefined : parseDeployEnvironment(environment),
     mode: apply ? 'apply' : 'plan',
     confirm,
@@ -105,12 +98,11 @@ export function parseProvisionArgs(argv: string[], env: ProvisionArgEnv = {}): P
 }
 
 export interface ProvisionSelectionContext {
-  readonly targets: readonly string[];
   readonly interactive: boolean;
+  readonly targets?: readonly string[];
 }
 
 export interface ProvisionSelection {
-  readonly target: string;
   readonly environment: DeployableEnvironment;
 }
 
@@ -118,19 +110,6 @@ export function resolveProvisionSelection(
   args: ProvisionArgs,
   context: ProvisionSelectionContext,
 ): ProvisionSelection {
-  if (args.target === undefined) {
-    if (context.interactive) {
-      throw new Error('No provisioning target selected.');
-    }
-    throw new Error(
-      'Missing provisioning target: pass --target <company>-<site> or set PROVISION_TARGET.',
-    );
-  }
-  if (!context.targets.includes(args.target)) {
-    throw new Error(
-      `Unknown provisioning target "${args.target}": available targets: ${context.targets.join(', ')}.`,
-    );
-  }
   if (args.environment === undefined) {
     if (context.interactive) {
       throw new Error('No provisioning environment selected.');
@@ -139,20 +118,19 @@ export function resolveProvisionSelection(
       'Missing provisioning environment: pass --env <sandbox|production> or set PROVISION_ENV.',
     );
   }
-  return { target: args.target, environment: args.environment };
+  return { environment: args.environment };
 }
 
 export const PROVISION_HELP = `Usage: npm run provision -- [options]
 
 Options:
-  --target <company>-<site>   Provisioning target from deploy/targets.json
   --env <sandbox|production>  Canonical environment (staging is never offered)
   --plan                      Report intended changes without remote mutation (default)
   --apply                     Create/adopt declared dependencies and stage non-secret ids
   --confirm <worker-name>     Required for production apply: the target Worker name
   --help                      Show this help
 
-Automation: PROVISION_TARGET, PROVISION_ENV and PROVISION_CONFIRM select the
+Automation: PROVISION_ENV and PROVISION_CONFIRM select the
 same inputs without prompts. Provisioning never reads, writes, copies or
 prints secret values, never deploys application code, and never commits.
 `;

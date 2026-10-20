@@ -1,7 +1,6 @@
 import { rmSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { requiredWorkerSecrets } from './secrets.js';
 import type { ResolvedDeployment } from './targets.js';
 
 // Temporary Wrangler materialization (ticket #78, ADR-0008).
@@ -90,9 +89,7 @@ export interface TargetWranglerConfig {
   readonly observability: { readonly enabled: true };
   readonly assets: TargetAssets;
   readonly d1_databases: readonly [TargetD1Binding];
-  // Required Worker secret names (ticket #104). Names only: values stay in
-  // Cloudflare and `wrangler deploy` validates presence before promotion.
-  readonly secrets: { readonly required: readonly string[] };
+  readonly secrets?: { readonly required: readonly string[] };
 }
 
 export function buildTargetWranglerConfig(
@@ -106,7 +103,7 @@ export function buildTargetWranglerConfig(
   if (!isAbsolute(main) || !isAbsolute(migrationsDir) || !isAbsolute(adminDistDir)) {
     throw new Error('Materialized Wrangler paths must be absolute.');
   }
-  return {
+  const config: TargetWranglerConfig = {
     name: resolved.workerName,
     ...(resolved.accountId === undefined ? {} : { account_id: resolved.accountId }),
     main,
@@ -120,12 +117,6 @@ export function buildTargetWranglerConfig(
       run_worker_first: true,
       html_handling: 'none',
     },
-    secrets: {
-      required: requiredWorkerSecrets({
-        environment: resolved.environment,
-        vars: resolved.vars,
-      }),
-    },
     d1_databases: [
       {
         binding: 'DB',
@@ -135,6 +126,7 @@ export function buildTargetWranglerConfig(
       },
     ],
   };
+  return config;
 }
 
 // Writes the materialized config into an operator-provided directory (the

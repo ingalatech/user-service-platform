@@ -10,8 +10,6 @@
 // compares, uploads, or commits secret values, and the deployer never fetches
 // secret values through the Cloudflare API: `wrangler deploy` remains the sole
 // enforcement point and existing configured secrets are left untouched.
-import { resolveEffectiveConfig } from '../../src/config/config.js';
-
 export interface RequiredSecretsInput {
   readonly environment: string;
   readonly vars: Record<string, string>;
@@ -32,15 +30,11 @@ export interface RequiredSecretsInput {
 // - `local`/`test` stay credential-free unless they explicitly opt into a real
 //   provider transport (`smtp`/`resend`).
 export function requiredWorkerSecrets(input: RequiredSecretsInput): string[] {
-  const effective = resolveEffectiveConfig({
-    environment: input.environment,
-    runtime: input.vars,
-  });
   const required: string[] = [];
-  if (effective.environment === 'sandbox' || effective.environment === 'production') {
+  if (input.environment === 'sandbox' || input.environment === 'production') {
     required.push('BETTER_AUTH_SECRET');
   }
-  const transport = effective.config.AUTH_MAIL_TRANSPORT.trim().toLowerCase();
+  const transport = (input.vars.AUTH_MAIL_TRANSPORT ?? '').trim().toLowerCase();
   if (transport === 'smtp') {
     required.push('SMTP_USER', 'SMTP_PASSWORD');
   } else if (transport === 'resend') {

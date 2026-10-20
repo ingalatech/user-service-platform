@@ -4,14 +4,14 @@
 // deployment target through one documented command:
 //
 // ```bash
-// npm run provision -- --target rch-rugbychampagne --env sandbox --plan
-// npm run provision -- --target rch-rugbychampagne --env sandbox --apply
+// npm run provision -- --env sandbox --plan
+// npm run provision -- --env sandbox --apply
 // ```
 //
 // Plan is the default no-mutation mode. Apply discovers the exact canonical
 // D1 database (creating it when absent), reports read-only Worker/deployment
 // state, reports required secrets by names/types only, and stages the
-// non-secret database id in `deploy/targets.json` as a reviewable worktree
+// non-secret database id in `config/environments/.env.sandbox` as a reviewable worktree
 // diff. Production apply requires `--confirm` equal to the target Worker
 // name; production planning stays read-only.
 //
@@ -25,8 +25,7 @@
 // pass/fail plus names/ids at the orchestration boundary; raw provider
 // bodies never reach logs or errors.
 import { execFile } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import {
@@ -35,8 +34,13 @@ import {
   resolveProvisionSelection,
 } from './deploy/provision-cli.js';
 import { runProvision, type ProvisionCommandResult } from './deploy/provision.js';
-import { listTargetKeys, loadTargetsFile, type TargetsFile } from './deploy/targets.js';
-import { applyAccountOverrides, loadAccountOverrides } from './deploy/account-config.js';
+import {
+  environmentFilePath,
+  loadEnvironmentFile,
+  resolveEnvironmentDeployment,
+  stageDatabaseId,
+} from './deploy/environment-config.js';
+import type { TargetsFile } from './deploy/targets.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -44,26 +48,35 @@ function repoRoot(): string {
   return dirname(dirname(fileURLToPath(import.meta.url)));
 }
 
-function targetsPath(): string {
-  return join(repoRoot(), 'deploy', 'targets.json');
-}
-
-function readVersionedTargetsFile(): TargetsFile {
-  return loadTargetsFile(JSON.parse(readFileSync(targetsPath(), 'utf8')) as unknown);
-}
-
-function readTargetsFile(): TargetsFile {
-  const root = repoRoot();
-  const overridePath = join(root, 'deploy', 'targets.local.json');
-  return applyAccountOverrides(
-    readVersionedTargetsFile(),
-    loadAccountOverrides(
-      existsSync(overridePath)
-        ? (JSON.parse(readFileSync(overridePath, 'utf8')) as unknown)
-        : { version: 1, targets: {} },
-    ),
-    process.env.CLOUDFLARE_ACCOUNT_ID,
+function readEnvironmentTarget(environment: 'sandbox' | 'production'): TargetsFile {
+  const resolved = resolveEnvironmentDeployment(
+    loadEnvironmentFile(environmentFilePath(repoRoot(), environment)),
   );
+  return {
+    version: 1,
+    service: 'user-service',
+    targets: [
+      {
+        key: resolved.targetKey,
+        company: resolved.company,
+        site: resolved.site,
+        service: resolved.service,
+        displayName: 'RugbyChampagne (RCH)',
+        environments: {
+          sandbox: {
+            accountId: resolved.accountId,
+            databaseId: environment === 'sandbox' ? resolved.databaseId : '',
+            vars: resolved.vars,
+          },
+          production: {
+            accountId: resolved.accountId,
+            databaseId: environment === 'production' ? resolved.databaseId : '',
+            vars: resolved.vars,
+          },
+        },
+      },
+    ],
+  };
 }
 
 // Runs a Wrangler read/create step, capturing machine-readable stdout for
@@ -87,7 +100,6 @@ async function runProvisionCommand(
 
 async function main(): Promise<void> {
   const parsed = parseProvisionArgs(process.argv.slice(2), {
-    PROVISION_TARGET: process.env.PROVISION_TARGET,
     PROVISION_ENV: process.env.PROVISION_ENV,
     PROVISION_CONFIRM: process.env.PROVISION_CONFIRM,
   });
@@ -95,38 +107,37 @@ async function main(): Promise<void> {
     console.log(PROVISION_HELP);
     return;
   }
-  const targets = readTargetsFile();
+  if (parsed.environment === 'production') {
+    throw new Error('Production provisioning is not supported; provision sandbox only.');
+  }
+  if (parsed.environment === undefined) throw new Error('No provisioning environment selected.');
   const selection = resolveProvisionSelection(parsed, {
-    targets: listTargetKeys(targets),
     interactive: false,
   });
+  const environmentPath = environmentFilePath(repoRoot(), selection.environment);
   const outcome = await runProvision(
     {
-      target: selection.target,
+      target: 'rch-rugbychampagne',
       environment: selection.environment,
       mode: parsed.mode,
       confirm: parsed.confirm,
     },
     {
-      loadTargets: () => readTargetsFile(),
-      loadVersionedTargets: () => readVersionedTargetsFile(),
+      loadTargets: () => readEnvironmentTarget(selection.environment),
+      loadVersionedTargets: () => readEnvironmentTarget(selection.environment),
       writeTargets: (file) => {
-        writeFileSync(targetsPath(), `${JSON.stringify(file, null, 2)}\n`, 'utf8');
+        const id = file.targets[0]?.environments[selection.environment].databaseId;
+        if (id !== undefined) stageDatabaseId(environmentPath, id);
       },
       log: (message) => {
         console.log(message);
       },
     },
-    (command, args, scope) =>
-      runProvisionCommand(
-        command,
-        args,
-        scope?.accountId ?? process.env.CLOUDFLARE_ACCOUNT_ID ?? '',
-      ),
+    (command, args, scope) => runProvisionCommand(command, args, scope?.accountId ?? ''),
   );
   if (outcome.configUpdated) {
     console.log(
-      'provisioning staged deploy/targets.json: review the diff, then commit it before deploying.',
+      `provisioning staged ${environmentPath}: review the diff, then commit it before deploying.`,
     );
   }
 }

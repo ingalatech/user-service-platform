@@ -1,11 +1,4 @@
 import {
-  checkSecretTextBindings,
-  parseSecretListOutput,
-  secretBindingsFailed,
-  secretListArgs,
-} from './secret-bindings.js';
-import { requiredWorkerSecrets } from './secrets.js';
-import {
   d1CreateArgs,
   d1ListArgs,
   isAcceptedRemoteDatabaseId,
@@ -142,23 +135,6 @@ export function stageProvisionedDatabaseId(
   };
 }
 
-function secretPutInstruction(workerName: string, secretName: string): string {
-  return `npx wrangler secret put ${secretName} --name ${workerName}`;
-}
-
-// Logs one target-specific operator command per required secret name. Names
-// only: secret values are never read, so they cannot leak through these
-// instructions.
-function logSecretInstructions(
-  workerName: string,
-  required: readonly string[],
-  io: ProvisionIo,
-): void {
-  for (const name of required) {
-    io.log(`  ${secretPutInstruction(workerName, name)}`);
-  }
-}
-
 export async function runProvision(
   request: ProvisionRequest,
   io: ProvisionIo,
@@ -208,7 +184,7 @@ export async function runProvision(
   }
 
   const workerState = await discoverWorker(resolved, io, scopedRunner);
-  const secretStatus = await reportSecrets(resolved, workerState, io, scopedRunner);
+  const secretStatus: ProvisionSecretStatus = 'unverified';
 
   if (request.mode === 'plan' && d1.action === 'create') {
     io.log(
@@ -350,70 +326,4 @@ async function discoverWorker(
     );
     return 'unknown';
   }
-}
-
-async function reportSecrets(
-  resolved: ResolvedDeployment,
-  workerState: ProvisionWorkerState,
-  io: ProvisionIo,
-  runner: ProvisionCommandRunner,
-): Promise<ProvisionSecretStatus> {
-  const required = requiredWorkerSecrets({
-    environment: resolved.environment,
-    vars: resolved.vars,
-  });
-  if (required.length === 0) {
-    return 'ok';
-  }
-  if (workerState === 'absent') {
-    io.log(
-      `worker ${resolved.workerName} is not deployed yet, so required secrets cannot be listed; after the first deploy, configure each required secret (${required.join(', ')}) with:`,
-    );
-    logSecretInstructions(resolved.workerName, required, io);
-    return 'worker-not-deployed';
-  }
-  if (workerState === 'unknown') {
-    io.log(
-      `worker deployment state is unknown for worker=${resolved.workerName}, so required secrets (${required.join(', ')}) are unverified; verify the Worker state, then configure each missing secret with:`,
-    );
-    logSecretInstructions(resolved.workerName, required, io);
-    return 'unverified';
-  }
-  const listed = await runner('npx', [...secretListArgs(resolved.workerName)]);
-  if (listed.exitCode !== 0) {
-    io.log(
-      `required Worker secrets unverified for worker=${resolved.workerName}: ${required.join(', ')}. Configure each missing secret with:`,
-    );
-    logSecretInstructions(resolved.workerName, required, io);
-    return 'unverified';
-  }
-  let remote;
-  try {
-    remote = parseSecretListOutput(listed.stdout);
-  } catch {
-    io.log(
-      `required Worker secrets unverified for worker=${resolved.workerName}: ${required.join(', ')}. Configure each missing secret with:`,
-    );
-    logSecretInstructions(resolved.workerName, required, io);
-    return 'unverified';
-  }
-  const results = checkSecretTextBindings(required, remote);
-  if (!secretBindingsFailed(results)) {
-    io.log(
-      `required Worker secrets present as secret_text bindings for worker=${resolved.workerName}: ${required.join(', ')}.`,
-    );
-    return 'ok';
-  }
-  io.log(
-    `required Worker secrets need attention for worker=${resolved.workerName}: ${results
-      .filter((result) => result.status !== 'ok')
-      .map((result) => `${result.name} (${result.status})`)
-      .join(', ')}. Configure each missing secret with:`,
-  );
-  for (const result of results) {
-    if (result.status !== 'ok') {
-      io.log(`  ${secretPutInstruction(resolved.workerName, result.name)}`);
-    }
-  }
-  return 'missing';
 }

@@ -1,12 +1,4 @@
 import { assertWorkerName, parseDeployEnvironment } from './naming.js';
-import {
-  checkSecretTextBindings,
-  formatSecretBindingsError,
-  parseSecretListOutput,
-  secretBindingsFailed,
-  secretListArgs,
-} from './secret-bindings.js';
-import { requiredWorkerSecrets } from './secrets.js';
 import { parseWorkerDeploymentsOutput, workerDeploymentsListArgs } from './provision-worker.js';
 import { isProvisionedDatabaseId, type ResolvedDeployment } from './targets.js';
 
@@ -140,7 +132,6 @@ export async function runPreflight(
 
   const workerPresence = await checkWorkerPresence(input.resolved, deps);
   checks.push(workerPresence.check);
-  checks.push(await checkWorkerSecrets(input.resolved, workerPresence.exists, deps));
 
   return checks;
 }
@@ -156,58 +147,6 @@ export function preflightFailed(checks: readonly PreflightCheck[]): boolean {
 // `requiredWorkerSecrets` set owned by #104) to exist as `secret_text`. The
 // check fails closed before `wrangler deploy` and smoke; details carry
 // required names/status only, never values or provider output.
-async function checkWorkerSecrets(
-  resolved: ResolvedDeployment,
-  exists: boolean | undefined,
-  deps: PreflightDeps,
-): Promise<PreflightCheck> {
-  const required = requiredWorkerSecrets({
-    environment: resolved.environment,
-    vars: resolved.vars,
-  });
-  if (required.length === 0) {
-    return { name: 'worker-secrets', ok: true, detail: 'no required Worker secrets' };
-  }
-  if (exists === false) {
-    return {
-      name: 'worker-secrets',
-      ok: true,
-      detail: 'Worker absent; secret bindings will be checked after the first deploy',
-    };
-  }
-  const listed = await deps.run('npx', [...secretListArgs(resolved.workerName)]);
-  if (listed.exitCode !== 0) {
-    return {
-      name: 'worker-secrets',
-      ok: false,
-      detail: `required Worker secrets unverified as secret_text bindings: ${required.join(', ')}`,
-    };
-  }
-  let remote;
-  try {
-    remote = parseSecretListOutput(listed.stdout);
-  } catch {
-    return {
-      name: 'worker-secrets',
-      ok: false,
-      detail: `required Worker secrets unverified as secret_text bindings: ${required.join(', ')}`,
-    };
-  }
-  const results = checkSecretTextBindings(required, remote);
-  if (secretBindingsFailed(results)) {
-    return {
-      name: 'worker-secrets',
-      ok: false,
-      detail: formatSecretBindingsError(resolved.workerName, results).message,
-    };
-  }
-  return {
-    name: 'worker-secrets',
-    ok: true,
-    detail: 'required Worker secrets present as secret_text bindings',
-  };
-}
-
 async function checkWorkerPresence(
   resolved: ResolvedDeployment,
   deps: PreflightDeps,

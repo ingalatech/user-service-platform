@@ -38,14 +38,9 @@
     "run_worker_first": true,
     "html_handling": "none",
   },
-  // Non-secret application configuration lives in the versioned profiles
-  // (`src/config/profiles.ts`, spec #8, ticket #57): the Worker composes one
-  // effective configuration per request from the selected profile + same-name
-  // runtime overrides. Wrangler carries only the ENVIRONMENT selector and
-  // Cloudflare infrastructure/runtime bindings here. Local overrides come from
-  // the ignored root `.env` (`npm run dev:local`); sandbox/production
-  // non-secret deployment vars come from `deploy/targets.json` via the
-  // deployer. Secrets (`BETTER_AUTH_SECRET`, `RESEND_API_KEY`, and
+  // The local root `.env` is the only application configuration source for
+  // local development. Remote releases materialize vars from their complete
+  // `config/environments/.env.<environment>` file. Secrets (`BETTER_AUTH_SECRET`, `RESEND_API_KEY`, and
   // `SMTP_USER`/`SMTP_PASSWORD` when the SMTP transport is selected) are
   // always runtime secrets configured directly in Cloudflare for the selected
   // target Worker (see docs/operations/sandbox-release-runbook.md) and never
