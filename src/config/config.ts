@@ -1,5 +1,4 @@
 import {
-  ENVIRONMENT_PROFILES,
   LOCAL_PROFILE,
   NON_SECRET_VAR_NAMES,
   type CanonicalEnvironment,
@@ -161,8 +160,10 @@ function validateAuthActionUrl(name: string, value: string, environment: string)
 // and expected shapes, never runtime values.
 export function resolveEffectiveConfig(input: ResolveEffectiveConfigInput): EffectiveConfig {
   const environment = normalizeEnvironmentName(input.environment);
-  const base = environment === 'test' ? LOCAL_PROFILE : ENVIRONMENT_PROFILES[environment];
-  const merged: NonSecretProfile = { ...base };
+  const merged: NonSecretProfile = {
+    ...LOCAL_PROFILE,
+    ENVIRONMENT: environment === 'test' ? 'local' : environment,
+  };
   const runtime = input.runtime ?? {};
   for (const name of NON_SECRET_VAR_NAMES) {
     const value: unknown = runtime[name];

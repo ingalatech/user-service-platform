@@ -28,7 +28,7 @@
 import { spawn, type ChildProcess, type SpawnOptions } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
-import type { ResolvedDeployment } from './targets.js';
+import type { ResolvedDeployment } from './environment-config.js';
 
 // Stable session-resolution failure phases (ticket #93). Kept in sync with
 // `SessionResolvePhase` in `src/features/identity/session.ts`; the tail

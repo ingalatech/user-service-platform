@@ -8,7 +8,7 @@ import {
 } from './secret-bindings.js';
 import { requiredWorkerSecrets } from './secrets.js';
 import { parseWorkerDeploymentsOutput, workerDeploymentsListArgs } from './provision-worker.js';
-import { isProvisionedDatabaseId, type ResolvedDeployment } from './targets.js';
+import { isProvisionedDatabaseId, type ResolvedDeployment } from './environment-config.js';
 
 // Deployment preflight (ticket #78, ADR-0008).
 //
@@ -19,11 +19,7 @@ import { isProvisionedDatabaseId, type ResolvedDeployment } from './targets.js';
 //
 // Secret boundary: preflight never reads provider/auth secret values. Cloudflare
 // authentication is probed through `wrangler whoami` exit status, and command
-// output is reduced to pass/fail — outputs never enter check details, so
-// tokens or account identifiers cannot leak through diagnostics. Required
-// Worker secrets are verified through the provider-supported names/types-only
-// `secret list` mechanism (ticket #106): only binding `name`/`type` fields are
-// consumed, and failure details carry required names/status only.
+// output is reduced to pass/fail.
 
 export interface PreflightCommand {
   readonly command: string;
@@ -149,13 +145,6 @@ export function preflightFailed(checks: readonly PreflightCheck[]): boolean {
   return checks.some((check) => !check.ok);
 }
 
-// Required-secret binding-type gate (ticket #106): `secrets.required`
-// accepts a same-name plaintext Worker `vars` entry, so preflight lists the
-// target Worker's secrets through the provider-supported names/types-only
-// mechanism and requires every required name (derived from the same
-// `requiredWorkerSecrets` set owned by #104) to exist as `secret_text`. The
-// check fails closed before `wrangler deploy` and smoke; details carry
-// required names/status only, never values or provider output.
 async function checkWorkerSecrets(
   resolved: ResolvedDeployment,
   exists: boolean | undefined,
@@ -165,9 +154,8 @@ async function checkWorkerSecrets(
     environment: resolved.environment,
     vars: resolved.vars,
   });
-  if (required.length === 0) {
+  if (required.length === 0)
     return { name: 'worker-secrets', ok: true, detail: 'no required Worker secrets' };
-  }
   if (exists === false) {
     return {
       name: 'worker-secrets',
@@ -183,9 +171,20 @@ async function checkWorkerSecrets(
       detail: `required Worker secrets unverified as secret_text bindings: ${required.join(', ')}`,
     };
   }
-  let remote;
   try {
-    remote = parseSecretListOutput(listed.stdout);
+    const remote = parseSecretListOutput(listed.stdout);
+    const results = checkSecretTextBindings(required, remote);
+    return secretBindingsFailed(results)
+      ? {
+          name: 'worker-secrets',
+          ok: false,
+          detail: formatSecretBindingsError(resolved.workerName, results).message,
+        }
+      : {
+          name: 'worker-secrets',
+          ok: true,
+          detail: 'required Worker secrets present as secret_text bindings',
+        };
   } catch {
     return {
       name: 'worker-secrets',
@@ -193,19 +192,6 @@ async function checkWorkerSecrets(
       detail: `required Worker secrets unverified as secret_text bindings: ${required.join(', ')}`,
     };
   }
-  const results = checkSecretTextBindings(required, remote);
-  if (secretBindingsFailed(results)) {
-    return {
-      name: 'worker-secrets',
-      ok: false,
-      detail: formatSecretBindingsError(resolved.workerName, results).message,
-    };
-  }
-  return {
-    name: 'worker-secrets',
-    ok: true,
-    detail: 'required Worker secrets present as secret_text bindings',
-  };
 }
 
 async function checkWorkerPresence(

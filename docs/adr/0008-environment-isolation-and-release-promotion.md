@@ -18,6 +18,13 @@ Pull requests initially run local/CI checks only; per-PR deployed Cloudflare inf
 
 Sandbox and production releases are explicit local operator actions. GitHub Actions runs deterministic repository CI only; it does not execute agents, upload Worker versions, promote traffic, or mutate Cloudflare resources. Operators use the repository deployment commands from an isolated local worktree and record the source commit plus resulting Worker version/deployment identifier. Production remains a separately confirmed promotion.
 
+Remote release configuration is owned by one complete, versioned,
+secret-free `config/environments/.env.<environment>` file per environment.
+The root `.env` is local-development-only and is never read by deploy,
+promote, or provision. Runtime secrets remain in Cloudflare. Sandbox D1
+provisioning stages its discovered id back into `.env.sandbox` as an
+uncommitted, reviewable change; production provisioning is not supported.
+
 Database migrations are version controlled and validated against local/disposable D1 before merge. Production schema changes use an expand-deploy-contract strategy whenever rollback compatibility could matter:
 
 1. introduce backward-compatible schema;

@@ -23,7 +23,7 @@ import {
   type DeployCommandRunner,
   type DeployIo,
 } from '../../scripts/deploy/orchestrate.js';
-import type { ResolvedDeployment } from '../../scripts/deploy/targets.js';
+import type { ResolvedDeployment } from '../../scripts/deploy/environment-config.js';
 import { CONTRACT_SANDBOX_DATABASE_ID } from './deploy-test-utils.js';
 
 // Seams under test (ticket #96, ADR-0009):

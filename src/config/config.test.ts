@@ -40,12 +40,9 @@ describe('environment profiles', () => {
     });
   });
 
-  it('keeps profiles independent instead of inheriting from a shared base', () => {
-    expect(LOCAL_PROFILE).not.toBe(SANDBOX_PROFILE);
-    expect(SANDBOX_PROFILE).not.toBe(PRODUCTION_PROFILE);
-    expect(LOCAL_PROFILE).not.toBe(PRODUCTION_PROFILE);
-    expect(SANDBOX_PROFILE.ENVIRONMENT).toBe('sandbox');
-    expect(PRODUCTION_PROFILE.ENVIRONMENT).toBe('production');
+  it('does not compile remote values into profiles', () => {
+    expect(SANDBOX_PROFILE).toBe(LOCAL_PROFILE);
+    expect(PRODUCTION_PROFILE).toBe(LOCAL_PROFILE);
   });
 
   it('freezes versioned profiles so runtime code cannot mutate them', () => {
@@ -75,13 +72,11 @@ describe('resolveEffectiveConfig', () => {
     expect(effective.config).toEqual(LOCAL_PROFILE);
   });
 
-  it('selects the matching complete profile per canonical environment', () => {
-    expect(resolveEffectiveConfig({ environment: 'sandbox', runtime: {} }).config).toEqual(
-      SANDBOX_PROFILE,
-    );
-    expect(resolveEffectiveConfig({ environment: 'production', runtime: {} }).config).toEqual(
-      PRODUCTION_PROFILE,
-    );
+  it('keeps remote configuration values unset until runtime vars arrive', () => {
+    const sandbox = resolveEffectiveConfig({ environment: 'sandbox', runtime: {} });
+    const production = resolveEffectiveConfig({ environment: 'production', runtime: {} });
+    expect(sandbox.config.AUTH_MAIL_TRANSPORT).toBe('');
+    expect(production.config.AUTH_MAIL_TRANSPORT).toBe('');
   });
 
   it('lets same-name runtime values override profile values', () => {
@@ -128,7 +123,7 @@ describe('resolveEffectiveConfig', () => {
   it('maps the legacy staging name onto the sandbox profile without adding staging config', () => {
     const effective = resolveEffectiveConfig({ environment: 'staging', runtime: {} });
     expect(effective.environment).toBe('sandbox');
-    expect(effective.config).toEqual(SANDBOX_PROFILE);
+    expect(effective.config.ENVIRONMENT).toBe('sandbox');
     expect(Object.keys(ENVIRONMENT_PROFILES)).not.toContain('staging');
   });
 

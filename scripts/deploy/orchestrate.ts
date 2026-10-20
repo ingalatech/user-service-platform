@@ -1,4 +1,4 @@
-import type { ResolvedDeployment } from './targets.js';
+import type { ResolvedDeployment } from './environment-config.js';
 import { parseWorkerVersions } from './versions.js';
 import {
   drainSessionFailureTail,

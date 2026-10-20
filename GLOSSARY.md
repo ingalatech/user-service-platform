@@ -166,3 +166,9 @@ The framework-independent browser client for reusable JWT sessions on cached edi
 ### Same-origin gateway
 
 The consumer-owned same-origin API gateway that forwards service calls to this service while preserving cookies and the original browser `Origin`. It accepts only its own origin plus exact deployment-approved origins, forwards only `/v1/` paths, and never trusts arbitrary forwarded-host/origin headers (spec #150, ADR-0013).
+
+### Release environment file
+
+The complete, versioned and secret-free `config/environments/.env.<environment>`
+file that owns one remote sandbox or production release. The ignored root
+`.env` is local-development-only.
