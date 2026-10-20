@@ -6,7 +6,15 @@ import {
   workerName,
   type DeployableEnvironment,
 } from './naming.js';
-import { isProvisionedDatabaseId } from './targets.js';
+
+const DATABASE_ID_PATTERN =
+  /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+export function isProvisionedDatabaseId(databaseId: string): boolean {
+  if (!DATABASE_ID_PATTERN.test(databaseId)) return false;
+  const hex = databaseId.replace(/-/g, '').toLowerCase();
+  return !hex.split('').every((char) => char === hex[0]);
+}
 
 export const ENVIRONMENT_VAR_NAMES = [
   'ENVIRONMENT',
@@ -52,12 +60,14 @@ export interface EnvironmentDeployment {
   readonly service: 'user-service';
   readonly environment: DeployableEnvironment;
   readonly workerName: string;
-  readonly workerUrl: string;
+  readonly workerUrl?: string;
   readonly databaseName: string;
   readonly databaseId: string;
-  readonly accountId: string;
+  readonly accountId?: string;
   readonly vars: Record<string, string>;
 }
+
+export type ResolvedDeployment = EnvironmentDeployment;
 
 function parseLines(text: string): Map<string, string> {
   const values = new Map<string, string>();

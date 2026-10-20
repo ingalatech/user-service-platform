@@ -16,7 +16,7 @@ import { parseDeployEnvironment, type DeployableEnvironment } from './naming.js'
 //
 // This module only parses and validates the selection. It never reads secret
 // values: the only environment values consulted are the non-secret
-// `PROVISION_TARGET`, `PROVISION_ENV` and `PROVISION_CONFIRM` automation
+// `PROVISION_ENV` and `PROVISION_CONFIRM` automation
 // selectors. Secret values are never accepted as CLI flags.
 
 export type ProvisionMode = 'plan' | 'apply';
@@ -29,7 +29,6 @@ export interface ProvisionArgs {
 }
 
 export interface ProvisionArgEnv {
-  readonly PROVISION_TARGET?: string;
   readonly PROVISION_ENV?: string;
   readonly PROVISION_CONFIRM?: string;
 }
@@ -99,7 +98,6 @@ export function parseProvisionArgs(argv: string[], env: ProvisionArgEnv = {}): P
 
 export interface ProvisionSelectionContext {
   readonly interactive: boolean;
-  readonly targets?: readonly string[];
 }
 
 export interface ProvisionSelection {

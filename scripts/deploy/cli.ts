@@ -12,7 +12,6 @@ export interface DeployArgs {
 }
 
 export interface DeployArgEnv {
-  readonly DEPLOY_TARGET?: string;
   readonly DEPLOY_ENV?: string;
   readonly DEPLOY_CONFIRM?: string;
 }
@@ -85,7 +84,6 @@ export function parseDeployArgs(argv: string[], env: DeployArgEnv = {}): DeployA
 
 export interface SelectionContext {
   readonly interactive: boolean;
-  readonly targets?: readonly string[];
 }
 
 export interface DeploySelection {

@@ -43,7 +43,7 @@ import {
 import { formatPreflightError, preflightFailed, runPreflight } from './deploy/preflight.js';
 import { runDeployment, type DeployIo } from './deploy/orchestrate.js';
 import { startSessionFailureTail } from './deploy/diagnostic-tail.js';
-import type { ResolvedDeployment } from './deploy/targets.js';
+import type { ResolvedDeployment } from './deploy/environment-config.js';
 
 const execFileAsync = promisify(execFile);
 

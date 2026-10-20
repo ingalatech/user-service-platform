@@ -37,46 +37,14 @@ import { runProvision, type ProvisionCommandResult } from './deploy/provision.js
 import {
   environmentFilePath,
   loadEnvironmentFile,
-  resolveEnvironmentDeployment,
   stageDatabaseId,
 } from './deploy/environment-config.js';
-import type { TargetsFile } from './deploy/targets.js';
+import type { EnvironmentFile } from './deploy/environment-config.js';
 
 const execFileAsync = promisify(execFile);
 
 function repoRoot(): string {
   return dirname(dirname(fileURLToPath(import.meta.url)));
-}
-
-function readEnvironmentTarget(environment: 'sandbox' | 'production'): TargetsFile {
-  const resolved = resolveEnvironmentDeployment(
-    loadEnvironmentFile(environmentFilePath(repoRoot(), environment)),
-  );
-  return {
-    version: 1,
-    service: 'user-service',
-    targets: [
-      {
-        key: resolved.targetKey,
-        company: resolved.company,
-        site: resolved.site,
-        service: resolved.service,
-        displayName: 'RugbyChampagne (RCH)',
-        environments: {
-          sandbox: {
-            accountId: resolved.accountId,
-            databaseId: environment === 'sandbox' ? resolved.databaseId : '',
-            vars: resolved.vars,
-          },
-          production: {
-            accountId: resolved.accountId,
-            databaseId: environment === 'production' ? resolved.databaseId : '',
-            vars: resolved.vars,
-          },
-        },
-      },
-    ],
-  };
 }
 
 // Runs a Wrangler read/create step, capturing machine-readable stdout for
@@ -117,17 +85,14 @@ async function main(): Promise<void> {
   const environmentPath = environmentFilePath(repoRoot(), selection.environment);
   const outcome = await runProvision(
     {
-      target: 'rch-rugbychampagne',
       environment: selection.environment,
       mode: parsed.mode,
       confirm: parsed.confirm,
     },
     {
-      loadTargets: () => readEnvironmentTarget(selection.environment),
-      loadVersionedTargets: () => readEnvironmentTarget(selection.environment),
-      writeTargets: (file) => {
-        const id = file.targets[0]?.environments[selection.environment].databaseId;
-        if (id !== undefined) stageDatabaseId(environmentPath, id);
+      loadEnvironment: () => loadEnvironmentFile(environmentPath),
+      writeEnvironment: (file: EnvironmentFile) => {
+        if (file.D1_ID !== '') stageDatabaseId(environmentPath, file.D1_ID);
       },
       log: (message) => {
         console.log(message);

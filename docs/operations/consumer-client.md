@@ -60,7 +60,7 @@ Gateway rules (see `examples/same-origin-gateway.ts`):
   not a service call.
 - Require a secure context wherever the client runs.
 
-Operational limitation: `deploy/targets.json` currently sets no explicit
+Operational limitation: the selected release environment file currently sets no explicit
 `AUTH_JWT_ISSUER`/`AUTH_JWT_AUDIENCE` for sandbox, so token/JWKS operations
 intentionally fail closed there until explicitly configured. Ordinary
 health/session smoke is not proof of live JWT activation.

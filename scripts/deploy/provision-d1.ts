@@ -1,4 +1,4 @@
-import { isProvisionedDatabaseId } from './targets.js';
+import { isProvisionedDatabaseId } from './environment-config.js';
 
 // D1 provisioning provider contract (ticket #80).
 //
@@ -11,9 +11,8 @@ import { isProvisionedDatabaseId } from './targets.js';
 // rediscovers with `d1 list --json`, requires exactly one exact-name match,
 // and validates its UUID before staging.
 //
-// The repository target registry (`deploy/targets.json`), not a generated
-// Wrangler file, is authoritative: creation explicitly disables Wrangler
-// config updates (`--update-config=false`) so no wrangler.jsonc is touched.
+// The selected environment file, not a generated Wrangler file, is
+// authoritative: creation explicitly disables Wrangler config updates.
 //
 // Secret boundary: this module consumes database names/ids only. Failure
 // messages never echo provider output, so tokens, account identifiers or

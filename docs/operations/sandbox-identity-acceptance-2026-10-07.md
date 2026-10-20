@@ -10,7 +10,7 @@ ids, or private traces.
 - Source commit: `3d19d915dc9fc00f87853fcab0dd46173b9d22cf` (main).
 - Sandbox deploy run `37561376905`; serving Worker version
   `f30bb97c-f22a-440f-90d0-6438b8c3e7f8`; health check passed.
-- Sandbox mail allowlist under test (versioned in `deploy/targets.json`):
+- Sandbox mail allowlist under test (versioned in `config/environments/.env.sandbox`):
   `jonatangarbuyo@gmail.com` (stable automated smoke),
   `cronistadev@gmail.com` (regular manual QA),
   `ingaladev@gmail.com` (administrator QA, added for first-administrator QA).

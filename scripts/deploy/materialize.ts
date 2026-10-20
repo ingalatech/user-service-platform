@@ -1,7 +1,7 @@
 import { rmSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { ResolvedDeployment } from './targets.js';
+import type { ResolvedDeployment } from './environment-config.js';
 
 // Temporary Wrangler materialization (ticket #78, ADR-0008).
 //
@@ -12,11 +12,8 @@ import type { ResolvedDeployment } from './targets.js';
 // file is temporary: the orchestrator removes it even when deployment fails,
 // and it is never committed.
 //
-// Required Worker secrets (ticket #104) are declared by name only through the
-// Wrangler `secrets.required` property (derived in `./secrets.js` from the
-// canonical environment plus the effective transport), so `wrangler deploy`
-// validates secret presence before Worker promotion/smoke. Secret values never
-// enter the generated config.
+// Runtime secrets are deliberately absent. Operators configure them directly
+// in Cloudflare after the first sandbox Worker exists.
 //
 // Base application values below mirror the top-level `wrangler.jsonc`
 // (`deploy-materialize.test.ts` fails on drift so the two cannot diverge
@@ -89,7 +86,6 @@ export interface TargetWranglerConfig {
   readonly observability: { readonly enabled: true };
   readonly assets: TargetAssets;
   readonly d1_databases: readonly [TargetD1Binding];
-  readonly secrets?: { readonly required: readonly string[] };
 }
 
 export function buildTargetWranglerConfig(

@@ -8,7 +8,7 @@ import {
   type DeployCommandRunner,
   type DeployIo,
 } from '../../scripts/deploy/orchestrate.js';
-import type { ResolvedDeployment } from '../../scripts/deploy/targets.js';
+import type { ResolvedDeployment } from '../../scripts/deploy/environment-config.js';
 import {
   CONTRACT_PRODUCTION_DATABASE_ID,
   CONTRACT_SANDBOX_DATABASE_ID,

@@ -5,7 +5,7 @@
   //
   // This file is the local base config only. Remote deploys never use static
   // `env` sections here: `npm run deploy` (ticket #78) selects a deployment
-  // target from `deploy/targets.json` and materializes a temporary
+  // environment file and materializes a temporary
   // target-specific Wrangler config (deterministic Worker name
   // `<company>-<site>-<service>-<environment>`, isolated D1, non-secret
   // deployment vars) that is removed after the deployment. Do not reintroduce
