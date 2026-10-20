@@ -237,7 +237,7 @@ describe('sandbox smoke diagnostic tail lifecycle (ticket #96)', () => {
       io: undefined as unknown as DeployIo,
       runner: (command, args) => {
         if (args.includes('versions') && args.includes('list')) {
-          return Promise.resolve({ exitCode: 0, stdout: '[{"version_id":"existing"}]' });
+          return Promise.resolve({ exitCode: 0, stdout: '[]' });
         }
         if (command === 'npm' && args.join(' ').includes('smoke:sandbox')) {
           if (options.smokeFails === true) {
@@ -257,6 +257,7 @@ describe('sandbox smoke diagnostic tail lifecycle (ticket #96)', () => {
       materialize: () => '/tmp/wrangler.tail-test.json',
       cleanup: () => undefined,
       preflight: () => Promise.resolve(undefined),
+      confirmFirstDeployment: () => Promise.resolve(true),
       log: (message) => {
         harness.logs.push(message);
       },
@@ -650,6 +651,7 @@ describe('smoke failure liveness (ticket #100)', () => {
       materialize: () => '/tmp/wrangler.tail-liveness.json',
       cleanup: () => undefined,
       preflight: () => Promise.resolve(undefined),
+      confirmFirstDeployment: () => Promise.resolve(true),
       log: (message) => {
         logs.push(message);
       },
@@ -674,7 +676,7 @@ describe('smoke failure liveness (ticket #100)', () => {
     };
     const runner: DeployCommandRunner = (command, args) => {
       if (args.includes('versions') && args.includes('list')) {
-        return Promise.resolve({ exitCode: 0, stdout: '[{"version_id":"existing"}]' });
+        return Promise.resolve({ exitCode: 0, stdout: '[]' });
       }
       if (command === 'npm' && args.join(' ').includes('smoke:sandbox')) {
         return Promise.resolve({ exitCode: 1 });
@@ -706,7 +708,7 @@ describe('sandbox diagnostic tail post-failure drain (ticket #102)', () => {
   function failingRunner(): DeployCommandRunner {
     return (command, args) => {
       if (args.includes('versions') && args.includes('list')) {
-        return Promise.resolve({ exitCode: 0, stdout: '[{"version_id":"existing"}]' });
+        return Promise.resolve({ exitCode: 0, stdout: '[]' });
       }
       if (command === 'npm' && args.join(' ').includes('smoke:sandbox')) {
         return Promise.resolve({ exitCode: 1 });
@@ -719,9 +721,7 @@ describe('sandbox diagnostic tail post-failure drain (ticket #102)', () => {
     return (_command, args) =>
       Promise.resolve({
         exitCode: 0,
-        ...(args.includes('versions') && args.includes('list')
-          ? { stdout: '[{"version_id":"existing"}]' }
-          : {}),
+        ...(args.includes('versions') && args.includes('list') ? { stdout: '[]' } : {}),
       });
   }
 
@@ -883,6 +883,7 @@ describe('sandbox diagnostic tail post-failure drain (ticket #102)', () => {
       materialize: () => '/tmp/wrangler.tail-drain.json',
       cleanup: () => undefined,
       preflight: () => Promise.resolve(undefined),
+      confirmFirstDeployment: () => Promise.resolve(true),
       log: (message) => {
         logs.push(message);
       },
@@ -935,6 +936,7 @@ describe('sandbox diagnostic tail post-failure drain (ticket #102)', () => {
       materialize: () => '/tmp/wrangler.tail-drain-empty.json',
       cleanup: () => undefined,
       preflight: () => Promise.resolve(undefined),
+      confirmFirstDeployment: () => Promise.resolve(true),
       log: (message) => {
         logs.push(message);
       },
@@ -962,6 +964,7 @@ describe('sandbox diagnostic tail post-failure drain (ticket #102)', () => {
       materialize: () => '/tmp/wrangler.tail-exited.json',
       cleanup: () => undefined,
       preflight: () => Promise.resolve(undefined),
+      confirmFirstDeployment: () => Promise.resolve(true),
       log: (message) => {
         logs.push(message);
       },
@@ -992,6 +995,7 @@ describe('sandbox diagnostic tail post-failure drain (ticket #102)', () => {
       materialize: () => '/tmp/wrangler.tail-success.json',
       cleanup: () => undefined,
       preflight: () => Promise.resolve(undefined),
+      confirmFirstDeployment: () => Promise.resolve(true),
       log: (message) => {
         logs.push(message);
       },
@@ -1021,6 +1025,7 @@ describe('sandbox diagnostic tail post-failure drain (ticket #102)', () => {
       materialize: () => '/tmp/wrangler.tail-redaction.json',
       cleanup: () => undefined,
       preflight: () => Promise.resolve(undefined),
+      confirmFirstDeployment: () => Promise.resolve(true),
       log: (message) => {
         logs.push(message);
       },

@@ -86,6 +86,7 @@ export type ProvisionCommandRunner = (
 
 export interface ProvisionIo {
   readonly loadTargets: () => TargetsFile;
+  readonly loadVersionedTargets: () => TargetsFile;
   readonly writeTargets: (file: TargetsFile) => void;
   readonly log: (message: string) => void;
 }
@@ -163,8 +164,9 @@ export async function runProvision(
   io: ProvisionIo,
   runner: ProvisionCommandRunner,
 ): Promise<ProvisionOutcome> {
-  const file = io.loadTargets();
-  const resolved = resolveProvisioningTarget(file, {
+  const executionFile = io.loadTargets();
+  const versionedFile = io.loadVersionedTargets();
+  const resolved = resolveProvisioningTarget(executionFile, {
     target: request.target,
     environment: request.environment,
   });
@@ -193,7 +195,7 @@ export async function runProvision(
   let configUpdated = false;
   if (request.mode === 'apply' && d1.effectiveId !== '' && d1.effectiveId !== resolved.databaseId) {
     const next = stageProvisionedDatabaseId(
-      file,
+      versionedFile,
       resolved.targetKey,
       resolved.environment,
       d1.effectiveId,

@@ -160,7 +160,10 @@ export function productionConfirmFor(resolved: ResolvedDeployment): string {
   return resolved.workerName;
 }
 
-export function planDeploymentSteps(request: DeployRequest): DeploymentStep[] {
+export function planDeploymentSteps(
+  request: DeployRequest,
+  options: { readonly firstDeployment?: boolean } = {},
+): DeploymentStep[] {
   const steps: DeploymentStep[] = [
     'preflight',
     'build-admin-assets',
@@ -169,7 +172,7 @@ export function planDeploymentSteps(request: DeployRequest): DeploymentStep[] {
     'deploy-worker',
     'record-deployment',
   ];
-  if (request.resolved.environment === 'sandbox') {
+  if (request.resolved.environment === 'sandbox' && options.firstDeployment !== false) {
     steps.push('smoke-sandbox');
   }
   return steps;
@@ -319,7 +322,7 @@ export async function runDeployment(
   try {
     assertProductionConfirmed(request);
     await io.preflight(request.resolved);
-    const steps = planDeploymentSteps(request);
+    let steps = planDeploymentSteps(request);
     if (request.dryRun === true) {
       io.log(
         `dry-run target=${request.resolved.targetKey} environment=${request.resolved.environment} worker=${request.resolved.workerName} database=${request.resolved.databaseName} steps=${steps.join(',')}`,
@@ -353,6 +356,7 @@ export async function runDeployment(
       throw new Error('Unable to determine whether the Worker already exists.');
     }
     const isFirstDeployment = existingVersions.length === 0;
+    steps = planDeploymentSteps(request, { firstDeployment: isFirstDeployment });
     if (isFirstDeployment) {
       io.log(
         `first deployment for worker=${request.resolved.workerName} will activate its first version; Cloudflare does not support an inactive initial version`,
@@ -410,8 +414,10 @@ export async function runDeployment(
       ['wrangler', 'deployments', 'list', '--config', configPath],
       runner,
     );
-    if (request.resolved.environment === 'sandbox') {
+    if (request.resolved.environment === 'sandbox' && isFirstDeployment) {
       await runSandboxSmokeWithDiagnostics(request.resolved, configPath, io, runner);
+    } else if (request.resolved.environment === 'sandbox') {
+      io.log('candidate uploaded; stable-origin smoke is deferred until promotion');
     }
     io.log(`deployed worker=${request.resolved.workerName}`);
     return { workerName: request.resolved.workerName, steps };

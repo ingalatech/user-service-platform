@@ -148,7 +148,7 @@ describe('deployment orchestration', () => {
     const smokeIndex = text.findIndex((entry) => entry.includes('smoke:sandbox'));
     expect(migrateIndex).toBeGreaterThanOrEqual(0);
     expect(deployIndex).toBeGreaterThan(migrateIndex);
-    expect(smokeIndex).toBeGreaterThan(deployIndex);
+    expect(smokeIndex).toBe(-1);
     expect(text.some((entry) => entry.includes('--config /tmp/wrangler.deploy-test.json'))).toBe(
       true,
     );
@@ -161,6 +161,29 @@ describe('deployment orchestration', () => {
     const text = harness.commands.map(({ command, args }) => `${command} ${args.join(' ')}`);
     expect(text.some((entry) => entry.includes('wrangler versions upload'))).toBe(true);
     expect(text.some((entry) => entry.includes('wrangler deploy --config'))).toBe(false);
+    expect(text.some((entry) => entry.includes('smoke:sandbox'))).toBe(false);
+    expect(harness.logs).toContain(
+      'candidate uploaded; stable-origin smoke is deferred until promotion',
+    );
+  });
+
+  it('keeps stable-origin smoke for the explicitly confirmed first deployment', async () => {
+    const harness = createHarness();
+    const io: DeployIo = {
+      ...harness.io,
+      confirmFirstDeployment: () => Promise.resolve(true),
+    };
+    const runner: DeployCommandRunner = (command, args) => {
+      harness.commands.push({ command, args: [...args] });
+      return Promise.resolve({
+        exitCode: 0,
+        stdout: args.includes('versions') && args.includes('list') ? '[]' : '',
+      });
+    };
+
+    await runDeployment({ resolved: SANDBOX }, io, runner);
+
+    expect(harness.commands.some(({ args }) => args.includes('smoke:sandbox'))).toBe(true);
   });
 
   it('requires explicit confirmation before the unavoidable first active deployment', async () => {

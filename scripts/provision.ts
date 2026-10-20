@@ -48,11 +48,15 @@ function targetsPath(): string {
   return join(repoRoot(), 'deploy', 'targets.json');
 }
 
+function readVersionedTargetsFile(): TargetsFile {
+  return loadTargetsFile(JSON.parse(readFileSync(targetsPath(), 'utf8')) as unknown);
+}
+
 function readTargetsFile(): TargetsFile {
   const root = repoRoot();
   const overridePath = join(root, 'deploy', 'targets.local.json');
   return applyAccountOverrides(
-    loadTargetsFile(JSON.parse(readFileSync(targetsPath(), 'utf8')) as unknown),
+    readVersionedTargetsFile(),
     loadAccountOverrides(
       existsSync(overridePath)
         ? (JSON.parse(readFileSync(overridePath, 'utf8')) as unknown)
@@ -105,6 +109,7 @@ async function main(): Promise<void> {
     },
     {
       loadTargets: () => readTargetsFile(),
+      loadVersionedTargets: () => readVersionedTargetsFile(),
       writeTargets: (file) => {
         writeFileSync(targetsPath(), `${JSON.stringify(file, null, 2)}\n`, 'utf8');
       },

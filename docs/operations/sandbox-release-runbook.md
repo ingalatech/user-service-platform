@@ -245,7 +245,10 @@ immediately. The deploy command explains this and requires the exact text
 `FIRST DEPLOY <worker-name>` before making that initial mutation. Promotion
 selects an existing immutable Version ID and routes 100% of traffic to it; it
 does not build assets, apply D1 migrations, or create a Worker Version. Sandbox
-promotion runs `npm run smoke:sandbox` against the stable origin. For
+candidate upload does not run stable-origin smoke because the stable origin
+still serves the previous version. Promotion runs `npm run smoke:sandbox`
+against the stable origin after routing the selected version. The first deploy
+retains its stable-origin smoke after the unavoidable activation. For
 production, enter the exact production Worker name when prompted. Worker
 rollback does not roll back D1; use the data recovery procedure in section 5
 only when a separate, explicitly confirmed database recovery is needed.

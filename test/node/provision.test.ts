@@ -35,6 +35,8 @@ function realCreateText(databaseName: string, databaseId: string): string {
 
 interface HarnessOptions {
   readonly file?: TargetsFile;
+  readonly versionedFile?: TargetsFile;
+  readonly accountId?: string;
   readonly remotes?: { name: string; uuid: string }[];
   readonly remotesAfterCreate?: { name: string; uuid: string }[];
   readonly d1ListStdout?: string;
@@ -82,10 +84,13 @@ function createHarness(options: HarnessOptions = {}): Harness {
     targets: file.targets.map((target) => ({
       ...target,
       environments: {
-        sandbox: { ...target.environments.sandbox, accountId: '11111111111111111111111111111111' },
+        sandbox: {
+          ...target.environments.sandbox,
+          accountId: options.accountId ?? '11111111111111111111111111111111',
+        },
         production: {
           ...target.environments.production,
-          accountId: '11111111111111111111111111111111',
+          accountId: options.accountId ?? '11111111111111111111111111111111',
         },
       },
     })),
@@ -97,6 +102,7 @@ function createHarness(options: HarnessOptions = {}): Harness {
   const harness: Harness = {
     io: {
       loadTargets: () => file,
+      loadVersionedTargets: () => options.versionedFile ?? file,
       writeTargets: (next) => {
         if (options.failWrite === true) {
           throw new Error('simulated config write failure');
@@ -271,6 +277,36 @@ describe('provisioning apply mode', () => {
     expect(outcome.configUpdated).toBe(true);
     expect(harness.writes).toHaveLength(1);
     expect(harness.writes[0]?.targets[0]?.environments.sandbox.databaseId).toBe(REMOTE_SANDBOX_ID);
+  });
+
+  it('keeps account overrides out of the versioned registry while scoping commands', async () => {
+    const versionedFile = withDatabaseId(loadTargetsFromRepo(), 'sandbox', '');
+    const executionFile = {
+      ...versionedFile,
+      targets: versionedFile.targets.map((target) => ({
+        ...target,
+        environments: {
+          ...target.environments,
+          sandbox: {
+            ...target.environments.sandbox,
+            accountId: '22222222222222222222222222222222',
+          },
+        },
+      })),
+    };
+    const harness = createHarness({
+      file: executionFile,
+      versionedFile,
+      accountId: '22222222222222222222222222222222',
+      remotesAfterCreate: [{ name: SANDBOX_DB, uuid: REMOTE_SANDBOX_ID }],
+    });
+
+    await runProvision(sandboxRequest({ mode: 'apply' }), harness.io, harness.runner);
+
+    expect(
+      harness.accountIds.every((accountId) => accountId === '22222222222222222222222222222222'),
+    ).toBe(true);
+    expect(harness.writes[0]?.targets[0]?.environments.sandbox.accountId).toBe('');
   });
 
   it('stages the rediscovered id even when creation text carries no usable uuid', async () => {
