@@ -3,7 +3,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { describe, expect, it, vi } from 'vitest';
-import { parse as parseYaml } from 'yaml';
 import type { CommandExecutor } from '../../scripts/review/runner.js';
 import {
   RECOVERY_MAX_BYTES_PER_FILE,
@@ -828,7 +827,7 @@ describe('implementation recovery ticket-flow wiring', () => {
       const recorded = outcomes.at(-1)?.recovery as { head?: string } | undefined;
       expect(recorded?.head).toBe(actualHead);
       // Console carries only the fixed safe summary; patch content stays in
-      // the uploaded outcome record.
+      // the local outcome record.
       const errors = errorSpy.mock.calls.map((call) => String(call[0])).join('\n');
       expect(errors).toContain('implementation recovery');
       expect(errors).not.toContain('diff --git');
@@ -1038,7 +1037,7 @@ describe('implementation recovery ticket-flow wiring', () => {
     expect(outcomes.at(-1)?.recovery).toBeUndefined();
   });
 
-  it('persists the recovery payload through the already-uploaded outcome record', async () => {
+  it('persists the recovery payload through the local outcome record', async () => {
     const { writeAgentTicketOutcome } = await import('../../scripts/agent/ticket-flow.js');
     const written = new Map<string, string>();
     await writeAgentTicketOutcome(
@@ -1060,13 +1059,24 @@ describe('implementation recovery ticket-flow wiring', () => {
     const raw = written.get('.agent-ticket/outcome.json') ?? '';
     expect(JSON.parse(raw)).toMatchObject({ outcome: 'TIMEOUT', recovery: { version: 1 } });
     expect(raw).toContain('diff --git');
-    // The existing workflow artifact selection already uploads this record,
-    // so no workflow-file edit or new credential is needed for recovery.
-    const doc = parseYaml(readFileSync('.github/workflows/agent-ticket.yml', 'utf8')) as {
-      jobs: { run: { steps: { with?: { path?: string } }[] } };
-    };
-    const paths = doc.jobs.run.steps.map((step) => step.with?.path ?? '').join('\n');
-    expect(paths).toContain('.agent-ticket/outcome.json');
+    // The outcome record stays in the failed isolated worktree for local
+    // operator inspection and reapplication.
+  });
+
+  it('keeps recovery guidance on the active local contract', () => {
+    const guidance = readFileSync('docs/agents/implementation-recovery.md', 'utf8');
+    const implementation = readFileSync('scripts/review/implementation-recovery.ts', 'utf8');
+
+    expect(guidance).toContain('failed isolated worktree for the operator');
+    expect(guidance).toContain('Keep the failed isolated worktree intact');
+    expect(guidance).not.toContain(
+      "Download `.agent-ticket/outcome.json` from the failed run's artifacts",
+    );
+    expect(guidance).not.toContain('already-uploaded `.agent-ticket/outcome.json` artifact');
+    expect(implementation).toContain(
+      'record stays in the local\n// `.agent-ticket/outcome.json` outcome file',
+    );
+    expect(implementation).not.toContain('uploaded `.agent-ticket/outcome.json` artifact');
   });
 });
 

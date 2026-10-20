@@ -2,10 +2,15 @@
 
 Ticket #127 policy. Two `/implement` executions for the administrator UI
 reached the then-current 30-minute bound with no published ticket branch or
-PR, and the existing uploaded evidence preserved outcome/skill records but
+PR, and the existing recovery evidence preserved outcome/skill records but
 not the unpublished partial source changes. A retry therefore reran
 implementation blindly. This record closes that execution gap without
 changing product scope, timeout bounds, or publication safeguards.
+
+The active contract is local: `.agent-ticket/outcome.json` remains in the
+failed isolated worktree for the operator to inspect and reapply locally.
+Older hosted artifact handling is historical only and is not part of the
+current execution path.
 
 Current bound (tickets #155/#156): the implementation hard deadline is now
 60 minutes, with the ticket workflow backstopped at 150 minutes and the
@@ -23,10 +28,9 @@ is never converted to `TIMEOUT`). On both paths a direct-child close
 or error alone never establishes termination while the process group stays
 alive. When termination cannot be established within its bound, no worktree
 snapshot is read: honest `unavailable` evidence is retained instead so the
-record never races a still-writing implementer. The record is embedded
-additively in the already-uploaded `.agent-ticket/outcome.json` artifact.
-No workflow-file edit or new credential is needed: the existing
-`agent-ticket` artifact selection already uploads that outcome record.
+record never races a still-writing implementer. The record is written
+additively to `.agent-ticket/outcome.json` in the failed isolated worktree.
+No workflow-file edit or new credential is needed for local recovery.
 
 The record carries the actual failed-worktree state, never the start HEAD
 presented as proof of no progress:
@@ -56,7 +60,7 @@ commits, resets, cleans, pushes, opens a PR, merges, or deploys. Its failure
 keeps honest incomplete/unavailable metadata and never replaces the original
 `TIMEOUT`/`BLOCKED` result. Console and issue-status surfaces expose only a
 fixed safe summary (presence, completeness, counts); source patch content
-stays in the uploaded outcome record.
+stays in the local outcome record.
 
 ## What is deliberately omitted
 
@@ -85,14 +89,15 @@ diagnosis of an application defect and does not claim the underlying ticket
 work is fixed. It only preserves real partial progress for operator-driven
 reuse:
 
-1. Download `.agent-ticket/outcome.json` from the failed run's artifacts and
-   read the `recovery` field: check `status`, `reasons`, `counts`,
-   `workflowFiles`, and the `truncated`/`patchTruncated`/
-   `untrackedTruncated` flags.
+1. Keep the failed isolated worktree intact and read
+   `.agent-ticket/outcome.json` from that worktree. Inspect the `recovery`
+   field: check `status`, `reasons`, `counts`, `workflowFiles`, and the
+   `truncated`/`patchTruncated`/`untrackedTruncated` flags.
 2. If `workflowFiles` is non-empty, follow the trusted-publication handoff
    policy first; do not publish workflow changes through ordinary automation.
 3. On a fresh isolated worktree checked out at the recorded `base` (never on
-   a dirty or unreviewed branch), save `recovery.combinedPatch` to a file and
+   a dirty or unreviewed branch), save `recovery.combinedPatch` from the local
+   record to a file and
    run `git apply --check` followed by `git apply`; then create each
    `recovery.untrackedFiles` entry at its recorded `path` with its recorded
    `content`.

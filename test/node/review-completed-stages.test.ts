@@ -4,14 +4,8 @@ import { runAgentTicket } from '../../scripts/agent/ticket-flow.js';
 import type { CommandExecutor } from '../../scripts/review/runner.js';
 import { createRunSummaryRecorder } from '../../scripts/review/run-summary.js';
 
-// Seam under test: durable completed-stage state (ticket #31, final acceptance
-// blocker on PR #34). The review cycle must accumulate completed stages instead
-// of resetting them, and workflow terminal status must render the actual stage
-// list instead of requiring log inspection.
-
-function readWorkflow(name: string): string {
-  return readFileSync(`.github/workflows/${name}`, 'utf8');
-}
+// Seam under test: local durable completed-stage state. The review cycle must
+// accumulate completed stages instead of resetting them.
 
 function readReviewCycleSource(): string {
   return readFileSync('scripts/review-cycle.ts', 'utf8');
@@ -95,25 +89,6 @@ describe('agent:ticket outcome completed stages', () => {
       'review',
     ]);
   });
-});
-
-describe('workflow terminal completed stages', () => {
-  it.each(['agent-fix-cycle.yml', 'agent-ticket.yml'])(
-    'never falls back to Completed: (see run log) on %s',
-    (name) => {
-      expect(readWorkflow(name)).not.toContain('Completed: (see run log)');
-    },
-  );
-
-  it.each(['agent-fix-cycle.yml', 'agent-ticket.yml'])(
-    'renders completed stages from structured evidence on %s',
-    (name) => {
-      const workflow = readWorkflow(name);
-
-      expect(workflow).toMatch(/completedStages/);
-      expect(workflow).toMatch(/Completed: \$COMPLETED/);
-    },
-  );
 });
 
 const MAIN_HEAD = 'a'.repeat(40);

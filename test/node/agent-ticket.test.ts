@@ -342,12 +342,12 @@ describe('agent:ticket success orchestration', () => {
     expect(sequence.indexOf('gh pr create')).toBeLessThan(sequence.indexOf('worker npm'));
   });
 
-  it('emits one best-effort approval hint after PR creation without blocking READY (ticket #47)', async () => {
-    const script = successScript();
+  it('does not dispatch hosted approval requests from the local ticket flow', async () => {
+    const fixture = scriptedDeps(successScript());
+    const commands: string[] = [];
     let headCalls = 0;
-    const fixture = scriptedDeps(script);
-    const dispatchCalls: string[] = [];
     const execute: CommandExecutor = (command, args) => {
+      commands.push(`${command} ${args.join(' ')}`);
       if (command === 'git' && args.join(' ') === 'rev-parse HEAD') {
         headCalls += 1;
         return Promise.resolve({
@@ -355,51 +355,13 @@ describe('agent:ticket success orchestration', () => {
           stderr: '',
         });
       }
-      if (command === 'gh' && args[0] === 'repo') {
-        return Promise.resolve({ stdout: 'o/r\n', stderr: '' });
-      }
-      if (command === 'gh' && args[0] === 'api' && args[1] === 'repos/o/r/dispatches') {
-        dispatchCalls.push(`${command} ${args.join(' ')}`);
-        return Promise.resolve({ stdout: '', stderr: '' });
-      }
       return fixture.execute(command, args);
     };
 
-    const result = await runAgentTicket('10', {
-      execute,
-      runWorker: fixture.runWorker,
-    });
+    const result = await runAgentTicket('10', { execute, runWorker: fixture.runWorker });
 
     expect(result.exitCode).toBe(0);
-    expect(dispatchCalls).toHaveLength(1);
-    expect(dispatchCalls[0]).toContain('approve-agent-ci-request');
-    expect(dispatchCalls[0]).toContain('client_payload[pr]=42');
-  });
-
-  it('tolerates an approval-hint outage and still reaches READY via the backstop (ticket #47)', async () => {
-    const script = successScript();
-    let headCalls = 0;
-    const fixture = scriptedDeps(script);
-    const execute: CommandExecutor = (command, args) => {
-      if (command === 'git' && args.join(' ') === 'rev-parse HEAD') {
-        headCalls += 1;
-        return Promise.resolve({
-          stdout: headCalls === 1 ? `${MAIN_HEAD}\n` : `${NEXT_HEAD}\n`,
-          stderr: '',
-        });
-      }
-      if (command === 'gh' && args[0] === 'repo') {
-        return Promise.reject(new Error('network down'));
-      }
-      return fixture.execute(command, args);
-    };
-
-    const result = await runAgentTicket('10', {
-      execute,
-      runWorker: fixture.runWorker,
-    });
-
-    expect(result.exitCode).toBe(0);
+    expect(commands.some((command) => command.includes('/dispatches'))).toBe(false);
   });
 
   it('never merges, deploys, publishes or touches secrets', async () => {
@@ -632,10 +594,10 @@ describe('agent:ticket failure and escalation paths', () => {
     expect(result.prUrl).toBe('https://github.com/o/r/pull/42');
   });
 
-  it('treats an approval-waiting review:cycle as recoverable BLOCKED, not FATAL (ticket #47)', async () => {
+  it('reports unavailable hosted approval as a recoverable local BLOCKED state', async () => {
     const script = successScript();
     const approvalWaiting = new Error(
-      'npm run review:cycle failed (exit 1): REVIEW-CYCLE BLOCKED: CI checks for the reviewed HEAD are awaiting trusted approval (action_required)',
+      'npm run review:cycle failed (exit 1): REVIEW-CYCLE BLOCKED: CI checks for the reviewed HEAD require an unavailable hosted approval (action_required); resolve the run outside the local review flow and rerun review:cycle',
     );
     script['worker npm run review:cycle'] = approvalWaiting;
     let headCalls = 0;

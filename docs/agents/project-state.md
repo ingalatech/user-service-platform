@@ -26,8 +26,8 @@ wayfinder -> to-spec -> to-tickets -> implement
 ## Operating agreement
 
 - **ChatGPT** owns design discussion, Wayfinder/spec/ticket planning, orchestration decisions, inspection of durable GitHub evidence, trusted publication where required, final acceptance/verification, and may perform the final PR merge through a separately authorized GitHub operation once the agreed gates are satisfied and no human decision remains pending.
-- **OpenCode agents** are the primary implementation/correction and adversarial-review workers.
-- GitHub-triggered `/agent-ticket` and `/agent-fix-cycle` are the default remote execution paths; local OpenCode is fallback/debug.
+- **OpenCode agents** are the primary implementation/correction and adversarial-review workers, run locally through Herdr in isolated ticket worktrees.
+- GitHub Actions is a deterministic CI boundary only; implementation, correction, and review agents do not run on GitHub-hosted runners.
 - OpenCode/model-run agents and repository automation do **not** merge, deploy, publish production infrastructure, mutate secrets, or receive unrestricted push/workflow-write credentials. They stop at `READY FOR FINAL ACCEPTANCE`.
 - “No automated merge” means the agent/workflow cannot self-merge. It does not prohibit ChatGPT, acting as the separately authorized final operator, from merging an accepted PR with an exact expected HEAD.
 - Deployment, production-infrastructure mutation, and secret mutation remain separately controlled even after final acceptance; merge authority does not imply deployment authority.
@@ -53,12 +53,11 @@ commercial lifecycle details are tracked by decision #147. Consumer transport
 and reusable-token behavior are settled by decision #149 and spec #150. No consumer
 repository or service-copy repository is required for this backend increment.
 
-Product work takes priority over further tooling. The operator authorizes
-local development with their help as proxy when hosted bots, errors or Actions
-delay delivery. Preserve isolated work, meaningful checks and review evidence;
-production promotion and real charges remain separately controlled. The
-previous default hosted execution path remains available rather than being a
-prerequisite for progress.
+Product work takes priority over further tooling. Implementation/review work
+runs locally in isolated Herdr worktrees. Preserve meaningful checks and
+independent review evidence; sandbox and production release commands are
+explicit local operator actions. GitHub Actions remains limited to deterministic
+repository CI.
 
 Maintenance #143/#144 is implemented by PR #145 (remove wall-clock CI
 polling waits from the real review-cycle regression tests), pending final
@@ -239,35 +238,31 @@ READY recovery reapplication through run 38255595340, are historical and
 superseded by the accepted PR #131 merge above; they must not be treated as
 current blockers.
 
-## Remote execution/review gate
+## Local execution and deterministic CI
 
-Durable accepted tooling:
+GitHub Actions contains only `.github/workflows/ci.yml`, triggered by pushes
+to `main` and pull requests. It runs pinned dependency installation, lint,
+format, typecheck, OpenAPI drift, Worker tests, and harness tests with
+read-only repository permissions and no Cloudflare credentials. There are no
+agent, approval, deployment, or promotion workflows.
 
-- #31 event-driven status/watchdogs: closed.
-- #36 least-privilege trusted workflow-file publication: closed.
-- #40 complete notification-first run status: closed.
-- #44 narrow trusted exact-HEAD CI approval for eligible agent-created PRs: closed.
-- #47 action-required CI recovery: closed; PR #46 subsequently reached READY through run `34722805060` on its preserved exact HEAD.
-- #37 Node-24-native GitHub Actions upgrade: closed/completed. The #36 trusted-publication artifact was published byte-for-byte, PR #50 passed correction/gates/Standards/Spec/exact-HEAD CI on `f2d6533e03e1d16310e7a92e7ac0dbc11b76a46d`, and ChatGPT performed the final squash merge with expected-head protection. Main commit: `5e71c8b9f36a8a140916a9ec5f90719253b71204`.
-- #51 deterministic remote agent Git identity: closed/completed. `npm run agent:ticket` now relies on the npm `preagent:ticket` lifecycle hook to configure `github-actions[bot]` through repository-local `git config --local` only when `GITHUB_ACTIONS=true`; local developer identity is untouched and no extra GitHub permission or credential is introduced. PR #52 was merged before the successful #13 rerun; main commit: `7a5ae51cc0d4607eca62f43f7848bd5c766731ab`.
+Implementation and review agents run locally through OpenCode/Herdr in
+isolated ticket worktrees. Preserve approved-ticket scope, TDD where possible,
+repository gates, and independent exact-HEAD Standards and Spec reviews.
+Sandbox and production release commands are local, explicit operator actions;
+production retains its explicit confirmation boundary. See
+`docs/agents/opencode.md` and `docs/operations/sandbox-release-runbook.md`.
 
-Review/execution invariants:
-
-- Standards and Spec are independent axes.
-- review markers are exact-HEAD; stale markers never satisfy a new HEAD.
-- corrections rerun both axes.
-- repository gates plus exact-HEAD CI are required before READY.
-- `agent:ticket` remote commits depend on the repository-owned `preagent:ticket` Git-identity preflight documented in `docs/agents/opencode.md`; it must remain GitHub-Actions-only and `git config --local`.
-- safe-push is deterministic repo code; model-run agents do not get generic push.
-- `.github/workflows/**` corrections stop at the #36 trusted-publication handoff unless a separately authorized trusted operator publishes the verified artifact.
-- agent/workflow execution never self-merges, deploys, or mutates secrets.
-- final merge by ChatGPT is allowed only after final acceptance, with the expected HEAD supplied to the GitHub merge operation so a moved PR fails closed.
+The former hosted agent/deployment workflows and their approval automation
+were retired by implementation ticket #171. Their historical run evidence
+does not describe the current execution path. Local agent, review, deploy, and
+provision scripts remain available where used by local operations.
 
 ### Current orchestration state
 
 The [bounded startup diagnosis](https://github.com/JonatanGarbuyo/user-service-platform/pull/109#issuecomment-5944424053) is historical. The maintainer approved the Standards model recovery in [source-ticket decision5952117927](https://github.com/JonatanGarbuyo/user-service-platform/issues/82#issuecomment-5952117927). Main commit `9cc8e30d0d5ac002d0b5a82d2ff9863b1bc56d88` adopts only the independently reviewed and exact-HEAD-CI-tested operational configuration, matching marker identity, provenance instructions and regression fixtures. Read live reviewer configuration rather than copying model assignments from this checkpoint.
 
-The former Standards startup and trusted-approval blockers are resolved and merged on main through PR #109. The temporary runner probes were removed in main commit `3ed03977cce66bdd4029f7eddc93b0fa8d138440`; the agent workflows reinstall dependencies deterministically (`npm ci`) before quality gates, so no dependency-restoration blocker remains. The extra Standards-looking report emitted by Spec in run `36954225501` has an invalidated marker and remains informational. Every configured reviewer must publish only its own axis; legacy model identities never satisfy the recovered configuration.
+Historical: the former Standards startup and trusted-approval blockers were resolved and merged on main through PR #109. The temporary runner probes were removed in main commit `3ed03977cce66bdd4029f7eddc93b0fa8d138440`; former agent workflows reinstalled dependencies deterministically (`npm ci`) before quality gates. The extra Standards-looking report emitted by Spec in run `36954225501` has an invalidated marker and remains informational. Every configured reviewer must publish only its own axis; legacy model identities never satisfy the recovered configuration. Agent workflows have since been retired; local agents use the local pinned checkout and repository gates.
 
 #114 (local Matt skill dependencies) and #115 (its publication) are closed/completed on main at `e885e1c84460b2af6c7aeceac156314645febba1`. The 25-GitHub-run skill-usage audit is complete and recorded in the Product frontier section above; no ChatGPT conversation dataset exists and none is inferred. Skill-evidence work (#116/#117, PR #118) and the manual-QA mailbox slice (#119, PR #120) are closed/merged. #121 (release reconciliation for the operator-authorized three-recipient sandbox configuration plus the 2026-10-07 manual Identity acceptance) is closed/completed via PR #122. Recovery #127 is completed via merged PR #128 (main `87fe7c15770835d7b03f511868262d0c66e80d94`; CI 37853951844 and sandbox deploy 37853951800 succeeded). #124 is accepted and closed via merged PR #129 (main `c24215b84019f8b42887854a3a9559399d33c3a9`); sandbox deploy run 38057103943 succeeded on that commit. #125 is accepted and closed via merged PR #130 (main `324933913cff9100bedd1d2d80b39740a72b1429`; CI 38249267972, sandbox deploy run 38249656941 succeeded). #126 is accepted and closed via merged PR #131 (main `9a5e0c75717a6e4707e9964aa550ffbd9a091f52`; reviewed HEAD `62e174d9ed0ca73733a9e69e18b26b4ecd6506e1` with Standards PASS 6125453202, Spec PASS 6125480704, exact-HEAD CI 38251894375, READY recovery 38255595340; main CI 38258618931 and sandbox deploy/smoke 38258618860 succeeded). Parent spec #123 is closed/completed by operator acceptance comment 6126035306. At that time, current work was ticket #132 (release-state reconciliation of this checkpoint and checklist); it introduced no product, architecture, or deployment change. That #132-active status is historical and superseded by the Reviewer lifecycle section below (#132 closed via PR #133; diagnostics #140/#141 completed; current backend product planning is map #146). Run the configured review cycle on the published HEAD, preserve independent reviewer identities and exact-HEAD evidence, and reconcile any new finding or moved HEAD against live GitHub.
 

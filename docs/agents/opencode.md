@@ -76,20 +76,14 @@ A chat transcript is not stronger authority than these artifacts.
 - Follow the ticket's highest agreed test seam and use TDD where required.
 - A green formatter/linter is not sufficient; every acceptance criterion must be verified.
 
-### Remote Git identity preflight
+### Local Git identity and publication
 
-`npm run agent:ticket` deliberately relies on npm's lifecycle hook `preagent:ticket` before the ticket runner starts. The hook executes `scripts/configure-agent-git-identity.ts`, which configures the ephemeral GitHub Actions checkout with the deterministic `github-actions[bot]` identity required for local ticket commits before safe publication.
-
-The invariant is narrow:
-
-- the hook acts only when `GITHUB_ACTIONS=true`;
-- it sets only `user.name` and `user.email` through `git config --local`;
-- outside GitHub Actions it is a no-op and must not overwrite a developer's Git identity;
-- it must never switch to `--global` configuration;
-- it does not add credentials, GitHub permissions, generic push capability, workflow-write, merge, deploy, or secret access;
-- branch publication still goes through the repository-owned safe-push/trusted-publication controls.
-
-This preflight exists because the remote implementer is allowed to create local commits, while the GitHub-hosted checkout does not otherwise guarantee a usable commit identity.
+Run `npm run agent:ticket` through OpenCode/Herdr from an isolated local
+worktree. Use the developer's normal local Git identity; the
+`preagent:ticket` hook is a no-op outside GitHub Actions and must not overwrite
+it. Local branch publication still goes through the repository-owned
+safe-push/trusted-publication controls. No GitHub-hosted agent workflow is
+part of this execution path.
 
 ## Pull request as the review handoff
 
@@ -126,10 +120,10 @@ Implementation agents may choose local details that do not alter public contract
 
 The implementation/correction agent may commit on an isolated ticket branch but may not deploy, publish, merge, mutate production infrastructure, or change secrets. Reviewer agents are read-only except for publishing review evidence to the PR.
 
-Repository-owned remote workflows may perform narrowly validated branch publication through deterministic guards. They must not expose generic push, workflow-write, merge, deploy, publish, or secret-mutation capabilities to the model process.
+Repository-owned local scripts may perform narrowly validated branch publication through deterministic guards. They must not expose generic push, workflow-write, merge, deploy, publish, or secret-mutation capabilities to the model process.
 
 ## Current implementation frontier
 
 Do not hardcode a product frontier in this process document. Read `docs/agents/project-state.md` for the last verified checkpoint, then confirm it against live GitHub issue/PR state before launching work.
 
-After issue #31 is accepted, GitHub-triggered `/agent-ticket` and `/agent-fix-cycle` are the default execution path. Local OpenCode remains the fallback/debug path.
+Implementation and review agents run locally through OpenCode/Herdr in isolated ticket worktrees. Follow the existing ticket, TDD, and independent Standards/Spec review requirements above; do not execute agent workflows from GitHub Actions.

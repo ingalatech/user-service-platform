@@ -16,7 +16,7 @@ Sandbox and production are separate Cloudflare Worker environments and use separ
 
 Pull requests initially run local/CI checks only; per-PR deployed Cloudflare infrastructure is deferred.
 
-Once deployment automation exists, merges to `main` may deploy automatically to sandbox. Production is an explicit promotion/release step and records the source commit plus resulting Worker version/deployment identifier.
+Sandbox and production releases are explicit local operator actions. GitHub Actions runs deterministic repository CI only; it does not execute agents, upload Worker versions, promote traffic, or mutate Cloudflare resources. Operators use the repository deployment commands from an isolated local worktree and record the source commit plus resulting Worker version/deployment identifier. Production remains a separately confirmed promotion.
 
 Database migrations are version controlled and validated against local/disposable D1 before merge. Production schema changes use an expand-deploy-contract strategy whenever rollback compatibility could matter:
 
@@ -30,7 +30,7 @@ Smoke tests are required after sandbox and production deployment.
 
 ## Consequences
 
-- Deployment automation must select environment-specific bindings explicitly.
+- Local release tooling must select environment-specific bindings explicitly.
 - Secrets are configured outside source control.
 - Migration design must account for the immediately preceding Worker version when rollback is plausible.
 - Destructive migrations cannot be casually coupled to the code release that stops using the old shape.

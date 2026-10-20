@@ -89,7 +89,7 @@ Cycles: <n>
 ## Exact-HEAD CI read recovery
 
 CI observation reads the authoritative commit check-runs for the reviewed
-SHA (plus best-effort exact-HEAD workflow runs). A failed read is not a
+SHA, plus a read-only exact-HEAD CI workflow observation for zero-job runs. A failed read is not a
 worker failure and never becomes `FATAL` or a fabricated `PASS`:
 
 - Up to two consecutive failed check-run reads recover in the same cycle:
@@ -98,12 +98,13 @@ worker failure and never becomes `FATAL` or a fabricated `PASS`:
   nested retry budget, and no wait happens after the final allowed
   observation or after the third consecutive failure.
 - Any successful fetch clears the consecutive-error state, even when the
-  checks are still pending, empty, or awaiting trusted approval. The final
+  checks are still pending or empty. The final
   summary reflects the last authoritative result.
-- Genuine CI failure still fails fast, and missing, pending, or
-  approval-waiting checks are never success. Standards, Spec, correction,
-  and gate invocations are unchanged during observation, and at most one
-  best-effort approval dispatch fires per cycle.
+- Genuine CI failure and `action_required` both fail fast; the latter has no
+  local approval route after hosted approval workflows were retired. Missing
+  and pending checks remain non-success and are polled within the existing
+  bound. Standards, Spec, correction, and gate invocations are unchanged
+  during observation; no approval dispatch is sent.
 
 Operator distinction: an unreadable end (`cannot prove CI checks for the
 reviewed HEAD`) means GitHub could not be read — it is not evidence about
@@ -114,8 +115,9 @@ the normal review/gate flow. Unreadable `BLOCKED` leaves CI unproven and
 requires operator inspection of the exact-HEAD checks/evidence before
 choosing recovery; it does not reuse prior reviews. There is no CI-only
 resume mode. An observed nonpass (`CI checks for the reviewed
-HEAD are not successful`, or awaiting trusted approval) reports what CI
-actually said. No claim is made about why a historical read failed.
+HEAD are not successful`, including `action_required`) reports what CI
+actually said. Resolve approval-required runs outside the local review flow,
+then rerun `review:cycle`. No claim is made about why a historical read failed.
 
 Both axes stay independent: one axis never cancels or reranks the other, and
 Muse is invoked only when blocking findings require an in-scope code

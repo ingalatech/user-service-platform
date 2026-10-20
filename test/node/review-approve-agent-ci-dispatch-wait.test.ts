@@ -1,38 +1,45 @@
-import { readFile } from 'node:fs/promises';
-import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-
-const workflowsDir = resolve(
-  dirname(fileURLToPath(import.meta.url)),
-  '..',
-  '..',
-  '.github',
-  'workflows',
-);
+import {
+  buildApprovalDispatchArgs,
+  filterPolledRunsForHint,
+  parseDispatchHint,
+} from '../../scripts/review/approve-agent-ci.js';
 
 describe('approve-agent-ci dispatch creation-race recovery (ticket #47)', () => {
-  it('waits within bounds for a hinted action_required run instead of exiting after one empty lookup', async () => {
-    const raw = await readFile(resolve(workflowsDir, 'approve-agent-ci.yml'), 'utf8');
-
-    expect(raw).toMatch(/DISPATCH_WAIT_ATTEMPTS=1/);
-    expect(raw).toMatch(/DISPATCH_WAIT_ATTEMPTS=24/);
-    expect(raw).toMatch(/DISPATCH_WAIT_DELAY_SECONDS=15/);
-    expect(raw).toMatch(/for \(\(ATTEMPT=1; ATTEMPT<=DISPATCH_WAIT_ATTEMPTS; ATTEMPT\+=1\)\)/);
-    expect(raw).toMatch(/sleep "\$DISPATCH_WAIT_DELAY_SECONDS"/);
-    expect(raw).toMatch(/HINT_PR\$HINT_SHA\$HINT_RUN/);
-    expect(raw).toMatch(/MATCHED=/);
-    expect(raw).toMatch(/EVALUATED_ANY="true"/);
-    expect(raw).toMatch(/Hinted run did not enter action_required within/);
+  it('builds a narrow manual dispatch hint without approving a run', () => {
+    expect(
+      buildApprovalDispatchArgs('o/r', {
+        pr: 61,
+        headSha: 'e0ee52f21ecd28279f3e0a9b0a8bbd2b4b87a039',
+        ticket: 57,
+      }),
+    ).toEqual([
+      'api',
+      'repos/o/r/dispatches',
+      '--method',
+      'POST',
+      '-F',
+      'event_type=approve-agent-ci-request',
+      '-F',
+      'client_payload[pr]=61',
+      '-F',
+      'client_payload[head_sha]=e0ee52f21ecd28279f3e0a9b0a8bbd2b4b87a039',
+      '-F',
+      'client_payload[ticket]=57',
+    ]);
   });
 
-  it('preserves canonical action_required discovery and the trusted evaluator boundary', async () => {
-    const raw = await readFile(resolve(workflowsDir, 'approve-agent-ci.yml'), 'utf8');
+  it('parses and filters validated hints without trusting malformed fields', () => {
+    const headSha = 'e0ee52f21ecd28279f3e0a9b0a8bbd2b4b87a039';
+    const hint = parseDispatchHint({ pr: '61', head_sha: headSha.toUpperCase(), ticket: 57 });
+    const runs = [
+      { runId: 1, headSha, workflowName: 'ci', prNumbers: [61] },
+      { runId: 2, headSha, workflowName: 'ci', prNumbers: [62] },
+      { runId: 3, headSha: 'a'.repeat(40), workflowName: 'ci', prNumbers: [61] },
+    ];
 
-    expect(raw).toMatch(/status=action_required/);
-    expect(raw).toMatch(/\.workflow_runs\[\]/);
-    expect(raw).toMatch(/scripts\/approve-agent-ci\.ts/);
-    expect(raw).toMatch(/ref:\s*main/);
-    expect(raw).not.toMatch(/gh\s+pr\s+checkout/i);
+    expect(hint).toEqual({ pr: 61, headSha, ticket: 57 });
+    expect(filterPolledRunsForHint(runs, hint)).toEqual([runs[0]]);
+    expect(parseDispatchHint({ pr: 0, head_sha: 'abc', ticket: -1 })).toEqual({});
   });
 });

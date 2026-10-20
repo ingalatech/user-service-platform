@@ -43,15 +43,15 @@ through `npm run deploy` (ticket #78), which selects a target from the
 versioned secret-free `deploy/targets.json` and materializes a temporary
 target-specific Wrangler config (removed after the deployment, even on
 failure). Worker secrets remain configured directly in Cloudflare for the
-selected target Worker (section 2) and travel to CI only as repository
-secrets.
+selected target Worker (section 2); GitHub Actions has no Cloudflare
+credentials.
 
 ## 2. First-time target provisioning
 
 Prerequisites: a Cloudflare account with Workers Paid (D1 Time Travel
-retention beyond Free), `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`
-stored as repository secrets, and a mail-provider-authorized sender for the
-target environment.
+retention beyond Free), local Wrangler authentication or a local
+`CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`, and a
+mail-provider-authorized sender for the target environment.
 
 Provisioning is owned by one repository entry point (ticket #80), which
 derives physical resource names from the canonical deployment key so the
@@ -146,15 +146,15 @@ QA mailbox `cronistadev@gmail.com`, and the administrator QA mailbox
 stay runtime secrets configured directly on the Worker and never enter
 versioned config.
 
-Repository secrets required for automation:
+Local operator credentials and values (not GitHub repository secrets):
 
-| Secret                       | Purpose                                                                                                                                       |
+| Setting                      | Purpose                                                                                                                                       |
 | ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
-| `CLOUDFLARE_API_TOKEN`       | Wrangler deploys and D1 migration applies                                                                                                     |
-| `CLOUDFLARE_ACCOUNT_ID`      | Account scope for Wrangler                                                                                                                    |
-| `SANDBOX_BASE_URL`           | Deployed sandbox origin for the smoke test                                                                                                    |
-| `SANDBOX_SMOKE_EMAIL`        | Explicit allowlisted recipient for smoke registrations (ticket #87)                                                                           |
-| `SANDBOX_SMOKE_EMAIL_DOMAIN` | Sandbox-allowlisted domain for smoke registrations (domain fallback)                                                                          |
+| `CLOUDFLARE_API_TOKEN`       | Optional local Wrangler authentication for deploys and D1 migration applies                                                                   |
+| `CLOUDFLARE_ACCOUNT_ID`      | Account scope for local Wrangler operations                                                                                                   |
+| `SANDBOX_BASE_URL`           | Local smoke-test origin                                                                                                                       |
+| `SANDBOX_SMOKE_EMAIL`        | Explicit allowlisted recipient for local smoke registrations (ticket #87)                                                                     |
+| `SANDBOX_SMOKE_EMAIL_DOMAIN` | Sandbox-allowlisted domain for local smoke registrations (domain fallback)                                                                    |
 | `SANDBOX_SMOKE_PASSWORD`     | Stable operator-owned smoke credential for exact-recipient mode (ticket #91; wired as `SMOKE_PASSWORD` at runtime, never committed or logged) |
 
 When the sandbox `AUTH_MAIL_ALLOWLIST` holds exact emails rather than a
@@ -202,10 +202,10 @@ npx wrangler d1 delete user-service-sandbox
 
 ## 3. Release procedure
 
-### 3.1 Sandbox release (automatic)
+### 3.1 Sandbox release (local operator action)
 
-Merging to `main` triggers `.github/workflows/deploy-sandbox.yml`, which
-invokes the same deploy boundary a local operator uses:
+GitHub Actions does not deploy sandbox. From the isolated release worktree,
+the operator explicitly invokes the repository deploy boundary:
 
 ```bash
 npm run deploy -- --target rch-rugbychampagne --env sandbox --non-interactive
@@ -253,14 +253,11 @@ newer data shape can produce errors instead of silently succeeding.
 
 ### 3.3 Production promotion (explicit, human-controlled)
 
-Production is never deployed by merging, by the sandbox workflow, or by any
-push trigger. Promotion runs only via `.github/workflows/promote-production.yml`
-(`workflow_dispatch`) with three inputs: the `source_commit` SHA (must be an
-ancestor of `main`, verified in-workflow), the `target` key (default
-`rch-rugbychampagne`), and `confirm_production` set to the exact target
-production Worker name (e.g.
-`rch-rugbychampagne-user-service-production`). The deployer enforces that
-confirmation before any remote mutation. The equivalent local command is:
+Production is never deployed by merging or by a GitHub Actions trigger.
+Promotion is an explicit local operator action. Select the target and provide
+the exact production Worker name (for example
+`rch-rugbychampagne-user-service-production`) as confirmation. The deployer
+enforces that confirmation before any remote mutation:
 
 ```bash
 npm run deploy:production -- --target rch-rugbychampagne \
@@ -292,7 +289,7 @@ npx wrangler d1 migrations list DB --remote --config /tmp/rch-sandbox.json
 # deployer and in CI).
 npx wrangler d1 migrations apply DB --local
 
-# Apply to the target (sandbox is automated; production via promotion).
+# Apply to the target only as an explicit local operator action.
 npx wrangler d1 migrations apply DB --remote --config /tmp/rch-sandbox.json
 ```
 
@@ -367,7 +364,7 @@ export SMOKE_SANDBOX_BASE_URL="https://rch-rugbychampagne-user-service-sandbox.j
 # mailbox; the smoke keeps using the stable recipient only):
 export SMOKE_SANDBOX_EMAIL="jonatangarbuyo@gmail.com"  # stable smoke recipient only
 # Exact-recipient mode requires a stable operator-owned credential (never
-# committed or logged; automation provides it from SANDBOX_SMOKE_PASSWORD):
+# committed or logged; provide it locally):
 export SMOKE_PASSWORD="<operator-owned-sandbox-smoke-password>"
 # Domain-generated fallback (only when no exact recipient is configured):
 # export SMOKE_SANDBOX_EMAIL_DOMAIN="ops.example.org"  # sandbox-allowlisted only
@@ -391,8 +388,8 @@ rewriting. The same explicit address is used directly every run; nothing is
 generated or inferred in exact mode.
 
 Exact-recipient mode requires an explicit stable operator-owned smoke
-credential (`SMOKE_PASSWORD`; automation provides it from the
-`SANDBOX_SMOKE_PASSWORD` repository secret, never committed or logged).
+credential (`SMOKE_PASSWORD`; provide it locally from the operator's secret
+store, never commit or log it).
 Domain-generated mode keeps a random per-run password. The smoke never
 silently generates a credential in exact mode: a missing `SMOKE_PASSWORD`
 fails closed before any HTTP request.
