@@ -121,11 +121,13 @@ describe('wrangler config materialization', () => {
     expect(config.main).toBe(resolveRepoWorkerMain(resolveRepoRoot()));
   });
 
-  it('does not emit a secret declaration or secret values', () => {
+  it('declares required secret names without materializing values', () => {
     const config = buildTargetWranglerConfig(SANDBOX_RESOLVED);
-    expect(config).not.toHaveProperty('secrets');
+    expect(config.secrets).toEqual({
+      required: ['BETTER_AUTH_SECRET', 'RESEND_API_KEY'],
+    });
     expect(JSON.stringify(config)).not.toMatch(
-      /BETTER_AUTH_SECRET|RESEND_API_KEY|SMTP_USER|SMTP_PASSWORD/,
+      /"(BETTER_AUTH_SECRET|RESEND_API_KEY|SMTP_USER|SMTP_PASSWORD)"\s*:/,
     );
   });
 

@@ -6,6 +6,10 @@ import {
   workerName,
   type DeployableEnvironment,
 } from './naming.js';
+import { resolveEffectiveConfig } from '../../src/config/config.js';
+import { resolveConsumerTokenConfig } from '../../src/features/identity/consumer-tokens.js';
+import { resolveGatewayOrigins } from '../../src/features/identity/origin-guard.js';
+import { validateSmtpSettings } from '../../src/features/identity/smtp-transport.js';
 
 const DATABASE_ID_PATTERN =
   /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
@@ -170,6 +174,17 @@ export function resolveEnvironmentDeployment(
         ].includes(name),
     ).map((name) => [name, file[name]]),
   );
+  resolveEffectiveConfig({ environment, runtime: vars });
+  resolveConsumerTokenConfig({
+    environment: 'local',
+    issuer: file.AUTH_JWT_ISSUER,
+    audience: file.AUTH_JWT_AUDIENCE,
+    ttlSeconds: file.AUTH_JWT_TTL_SECONDS,
+  });
+  resolveGatewayOrigins(file.AUTH_GATEWAY_ORIGINS);
+  if (file.AUTH_MAIL_TRANSPORT.trim().toLowerCase() === 'smtp') {
+    validateSmtpSettings({ SMTP_PORT: file.SMTP_PORT, SMTP_SECURE: file.SMTP_SECURE });
+  }
   return {
     targetKey: 'rch-rugbychampagne',
     company: 'rch',
