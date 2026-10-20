@@ -23,6 +23,13 @@ operator-managed outside the repository.
    During the temporary Identity-unavailable window, only `/v1/health` is
    expected to pass. Record the resulting Worker version after Dashboard
    secret changes.
+8. After readiness passes, perform the privileged manual acceptance with:
+   `npm run smoke:sandbox`. This explicitly covers registration, login and
+   email verification through the allowlisted QA mailbox. Supply its QA-only
+   values (`SMOKE_SANDBOX_EMAIL`, `SMOKE_PASSWORD` and, when completing the
+   mailbox transition, `SMOKE_VERIFICATION_TOKEN`) only for this manual smoke;
+   they remain outside `deploy` and `promote`, and are never committed or
+   placed in a release environment file.
 
 Provisioning supports sandbox D1 only. It discovers or creates the exact
 database named by `D1_NAME`, then stages the discovered UUID into `.env.sandbox`
