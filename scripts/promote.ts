@@ -12,6 +12,7 @@ import {
   runPromotion,
   type DeployCommandRunner,
 } from './deploy/orchestrate.js';
+import { parseWorkerVersions, type WorkerVersionSummary } from './deploy/versions.js';
 import { listTargetKeys, loadTargetsFile, resolveTargetDeployment } from './deploy/targets.js';
 import {
   applyAccountOverrides,
@@ -21,6 +22,20 @@ import {
 
 const execFileAsync = promisify(execFile);
 const repoRoot = join(fileURLToPath(new URL('.', import.meta.url)), '..');
+
+export function preparePromotionVersions(value: unknown): {
+  readonly versions: WorkerVersionSummary[];
+  readonly display: string[];
+} {
+  const versions = parseWorkerVersions(value);
+  return {
+    versions,
+    display: versions.map(
+      (version, index) =>
+        `${String(index + 1)}) ${version.id} ${version.createdOn} ${version.annotations}`,
+    ),
+  };
+}
 
 async function main(): Promise<void> {
   const targetsFile = loadTargetsFile(
@@ -80,25 +95,14 @@ async function main(): Promise<void> {
         configPath,
       ]);
       if (listed.exitCode !== 0) throw new Error('Unable to list Worker versions.');
-      const versions: unknown = JSON.parse(listed.stdout ?? '[]');
-      if (!Array.isArray(versions) || versions.length === 0)
-        throw new Error('No Worker versions are available.');
-      versions.forEach((version: unknown, index: number) => {
-        if (typeof version === 'object' && version !== null) {
-          const record = version as Record<string, unknown>;
-          const field = (name: string): string => {
-            const value = record[name];
-            return typeof value === 'string' ? value : '';
-          };
-          console.log(
-            `${String(index + 1)}) ${field('version_id') || 'unknown'} ${field('created_on')} ${field('message')}`,
-          );
-        }
+      const prepared = preparePromotionVersions(JSON.parse(listed.stdout ?? '[]') as unknown);
+      if (prepared.versions.length === 0) throw new Error('No Worker versions are available.');
+      prepared.display.forEach((line) => {
+        console.log(line);
       });
-      const selected = versions[Number(await readline.question('Select version number: ')) - 1] as
-        Record<string, unknown> | undefined;
-      if (typeof selected?.version_id !== 'string')
-        throw new Error('No immutable Version ID selected.');
+      const selected =
+        prepared.versions[Number(await readline.question('Select version number: ')) - 1];
+      if (selected === undefined) throw new Error('No immutable Version ID selected.');
       let confirm = option('--confirm');
       if (resolved.environment === 'production') {
         confirm ??= await readline.question(
@@ -106,7 +110,7 @@ async function main(): Promise<void> {
         );
       }
       await runPromotion(
-        { resolved, versionId: selected.version_id, confirm },
+        { resolved, versionId: selected.id, confirm },
         {
           materialize: () => configPath,
           cleanup: removeTempWranglerConfig,
