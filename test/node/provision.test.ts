@@ -55,6 +55,7 @@ interface Harness {
   readonly commands: { command: string; args: string[] }[];
   readonly writes: TargetsFile[];
   readonly logs: string[];
+  readonly accountIds: string[];
 }
 
 function withDatabaseId(
@@ -76,9 +77,23 @@ function withDatabaseId(
 
 function createHarness(options: HarnessOptions = {}): Harness {
   let file = options.file ?? withDatabaseId(loadTargetsFromRepo(), 'sandbox', '');
+  file = {
+    ...file,
+    targets: file.targets.map((target) => ({
+      ...target,
+      environments: {
+        sandbox: { ...target.environments.sandbox, accountId: '11111111111111111111111111111111' },
+        production: {
+          ...target.environments.production,
+          accountId: '11111111111111111111111111111111',
+        },
+      },
+    })),
+  };
   const commands: { command: string; args: string[] }[] = [];
   const writes: TargetsFile[] = [];
   const logs: string[] = [];
+  const accountIds: string[] = [];
   const harness: Harness = {
     io: {
       loadTargets: () => file,
@@ -93,8 +108,9 @@ function createHarness(options: HarnessOptions = {}): Harness {
         logs.push(message);
       },
     },
-    runner: (command, args) => {
+    runner: (command, args, scope) => {
       commands.push({ command, args: [...args] });
+      accountIds.push(scope?.accountId ?? '');
       if (args.includes('d1') && args.includes('list')) {
         const createSeen = commands.some((entry) => entry.args.includes('create'));
         if (createSeen) {
@@ -167,6 +183,7 @@ function createHarness(options: HarnessOptions = {}): Harness {
     commands,
     writes,
     logs,
+    accountIds,
   };
   return harness;
 }
@@ -189,6 +206,10 @@ describe('provisioning plan mode', () => {
     expect(harness.writes).toEqual([]);
     expect(outcome.configUpdated).toBe(false);
     expect(harness.logs.join('\n')).toContain(SANDBOX_DB);
+    expect(harness.accountIds.length).toBeGreaterThan(0);
+    expect(
+      harness.accountIds.every((accountId) => accountId === '11111111111111111111111111111111'),
+    ).toBe(true);
   });
 
   it('performs no remote mutation in default plan mode', async () => {
@@ -222,6 +243,16 @@ describe('provisioning plan mode', () => {
 });
 
 describe('provisioning apply mode', () => {
+  it('refuses a configured D1 id missing from the selected account before creating a replacement', async () => {
+    const harness = createHarness({
+      file: withDatabaseId(loadTargetsFromRepo(), 'sandbox', REMOTE_SANDBOX_ID),
+    });
+    await expect(
+      runProvision(sandboxRequest({ mode: 'apply' }), harness.io, harness.runner),
+    ).rejects.toThrow(/not present in the selected Cloudflare account/i);
+    expect(harness.commands.some(({ args }) => args.includes('create'))).toBe(false);
+  });
+
   it('creates the exact canonical D1 and stages its id from JSON rediscovery', async () => {
     const harness = createHarness({
       remotesAfterCreate: [{ name: SANDBOX_DB, uuid: REMOTE_SANDBOX_ID }],

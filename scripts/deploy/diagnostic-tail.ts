@@ -424,7 +424,7 @@ export interface SessionFailureTailOptions {
 // timers once `stop()` runs) keeps the deploy alive until they fire, so they
 // cannot hide an in-flight failure.
 export function startSessionFailureTail(
-  resolved: Pick<ResolvedDeployment, 'workerName'>,
+  resolved: Pick<ResolvedDeployment, 'workerName'> & Partial<Pick<ResolvedDeployment, 'accountId'>>,
   configPath: string,
   options: SessionFailureTailOptions = {},
 ): Promise<SessionFailureTailHandle> {
@@ -441,7 +441,10 @@ export function startSessionFailureTail(
         ? { command: options.command ?? process.execPath, args: options.args ?? [] }
         : buildSessionFailureTailCommand(resolved, configPath, options.wranglerCliPath);
     const child: ChildProcess = spawnFn(tailCommand.command, [...tailCommand.args], {
-      env: process.env,
+      env: {
+        ...process.env,
+        ...(resolved.accountId === undefined ? {} : { CLOUDFLARE_ACCOUNT_ID: resolved.accountId }),
+      },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     // Liveness (ticket #100): never unref the controlled child. `stop()`

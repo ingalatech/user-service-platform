@@ -18,6 +18,7 @@ import {
 
 export interface TargetEnvironmentConfig {
   readonly databaseId: string;
+  readonly accountId?: string;
   readonly vars: Record<string, string>;
 }
 
@@ -45,6 +46,7 @@ export interface ResolvedDeployment {
   readonly workerName: string;
   readonly databaseName: string;
   readonly databaseId: string;
+  readonly accountId?: string;
   readonly vars: Record<string, string>;
 }
 
@@ -141,12 +143,18 @@ function loadEnvironmentConfig(
     );
   }
   const databaseId: unknown = value.databaseId;
+  const accountId: unknown = value.accountId ?? '';
   if (typeof databaseId !== 'string') {
     throw new Error(
       `Invalid deployment target "${targetKey}" environment "${environment}": "databaseId" must be a string (empty until provisioned).`,
     );
   }
-  return { databaseId, vars: assertSecretFreeVars(targetKey, environment, value.vars) };
+  if (typeof accountId !== 'string' || (accountId !== '' && !/^[0-9a-f]{32}$/i.test(accountId))) {
+    throw new Error(
+      `Invalid deployment target "${targetKey}" environment "${environment}": "accountId" must be empty or a 32-character hexadecimal Cloudflare account ID.`,
+    );
+  }
+  return { databaseId, accountId, vars: assertSecretFreeVars(targetKey, environment, value.vars) };
 }
 
 function loadTarget(value: unknown, service: string): DeploymentTargetConfig {
@@ -301,6 +309,7 @@ function resolveDeployment(
     workerName: name,
     databaseName: databaseName(identity),
     databaseId: config.databaseId,
+    accountId: config.accountId,
     vars: { ...config.vars },
   };
 }

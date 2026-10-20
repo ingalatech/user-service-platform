@@ -236,6 +236,9 @@ describe('sandbox smoke diagnostic tail lifecycle (ticket #96)', () => {
     const harness: TailHarness = {
       io: undefined as unknown as DeployIo,
       runner: (command, args) => {
+        if (args.includes('versions') && args.includes('list')) {
+          return Promise.resolve({ exitCode: 0, stdout: '[{"version_id":"existing"}]' });
+        }
         if (command === 'npm' && args.join(' ').includes('smoke:sandbox')) {
           if (options.smokeFails === true) {
             return Promise.resolve({ exitCode: 1 });
@@ -670,6 +673,9 @@ describe('smoke failure liveness (ticket #100)', () => {
         }),
     };
     const runner: DeployCommandRunner = (command, args) => {
+      if (args.includes('versions') && args.includes('list')) {
+        return Promise.resolve({ exitCode: 0, stdout: '[{"version_id":"existing"}]' });
+      }
       if (command === 'npm' && args.join(' ').includes('smoke:sandbox')) {
         return Promise.resolve({ exitCode: 1 });
       }
@@ -699,6 +705,9 @@ describe('sandbox diagnostic tail post-failure drain (ticket #102)', () => {
 
   function failingRunner(): DeployCommandRunner {
     return (command, args) => {
+      if (args.includes('versions') && args.includes('list')) {
+        return Promise.resolve({ exitCode: 0, stdout: '[{"version_id":"existing"}]' });
+      }
       if (command === 'npm' && args.join(' ').includes('smoke:sandbox')) {
         return Promise.resolve({ exitCode: 1 });
       }
@@ -707,7 +716,13 @@ describe('sandbox diagnostic tail post-failure drain (ticket #102)', () => {
   }
 
   function passingRunner(): DeployCommandRunner {
-    return () => Promise.resolve({ exitCode: 0 });
+    return (_command, args) =>
+      Promise.resolve({
+        exitCode: 0,
+        ...(args.includes('versions') && args.includes('list')
+          ? { stdout: '[{"version_id":"existing"}]' }
+          : {}),
+      });
   }
 
   it('declares a small bounded drain window well inside existing lifecycle bounds', async () => {

@@ -1,5 +1,5 @@
 import { execFile, spawn } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
@@ -9,13 +9,28 @@ import { removeTempWranglerConfig, writeTempWranglerConfig } from './deploy/mate
 import { formatPreflightError, preflightFailed, runPreflight } from './deploy/preflight.js';
 import { runPromotion, type DeployCommandRunner } from './deploy/orchestrate.js';
 import { listTargetKeys, loadTargetsFile, resolveTargetDeployment } from './deploy/targets.js';
+import {
+  applyAccountOverrides,
+  loadAccountOverrides,
+  resolveCloudflareAccountId,
+} from './deploy/account-config.js';
 
 const execFileAsync = promisify(execFile);
 const repoRoot = join(fileURLToPath(new URL('.', import.meta.url)), '..');
 
 async function main(): Promise<void> {
-  const targets = loadTargetsFile(
+  const targetsFile = loadTargetsFile(
     JSON.parse(readFileSync(join(repoRoot, 'deploy/targets.json'), 'utf8')) as unknown,
+  );
+  const overridesPath = join(repoRoot, 'deploy/targets.local.json');
+  const targets = applyAccountOverrides(
+    targetsFile,
+    loadAccountOverrides(
+      existsSync(overridesPath)
+        ? (JSON.parse(readFileSync(overridesPath, 'utf8')) as unknown)
+        : { version: 1, targets: {} },
+    ),
+    process.env.CLOUDFLARE_ACCOUNT_ID,
   );
   const readline = createInterface({ input: process.stdin, output: process.stdout });
   const args = process.argv.slice(2);
@@ -29,14 +44,24 @@ async function main(): Promise<void> {
       listTargetKeys(targets)[Number(await readline.question('Select target number: ')) - 1];
     const environment =
       option('--env') ?? (await readline.question('Environment (sandbox/production): ')).trim();
-    const resolved = resolveTargetDeployment(targets, { target, environment });
+    const targetDeployment = resolveTargetDeployment(targets, { target, environment });
+    const resolved = {
+      ...targetDeployment,
+      accountId: resolveCloudflareAccountId(
+        targetDeployment.accountId ?? '',
+        undefined,
+        process.env.CLOUDFLARE_ACCOUNT_ID,
+      ),
+    };
     const directory = mkdtempSync(join(tmpdir(), 'user-service-promote-'));
     let configPath = '';
     try {
       configPath = writeTempWranglerConfig(resolved, directory, { repoRoot });
       const run: DeployCommandRunner = async (command, commandArgs) => {
         try {
-          const { stdout } = await execFileAsync(command, commandArgs, { env: process.env });
+          const { stdout } = await execFileAsync(command, commandArgs, {
+            env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: resolved.accountId },
+          });
           return { exitCode: 0, stdout };
         } catch {
           return { exitCode: 1, stdout: '' };
@@ -90,7 +115,7 @@ async function main(): Promise<void> {
                 run: async (command, commandArgs) => {
                   try {
                     const { stdout } = await execFileAsync(command, commandArgs, {
-                      env: process.env,
+                      env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: deployment.accountId },
                     });
                     return { exitCode: 0, stdout };
                   } catch {
@@ -105,7 +130,7 @@ async function main(): Promise<void> {
           smoke: async () => {
             await new Promise<void>((resolve, reject) => {
               const child = spawn('npm', ['run', 'smoke:sandbox'], {
-                env: process.env,
+                env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: resolved.accountId },
                 stdio: 'inherit',
               });
               child.on('error', reject);

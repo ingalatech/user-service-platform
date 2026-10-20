@@ -81,6 +81,7 @@ export interface ProvisionCommandResult {
 export type ProvisionCommandRunner = (
   command: string,
   args: readonly string[],
+  scope?: { readonly accountId: string },
 ) => Promise<ProvisionCommandResult>;
 
 export interface ProvisionIo {
@@ -167,6 +168,12 @@ export async function runProvision(
     target: request.target,
     environment: request.environment,
   });
+  const accountId = resolved.accountId;
+  if (accountId === undefined || accountId === '') {
+    throw new Error('No Cloudflare account ID configured for the selected target and environment.');
+  }
+  const scopedRunner: ProvisionCommandRunner = (command, args) =>
+    runner(command, args, { accountId });
 
   if (request.mode === 'apply' && resolved.environment === 'production') {
     const expected = productionProvisionConfirmFor(resolved);
@@ -181,7 +188,7 @@ export async function runProvision(
     `provision target=${resolved.targetKey} environment=${resolved.environment} worker=${resolved.workerName} database=${resolved.databaseName} mode=${request.mode}`,
   );
 
-  const d1 = await provisionD1(request, resolved, io, runner);
+  const d1 = await provisionD1(request, resolved, io, scopedRunner);
 
   let configUpdated = false;
   if (request.mode === 'apply' && d1.effectiveId !== '' && d1.effectiveId !== resolved.databaseId) {
@@ -198,8 +205,8 @@ export async function runProvision(
     );
   }
 
-  const workerState = await discoverWorker(resolved, io, runner);
-  const secretStatus = await reportSecrets(resolved, workerState, io, runner);
+  const workerState = await discoverWorker(resolved, io, scopedRunner);
+  const secretStatus = await reportSecrets(resolved, workerState, io, scopedRunner);
 
   if (request.mode === 'plan' && d1.action === 'create') {
     io.log(
@@ -243,6 +250,11 @@ async function provisionD1(
   }
   const match = matches[0];
   if (match === undefined) {
+    if (resolved.databaseId !== '') {
+      throw new Error(
+        `Refusing provisioning for target "${resolved.targetKey}" environment "${resolved.environment}": configured D1 ID is not present in the selected Cloudflare account. Verify the account or clear the stale ID before provisioning.`,
+      );
+    }
     if (request.mode === 'plan') {
       io.log(`d1 plan CREATE database=${resolved.databaseName}`);
       return { effectiveId: '', action: 'create' };
@@ -287,11 +299,6 @@ async function provisionD1(
     if (!isAcceptedRemoteDatabaseId(postMatch.uuid)) {
       throw new Error(
         `Unable to provision target "${resolved.targetKey}" environment "${resolved.environment}": unexpected remote identifier for database "${resolved.databaseName}". Verify with "npx wrangler d1 list --json" and rerun with --apply to stage its id.`,
-      );
-    }
-    if (resolved.databaseId !== '' && resolved.databaseId !== postMatch.uuid) {
-      throw new Error(
-        `Refusing provisioning for target "${resolved.targetKey}" environment "${resolved.environment}": the configured database id disagrees with the remote exact-name D1 database "${resolved.databaseName}". Resolve the mismatch manually.`,
       );
     }
     io.log(`d1 created database=${resolved.databaseName}`);

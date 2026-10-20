@@ -237,4 +237,19 @@ describe('deployment targets', () => {
     expect(() => loadTargetsFile({ version: 2, targets: [] })).toThrow(/version/);
     expect(() => loadTargetsFile({ version: 1, targets: [] })).toThrow(/target/);
   });
+
+  it('rejects malformed non-secret Cloudflare account IDs', () => {
+    const file = readTargetsFile();
+    const malformed: TargetsFile = {
+      ...file,
+      targets: file.targets.map((target) => ({
+        ...target,
+        environments: {
+          ...target.environments,
+          sandbox: { ...target.environments.sandbox, accountId: 'not-a-cloudflare-account-id' },
+        },
+      })),
+    };
+    expect(() => loadTargetsFile(malformed)).toThrow(/32-character hexadecimal/);
+  });
 });

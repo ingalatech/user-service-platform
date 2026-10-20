@@ -49,9 +49,26 @@ credentials.
 ## 2. First-time target provisioning
 
 Prerequisites: a Cloudflare account with Workers Paid (D1 Time Travel
-retention beyond Free), local Wrangler authentication or a local
-`CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID`, and a
-mail-provider-authorized sender for the target environment.
+retention beyond Free), an account ID configured for the selected target and
+environment, Wrangler OAuth login (default) or an optional local
+`CLOUDFLARE_API_TOKEN`, and a mail-provider-authorized sender for the target.
+
+Cloudflare account IDs are non-secret 32-character hexadecimal identifiers.
+Set each target/environment's `accountId` in `deploy/targets.json` for the
+team default. To use a personal account without changing shared configuration,
+copy the sample and edit only the desired environment:
+
+```bash
+cp deploy/targets.local.example.json deploy/targets.local.json
+```
+
+`deploy/targets.local.json` is git-ignored. Resolution precedence is
+versioned `deploy/targets.json`, then the matching local override, then
+`CLOUDFLARE_ACCOUNT_ID` from the current process (highest precedence). The
+selected ID is materialized as Wrangler `account_id` and supplied to every
+Wrangler/provisioning executor call. Never put `CLOUDFLARE_API_TOKEN` or any
+other credential in either target file. The example IDs are placeholders, not
+usable Cloudflare accounts.
 
 Provisioning is owned by one repository entry point (ticket #80), which
 derives physical resource names from the canonical deployment key so the
@@ -118,12 +135,15 @@ npm run provision -- --target rch-rugbychampagne --env production --apply \
 ```
 
 If the provisioning command cannot safely complete a step (ambiguous
-discovery, a configured id that disagrees with the remote exact-name
-resource, or an unreachable provider), it fails closed and prints the exact
+discovery, a configured D1 ID absent from the selected account, a configured
+ID that disagrees with the remote exact-name resource, or an unreachable
+provider), it fails closed and prints the exact
 next operator action. The manual fallback for D1 creation is:
 
 ```bash
-npx wrangler d1 create rch-rugbychampagne-user-service-sandbox-db --update-config=false
+export CLOUDFLARE_ACCOUNT_ID="<selected-32-hex-account-id>"
+npx wrangler d1 create \
+  rch-rugbychampagne-user-service-sandbox-db --update-config=false
 # Creation prints human-readable text (pinned Wrangler has no --json flag for
 # this command) and never touches versioned config. Rerun provisioning to
 # rediscover the exact-name database and stage its id, then commit:
