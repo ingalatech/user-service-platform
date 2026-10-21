@@ -41,7 +41,7 @@ import {
   resolveEnvironmentDeployment,
 } from './deploy/environment-config.js';
 import { formatPreflightError, preflightFailed, runPreflight } from './deploy/preflight.js';
-import { runDeployment, type DeployIo } from './deploy/orchestrate.js';
+import { runDeployment, type DeployCommandOptions, type DeployIo } from './deploy/orchestrate.js';
 import { startSessionFailureTail } from './deploy/diagnostic-tail.js';
 import type { ResolvedDeployment } from './deploy/environment-config.js';
 
@@ -91,13 +91,15 @@ function runInherited(
   command: string,
   commandArgs: string[],
   accountId?: string,
+  options?: DeployCommandOptions,
 ): Promise<{ exitCode: number }> {
   return new Promise((resolvePromise) => {
     const child = spawn(command, commandArgs, {
       env:
-        accountId === undefined
+        options?.env ??
+        (accountId === undefined
           ? process.env
-          : { ...process.env, CLOUDFLARE_ACCOUNT_ID: accountId },
+          : { ...process.env, CLOUDFLARE_ACCOUNT_ID: accountId }),
       // Provider stderr is never operator output. Discovery captures it for
       // code classification; mutating commands expose only their exit code.
       stdio: ['inherit', 'inherit', 'ignore'],
@@ -226,7 +228,7 @@ async function main(): Promise<void> {
   const outcome = await runDeployment(
     { resolved, confirm: args.confirm, dryRun: args.dryRun },
     io,
-    async (command, commandArgs) => {
+    async (command, commandArgs, options) => {
       if (commandArgs.includes('list') && commandArgs.includes('--json')) {
         try {
           const { stdout } = await execFileAsync(command, commandArgs, {
@@ -240,7 +242,7 @@ async function main(): Promise<void> {
           return { exitCode: 1, stdout: '', stderr: processStderr(error) };
         }
       }
-      return runInherited(command, commandArgs, resolved.accountId);
+      return runInherited(command, commandArgs, resolved.accountId, options);
     },
   );
   console.log(`deployment complete worker=${outcome.workerName}`);

@@ -5,6 +5,7 @@ import {
   productionConfirmFor,
   runPromotion,
   runDeployment,
+  smokeEnvironment,
   type DeployCommandRunner,
   type DeployIo,
 } from '../../scripts/deploy/orchestrate.js';
@@ -24,6 +25,7 @@ const SANDBOX: ResolvedDeployment = {
   workerName: 'rch-rugbychampagne-user-service-sandbox',
   databaseName: 'rch-rugbychampagne-user-service-sandbox-db',
   databaseId: CONTRACT_SANDBOX_DATABASE_ID,
+  workerUrl: 'https://sandbox.example.test',
   vars: { AUTH_MAIL_TRANSPORT: 'resend' },
 };
 
@@ -33,6 +35,7 @@ const PRODUCTION: ResolvedDeployment = {
   workerName: 'rch-rugbychampagne-user-service-production',
   databaseName: 'rch-rugbychampagne-user-service-production-db',
   databaseId: CONTRACT_PRODUCTION_DATABASE_ID,
+  workerUrl: 'https://production.example.test',
 };
 
 const CANARY = 'canary-deploy-secret-abcdef123456';
@@ -40,14 +43,14 @@ const CANARY = 'canary-deploy-secret-abcdef123456';
 interface Harness {
   io: DeployIo;
   runner: DeployCommandRunner;
-  commands: { command: string; args: string[] }[];
+  commands: { command: string; args: string[]; env?: NodeJS.ProcessEnv }[];
   removed: string[];
   logs: string[];
   preflightCalls: number;
 }
 
 function createHarness(failOn?: RegExp, failPreflight = false): Harness {
-  const commands: { command: string; args: string[] }[] = [];
+  const commands: { command: string; args: string[]; env?: NodeJS.ProcessEnv }[] = [];
   const removed: string[] = [];
   const logs: string[] = [];
   const harness: Harness = {
@@ -69,8 +72,8 @@ function createHarness(failOn?: RegExp, failPreflight = false): Harness {
         logs.push(message);
       },
     },
-    runner: (command, args) => {
-      commands.push({ command, args: [...args] });
+    runner: (command, args, options) => {
+      commands.push({ command, args: [...args], env: options?.env });
       const text = `${command} ${args.join(' ')}`;
       if (failOn?.test(text) === true) {
         return Promise.resolve({ exitCode: 1 });
@@ -98,6 +101,24 @@ describe('deployment orchestration', () => {
   it('selects the non-mutating smoke command per promotion environment', () => {
     expect(promotionSmokeCommand('sandbox')).toEqual(['npm', ['run', 'smoke:readiness']]);
     expect(promotionSmokeCommand('production')).toEqual(['npm', ['run', 'smoke:production']]);
+  });
+
+  it('builds smoke environments from the resolved Worker URL without secrets', () => {
+    process.env.SMOKE_SANDBOX_BASE_URL = 'https://inherited.example.test';
+    process.env.BETTER_AUTH_SECRET = 'must-not-enter-smoke';
+    try {
+      expect(smokeEnvironment(SANDBOX)).toEqual({
+        PATH: process.env.PATH,
+        SMOKE_SANDBOX_BASE_URL: 'https://sandbox.example.test',
+      });
+      expect(smokeEnvironment(PRODUCTION)).toEqual({
+        PATH: process.env.PATH,
+        SMOKE_PRODUCTION_BASE_URL: 'https://production.example.test',
+      });
+    } finally {
+      delete process.env.SMOKE_SANDBOX_BASE_URL;
+      delete process.env.BETTER_AUTH_SECRET;
+    }
   });
   it('plans the sandbox release in migration-first order with smoke last', () => {
     expect(planDeploymentSteps({ resolved: SANDBOX })).toEqual([
@@ -181,8 +202,8 @@ describe('deployment orchestration', () => {
       ...harness.io,
       confirmFirstDeployment: () => Promise.resolve(true),
     };
-    const runner: DeployCommandRunner = (command, args) => {
-      harness.commands.push({ command, args: [...args] });
+    const runner: DeployCommandRunner = (command, args, options) => {
+      harness.commands.push({ command, args: [...args], env: options?.env });
       return Promise.resolve({
         exitCode: 0,
         stdout: args.includes('versions') && args.includes('list') ? '[]' : '',
@@ -192,6 +213,11 @@ describe('deployment orchestration', () => {
     await runDeployment({ resolved: SANDBOX }, io, runner);
 
     expect(harness.commands.some(({ args }) => args.includes('smoke:health'))).toBe(true);
+    const smoke = harness.commands.find(({ args }) => args.includes('smoke:health'));
+    expect(smoke?.env).toEqual({
+      PATH: process.env.PATH,
+      SMOKE_SANDBOX_BASE_URL: 'https://sandbox.example.test',
+    });
   });
 
   it('confirms and deploys when versions discovery returns the absent-Worker 10007 fixture', async () => {
