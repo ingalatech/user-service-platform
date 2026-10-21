@@ -59,11 +59,13 @@ describe('GitHub Actions CI-only boundary (issue #171)', () => {
     );
     const runbook = readFileSync('docs/operations/sandbox-release-runbook.md', 'utf8');
 
-    expect(opencode).toMatch(/OpenCode\/Herdr in isolated ticket worktrees/);
-    expect(projectState).toMatch(/GitHub Actions is a deterministic CI boundary only/);
+    expect(opencode).toMatch(/OpenCode is used from an isolated ticket worktree/);
+    expect(projectState).toMatch(/GitHub Actions contains only/);
     expect(adr).toMatch(/Sandbox and production releases are explicit local operator actions/);
     expect(runbook).toMatch(/Sandbox release \(local operator action\)/);
     expect(runbook).toMatch(/Promotion is an explicit local operator action/);
-    expect(projectState).toMatch(/approved, not implemented or deployed/);
+    expect(projectState).toMatch(
+      /Product planning and implementation\s+tickets remain authoritative/,
+    );
   });
 });

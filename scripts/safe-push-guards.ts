@@ -1,4 +1,9 @@
-import { getCurrentBranch, getPrForBranch, runCommand, type CommandExecutor } from './runner.js';
+import {
+  getCurrentBranch,
+  getPrForBranch,
+  runCommand,
+  type CommandExecutor,
+} from './repository-command.js';
 
 export interface SafePushState {
   currentBranch: string;
