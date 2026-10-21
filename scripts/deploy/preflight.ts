@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { assertWorkerName, parseDeployEnvironment } from './naming.js';
 import {
   isAbsentWorkerError,
@@ -44,13 +46,79 @@ export interface PreflightCheck {
   readonly detail: string;
 }
 
-function nodeMajor(version: string): number {
-  const match = /^v?(\d+)\./.exec(version.trim());
-  if (match?.[1] === undefined) {
-    return 0;
+interface NodeVersion {
+  readonly major: number;
+  readonly minor: number;
+  readonly patch: number;
+}
+
+interface NodeRange {
+  readonly minimum: NodeVersion;
+  readonly exclusiveMaximumMajor: number;
+  readonly text: string;
+}
+
+function readNodeRange(): NodeRange {
+  const packageJson = JSON.parse(
+    readFileSync(fileURLToPath(new URL('../../package.json', import.meta.url)), 'utf8'),
+  ) as { readonly engines?: { readonly node?: unknown } };
+  const text = packageJson.engines?.node;
+  const engineText = typeof text === 'string' ? text : undefined;
+  const match = engineText === undefined ? null : /^>=(\d+)\.(\d+)\.(\d+) <(\d+)$/.exec(engineText);
+  const minimumMajor = match?.[1];
+  const minimumMinor = match?.[2];
+  const minimumPatch = match?.[3];
+  const exclusiveMaximumMajor = match?.[4];
+  if (
+    engineText === undefined ||
+    minimumMajor === undefined ||
+    minimumMinor === undefined ||
+    minimumPatch === undefined ||
+    exclusiveMaximumMajor === undefined
+  ) {
+    throw new Error('package.json must declare a Node engine range like ">=24.22.1 <25".');
   }
-  const major = Number.parseInt(match[1], 10);
-  return Number.isInteger(major) ? major : 0;
+  return {
+    minimum: {
+      major: Number.parseInt(minimumMajor, 10),
+      minor: Number.parseInt(minimumMinor, 10),
+      patch: Number.parseInt(minimumPatch, 10),
+    },
+    exclusiveMaximumMajor: Number.parseInt(exclusiveMaximumMajor, 10),
+    text: engineText,
+  };
+}
+
+const NODE_RANGE = readNodeRange();
+
+function parseNodeVersion(version: string): NodeVersion | undefined {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.exec(
+    version.trim(),
+  );
+  const major = match?.[1];
+  const minor = match?.[2];
+  const patch = match?.[3];
+  if (major === undefined || minor === undefined || patch === undefined) return undefined;
+  return {
+    major: Number.parseInt(major, 10),
+    minor: Number.parseInt(minor, 10),
+    patch: Number.parseInt(patch, 10),
+  };
+}
+
+function compareNodeVersions(left: NodeVersion, right: NodeVersion): number {
+  if (left.major !== right.major) return left.major - right.major;
+  if (left.minor !== right.minor) return left.minor - right.minor;
+  return left.patch - right.patch;
+}
+
+function nodeVersionSatisfies(version: string): boolean {
+  const parsed = parseNodeVersion(version);
+  return (
+    parsed !== undefined &&
+    parsed.major < NODE_RANGE.exclusiveMaximumMajor &&
+    compareNodeVersions(parsed, NODE_RANGE.minimum) >= 0
+  );
 }
 
 export async function runPreflight(
@@ -59,11 +127,11 @@ export async function runPreflight(
 ): Promise<PreflightCheck[]> {
   const checks: PreflightCheck[] = [];
 
-  const major = nodeMajor(deps.nodeVersion);
+  const nodeOk = nodeVersionSatisfies(deps.nodeVersion);
   checks.push({
     name: 'node',
-    ok: major >= 24,
-    detail: major >= 24 ? 'node >= 24' : 'node >= 24 is required',
+    ok: nodeOk,
+    detail: nodeOk ? `node ${NODE_RANGE.text}` : `node ${NODE_RANGE.text} is required`,
   });
 
   const versionResult = await deps.run('npx', ['wrangler', '--version']);

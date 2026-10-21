@@ -29,7 +29,7 @@ function deps(
   const commands: { command: string; args: string[] }[] = [];
   return {
     commands,
-    nodeVersion: 'v24.21.0',
+    nodeVersion: 'v24.22.1',
     run: (command: string, args: string[]) => {
       commands.push({ command, args });
       if (args.includes('deployments')) return Promise.resolve(workerResult);
@@ -40,6 +40,24 @@ function deps(
 }
 
 describe('deployment preflight secret boundary', () => {
+  it.each([
+    ['v24.21.0', false],
+    ['v24.21.x', false],
+    ['v24.22.1', true],
+    ['v24.22.1+build.1', true],
+    ['v24.22.2', true],
+    ['v24.23.0', true],
+    ['v24.22.1-rc.0', false],
+    ['v25.0.0', false],
+  ])('checks the full Node engine range for %s', async (nodeVersion, expected) => {
+    const checks = await runPreflight({ resolved }, { ...deps(), nodeVersion });
+    const nodeCheck = checks.find((check) => check.name === 'node');
+    expect(nodeCheck).toMatchObject({ ok: expected });
+    expect(nodeCheck?.detail).toBe(
+      expected ? 'node >=24.22.1 <25' : 'node >=24.22.1 <25 is required',
+    );
+  });
+
   it('never invokes Wrangler secret operations', async () => {
     const d = deps();
     const checks = await runPreflight({ resolved }, d);
