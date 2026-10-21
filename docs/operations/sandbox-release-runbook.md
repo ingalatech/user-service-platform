@@ -49,6 +49,24 @@ secrets remain operator-managed outside the repository.
    they remain outside `deploy` and `promote`, and are never committed or
    placed in a release environment file.
 
+For a single interactive acceptance, use:
+
+```text
+nvm use
+npm run smoke:sandbox -- --interactive
+```
+
+Interactive mode reads the Worker URL and non-secret `AUTH_MAIL_ALLOWLIST`
+policy from `config/environments/.env.sandbox`. It offers numbered recipient
+choices without printing their addresses, validates the selected allowlisted
+recipient, and reads the password and mailbox token with terminal echo
+disabled. It runs registration, the verification gate, and the verification
+request, pauses once for the operator to retrieve the token, then continues
+verification, verified login, and `/v1/me` in the same process. It requires a
+TTY and fails clearly on cancellation. It never writes credentials or tokens
+to environment variables, arguments, files, or logs. The existing environment
+variable mode remains available for headless or automated use.
+
 Provisioning supports sandbox D1 only. It discovers or creates the exact
 database named by `D1_NAME`, then stages the discovered UUID into `.env.sandbox`
 without committing it. Production provisioning is rejected, not a read-only
