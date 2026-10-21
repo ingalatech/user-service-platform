@@ -44,8 +44,10 @@ describe('deployment preflight secret boundary', () => {
     ['v24.21.0', false],
     ['v24.21.x', false],
     ['v24.22.1', true],
+    ['v24.22.1+build.1', true],
     ['v24.22.2', true],
     ['v24.23.0', true],
+    ['v24.22.1-rc.0', false],
     ['v25.0.0', false],
   ])('checks the full Node engine range for %s', async (nodeVersion, expected) => {
     const checks = await runPreflight({ resolved }, { ...deps(), nodeVersion });

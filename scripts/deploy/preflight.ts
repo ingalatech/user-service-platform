@@ -92,7 +92,9 @@ function readNodeRange(): NodeRange {
 const NODE_RANGE = readNodeRange();
 
 function parseNodeVersion(version: string): NodeVersion | undefined {
-  const match = /^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(version.trim());
+  const match = /^v?(\d+)\.(\d+)\.(\d+)(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.exec(
+    version.trim(),
+  );
   const major = match?.[1];
   const minor = match?.[2];
   const patch = match?.[3];
