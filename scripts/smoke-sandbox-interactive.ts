@@ -53,8 +53,8 @@ export function createLinePrompt(
       let settled = false;
       const readline = createInterface({ input, output });
       const cleanup = (): void => {
-        input.removeListener('error', onError);
-        output.removeListener('error', onError);
+        output.removeListener('error', onOutputError);
+        readline.removeListener('error', onInterfaceError);
         readline.removeListener('close', onEof);
         readline.close();
       };
@@ -64,7 +64,12 @@ export function createLinePrompt(
         cleanup();
         settlement();
       };
-      const onError = (error: Error): void => {
+      const onInterfaceError = (error: Error): void => {
+        settle(() => {
+          reject(error);
+        });
+      };
+      const onOutputError = (error: Error): void => {
         settle(() => {
           reject(error);
         });
@@ -74,8 +79,8 @@ export function createLinePrompt(
           resolve(undefined);
         });
       };
-      input.once('error', onError);
-      output.once('error', onError);
+      output.once('error', onOutputError);
+      readline.once('error', onInterfaceError);
       readline.once('close', onEof);
       try {
         readline.question(question, (answer) => {

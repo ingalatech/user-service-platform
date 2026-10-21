@@ -41,6 +41,29 @@ function requestPath(input: string | URL | Request): string {
   return input.url;
 }
 
+async function withTimeout<T>(promise: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(new Error('prompt settlement timeout'));
+        }, 100);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+function expectCleanPromptStreams(input: PassThrough, output: PassThrough): void {
+  const internalStreamEvents = (stream: PassThrough) =>
+    stream.eventNames().filter((event) => event !== 'prefinish');
+  expect(internalStreamEvents(input)).toEqual([]);
+  expect(internalStreamEvents(output)).toEqual([]);
+}
+
 function fullWorkflowFetch(): typeof fetch {
   let anonymousMe = true;
   let verifiedLogin = false;
@@ -209,5 +232,51 @@ describe('createLinePrompt readline seam', () => {
 
     await expect(cancelled).resolves.toBeUndefined();
     await expect(eof).resolves.toBeUndefined();
+  });
+
+  it.each(['input', 'output'] as const)(
+    'rejects %s errors without uncaught throws or pending promises',
+    async (kind) => {
+      const input = new PassThrough();
+      const output = new PassThrough();
+      const result = createLinePrompt(input, output)('selection: ');
+      const error = new Error(`${kind} boom`);
+
+      if (kind === 'input') input.emit('error', error);
+      else output.emit('error', error);
+
+      await expect(withTimeout(result)).rejects.toThrow(`${kind} boom`);
+      expect(input.listenerCount('error')).toBe(0);
+      expect(input.listenerCount('data')).toBe(0);
+      expect(output.listenerCount('error')).toBe(0);
+      expectCleanPromptStreams(input, output);
+    },
+  );
+
+  it('settles only once when an interface error races close', async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const result = createLinePrompt(input, output)('selection: ');
+
+    input.emit('error', new Error('input boom'));
+    input.end();
+
+    await expect(withTimeout(result)).rejects.toThrow('input boom');
+    expect(input.listenerCount('error')).toBe(0);
+    expect(output.listenerCount('error')).toBe(0);
+    expectCleanPromptStreams(input, output);
+  });
+
+  it('keeps the normal answer when answer and close race', async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const result = createLinePrompt(input, output)('selection: ');
+
+    input.end('2\n');
+
+    await expect(withTimeout(result)).resolves.toBe('2');
+    expect(input.listenerCount('error')).toBe(0);
+    expect(output.listenerCount('error')).toBe(0);
+    expectCleanPromptStreams(input, output);
   });
 });
