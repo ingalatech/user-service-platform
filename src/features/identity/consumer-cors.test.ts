@@ -223,6 +223,7 @@ describe('public consumer operation CORS responses', () => {
     expect(await res.json()).toMatchObject({ code: 'unauthenticated' });
     expect(res.headers.get('access-control-allow-origin')).toBe(CONSUMER_ORIGIN);
     expect(res.headers.get('access-control-allow-credentials')).toBe('true');
+    expect(res.headers.get('cache-control')).toBe('private, no-store');
     expect(res.headers.get('vary')).toContain('Origin');
   });
 
@@ -341,6 +342,7 @@ describe('direct-browser consumer lifecycle from a configured origin', () => {
     expect(me.status).toBe(200);
     expect(await me.json()).toMatchObject({ email: 'lifecycle@example.com', emailVerified: true });
     expect(me.headers.get('access-control-allow-origin')).toBe(CONSUMER_ORIGIN);
+    expect(me.headers.get('cache-control')).toBe('private, no-store');
 
     const token = await post('/v1/auth/token', {}, { cookie, headers, overrides });
     expect(token.status).toBe(200);

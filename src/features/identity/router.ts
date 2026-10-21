@@ -509,6 +509,7 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
   });
 
   router.openapi(currentUserRoute, async (c) => {
+    c.header('Cache-Control', 'private, no-store');
     const session = await resolveSessionContext({
       env: c.env,
       headers: c.req.raw.headers,

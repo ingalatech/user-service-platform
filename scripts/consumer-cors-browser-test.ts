@@ -8,7 +8,6 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { chromium, type Browser, type Page } from 'playwright-core';
-import { DEV_AUTH_SECRET } from '../src/features/identity/secret.js';
 
 // Direct-browser consumer transport acceptance (spec #164, ADR-0013).
 //
@@ -20,55 +19,15 @@ import { DEV_AUTH_SECRET } from '../src/features/identity/secret.js';
 //
 // No API responses are mocked; the fixture database is a disposable mkdtemp
 // D1. Registration and email verification both run from the approved browser
-// document through the real public HTTP seams: the verification token is
-// minted with the isolated dev secret under the exact HS256 email contract
-// the engine verifies (same shape as `expiredTokenFor` in
-// `src/features/identity/identity.test.ts`), then submitted to the real
-// `/v1/auth/verify-email` endpoint from the consumer origin. Nothing seeds
-// `email_verified` via SQL and no Identity response is mocked.
+// document through the real public HTTP seams. A fixture-only mailbox exposes
+// the token captured by the injected AuthMailer; nothing synthesizes a token,
+// seeds `email_verified` via SQL or mocks an Identity response.
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const exec = promisify(execFile);
 const pause = (ms: number): Promise<void> => new Promise((done) => setTimeout(done, ms));
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(`Consumer CORS browser assertion: ${message}`);
-}
-
-// Mints a genuine email-verification token under the exact HS256 contract
-// Better Auth verifies (payload `{ email, iat, exp }`, dev secret), mirroring
-// `expiredTokenFor` in `src/features/identity/identity.test.ts` but with a
-// live expiry. The isolated Worker uses the same dev-secret fallback (empty
-// `.env`, `ENVIRONMENT=local`), so the real `/v1/auth/verify-email` endpoint
-// accepts it and performs the actual verification transition in D1.
-async function mintVerificationToken(email: string): Promise<string> {
-  const secret = new TextEncoder().encode(DEV_AUTH_SECRET);
-  const encode = (value: unknown): string =>
-    Buffer.from(JSON.stringify(value))
-      .toString('base64')
-      .replace(/\+/g, '-')
-      .replace(/\//g, '_')
-      .replace(/=+$/g, '');
-  const now = Math.floor(Date.now() / 1000);
-  const header = encode({ alg: 'HS256', typ: 'JWT' });
-  const payload = encode({ email: email.toLowerCase(), iat: now, exp: now + 3600 });
-  const key = await crypto.subtle.importKey(
-    'raw',
-    secret,
-    { name: 'HMAC', hash: 'SHA-256' },
-    false,
-    ['sign'],
-  );
-  const signature = await crypto.subtle.sign(
-    'HMAC',
-    key,
-    new TextEncoder().encode(`${header}.${payload}`),
-  );
-  const signaturePart = Buffer.from(signature)
-    .toString('base64')
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=+$/g, '');
-  return `${header}.${payload}.${signaturePart}`;
 }
 
 async function command(label: string, args: string[]): Promise<void> {
@@ -201,12 +160,32 @@ export async function runConsumerCorsBrowserTest(
     await mkdir(assets, { recursive: true });
     await writeFile(join(assets, 'index.html'), '<!doctype html><title>assets</title>');
     await writeFile(envFile, '');
+    await writeFile(join(state, '.dev.vars'), '');
+    const entry = join(state, 'fixture-worker.ts');
+    await writeFile(
+      entry,
+      `
+import { createApp } from ${JSON.stringify(join(root, 'src/app.ts'))};
+import { InMemoryAuthMailer } from ${JSON.stringify(join(root, 'src/features/identity/index.ts'))};
+const mailer = new InMemoryAuthMailer();
+const app = createApp({ authMailer: mailer });
+export default {
+  fetch(request, env, context) {
+    if (new URL(request.url).pathname === '/__fixture/verification-mail') {
+      const message = mailer.sent.at(-1);
+      return Response.json({ token: message?.token ?? null }, { headers: { 'cache-control': 'no-store' } });
+    }
+    return app.fetch(request, env, context);
+  }
+};
+`,
+    );
     const original = await readFile(join(root, 'wrangler.jsonc'), 'utf8');
     const serviceVars = `"ENVIRONMENT": "local", "AUTH_CONSUMER_ORIGINS": ${JSON.stringify(frontendBase)},`;
     await writeFile(
       config,
       original
-        .replace('"main": "src/index.ts"', `"main": ${JSON.stringify(join(root, 'src/index.ts'))}`)
+        .replace('"main": "src/index.ts"', `"main": ${JSON.stringify(entry)}`)
         .replace('"directory": "./admin/dist"', `"directory": ${JSON.stringify(assets)}`)
         .replace(
           '"migrations_dir": "drizzle"',
@@ -321,10 +300,12 @@ export async function runConsumerCorsBrowserTest(
     assert(registered.registerStatus === 201, 'registration from the approved origin succeeds');
 
     phase = 'direct-browser verification';
-    const verificationToken = await mintVerificationToken(email);
+    const mailResponse = await http('/__fixture/verification-mail');
+    const mail = (await mailResponse.json()) as { token?: unknown };
+    assert(mailResponse.ok && typeof mail.token === 'string', 'verification mail captured');
     const verified = await page.evaluate<VerifyResult>(`(async () => {
       const service = ${JSON.stringify(serviceBase)};
-      const token = ${JSON.stringify(verificationToken)};
+      const token = ${JSON.stringify(mail.token)};
       const response = await fetch(service + '/v1/auth/verify-email', {
         method: 'POST', credentials: 'include',
         headers: { 'content-type': 'application/json' },
