@@ -8,7 +8,11 @@ import { runProvision } from '../../scripts/deploy/provision.js';
 const D1_ID = 'a1b2c3d4-e5f6-4789-a3b5-c6d7e8f90a1b';
 
 function environment(overrides: Partial<EnvironmentFile> = {}): EnvironmentFile {
-  return { ...loadEnvironmentFile('config/environments/.env.sandbox'), ...overrides };
+  return {
+    ...loadEnvironmentFile('config/environments/.env.sandbox'),
+    D1_ID: '',
+    ...overrides,
+  };
 }
 
 function runner(outputs: string[]) {
