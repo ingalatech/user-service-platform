@@ -67,13 +67,19 @@ in the bundle. The first deployment migrates, deploys and checks only
 Promotion is an explicit local operator action. After selecting and validating
 the immutable Version ID, the command enables Version URLs in its minimal
 target-only Wrangler config, constructs the documented URL from that exact ID,
-then queries the full Version metadata and uses its returned Version URL when
-available (otherwise the documented format only after the full-ID match), and
-runs health followed by anonymous Identity (`GET /v1/me`) against it. This
-proves `BETTER_AUTH_SECRET` request wiring without reading secret values. It
-also queries that exact Version ID's metadata and fails closed unless
-`BETTER_AUTH_SECRET`, `RESEND_API_KEY`, `SMTP_USER` and `SMTP_PASSWORD` are present as
-`secret_text` bindings. This proves presence/type only, not SMTP delivery;
+then queries the full Version metadata with
+`wrangler versions view <version-id> --json`. It requires the exact-version
+manifest in both supported Wrangler annotations (`workers/message` and
+`workers/tag`), validates their matching deterministic fingerprint and derives
+the required secret set from the manifest transport, never from the current
+application `.env`. It uses the returned Version URL when available (otherwise
+the documented format only after the full-ID and manifest match), and runs
+health followed by anonymous Identity (`GET /v1/me`) against it. This proves
+`BETTER_AUTH_SECRET` request wiring without reading secret values. It fails
+closed unless `BETTER_AUTH_SECRET` is present as `secret_text`, plus
+`SMTP_USER`/`SMTP_PASSWORD` for `smtp` or `RESEND_API_KEY` for `resend`.
+Extra encrypted bindings are allowed; remote `inmemory`, empty, unknown or
+manifest-less candidates are rejected. This proves presence/type only, not SMTP delivery;
 the full privileged SMTP/Identity QA smoke remains manual. Only after all
 checks pass does it run `wrangler versions deploy <id>@100%`; production
 still requires the exact Worker-name confirmation. This follows Cloudflare's

@@ -46,12 +46,23 @@ Smoke tests are required after sandbox and production deployment.
 
 Promotion selects and validates one immutable Version ID, then uses a
 target-only Wrangler config with `preview_urls: true` to construct that
-version's documented Version URL. Readiness runs health followed by anonymous
-Identity against that URL, exercising `BETTER_AUTH_SECRET` behavior without
-reading or listing secret values. Exact-version metadata must also contain
-`BETTER_AUTH_SECRET`, `RESEND_API_KEY`, `SMTP_USER` and `SMTP_PASSWORD` as encrypted
-`secret_text` bindings. This proves presence/type, not SMTP delivery.
+version's documented Version URL. Candidate uploads carry a versioned,
+secret-free release manifest in Wrangler's supported `--message` and `--tag`
+annotations. The manifest contains a deterministic SHA-256 fingerprint of the
+compiled non-secret profile plus `AUTH_MAIL_TRANSPORT`, and the exact-version
+view must return matching manifest annotations. Promotion uses the manifest's
+transport to choose required bindings; it never reads the current application
+`.env` profile. Readiness runs health followed by anonymous Identity against
+that URL, exercising `BETTER_AUTH_SECRET` behavior without reading or listing
+secret values. Exact-version metadata must also contain `BETTER_AUTH_SECRET`
+always, plus `SMTP_USER` and `SMTP_PASSWORD` for `smtp`, or `RESEND_API_KEY`
+for `resend`, as encrypted `secret_text` bindings. Extra encrypted bindings are
+allowed; remote `inmemory`, empty or unknown transports fail closed. This proves
+presence/type, not SMTP delivery.
 `wrangler versions deploy <id>@100%` is allowed only after all checks pass.
+Wrangler 4.130 requires the Version ID as the positional argument to
+`wrangler versions view <version-id> --json`; `--version-id` is not a valid
+option for that subcommand.
 Version overrides are not used because Cloudflare
 requires the overridden version to already be in the current deployment. See
 Cloudflare's [Version URLs](https://developers.cloudflare.com/workers/versions-and-deployments/version-urls/),

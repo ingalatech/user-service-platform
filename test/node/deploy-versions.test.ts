@@ -39,6 +39,7 @@ describe('Wrangler Worker version payloads', () => {
           { name: 'RESEND_API_KEY', type: 'secret_text' },
           { name: 'SMTP_USER', type: 'secret_text' },
           { name: 'SMTP_PASSWORD', type: 'secret_text' },
+          { name: 'UNRELATED_SECRET', type: 'secret_text' },
           { name: 'PUBLIC_VALUE', type: 'plain_text', text: 'public' },
         ],
       },
@@ -51,6 +52,7 @@ describe('Wrangler Worker version payloads', () => {
       'RESEND_API_KEY',
       'SMTP_USER',
       'SMTP_PASSWORD',
+      'UNRELATED_SECRET',
     ]);
     expect(JSON.stringify(details)).not.toContain('must-not-be-retained');
     expect(() => {
