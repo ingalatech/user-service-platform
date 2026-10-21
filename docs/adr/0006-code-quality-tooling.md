@@ -24,7 +24,7 @@ Use:
 
 Formatting policy uses semicolons, single quotes, two-space indentation, and a 100-column print width. Prettier is authoritative for formatting; ESLint is authoritative for code-quality and architecture rules.
 
-Use Node.js 24 LTS for repository tooling. `.nvmrc` pins the current project baseline to Node 24.21.0, while `package.json` restricts installs to the Node 24 major line. npm is the initial package manager and its version is pinned in `packageManager`.
+Use Node.js 24 LTS for repository tooling. `.nvmrc` pins the current project baseline to Node 24.22.1, while `package.json` restricts installs to the Node 24 major line. npm is the initial package manager and its version is pinned in `packageManager`.
 
 Use TypeScript 6.0.x for the initial implementation. The dependency is installed through the official `@typescript/typescript6` compatibility package while TypeScript 7 owns the primary `typescript` release line. Do not upgrade to TypeScript 7 until the project's linting, ORM, auth, Worker test tooling, and editor/tool integrations have an explicitly verified compatibility path.
 

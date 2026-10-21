@@ -623,7 +623,7 @@ describe('deployment orchestration', () => {
         const checks = await runPreflight(
           { resolved },
           {
-            nodeVersion: 'v24.21.0',
+            nodeVersion: 'v24.22.1',
             commands: [],
             run: async (command, args) => {
               const result = await runner(command, args);

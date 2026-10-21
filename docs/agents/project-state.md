@@ -155,7 +155,7 @@ ADR-0008 is authoritative for environment naming. Historical `staging` reference
 
 ADR-0006 is authoritative:
 
-- Node.js 24 LTS; `.nvmrc` currently pins 24.21.0.
+- Node.js 24 LTS; `.nvmrc` currently pins 24.22.1.
 - TypeScript 6.x.
 - ESLint flat config + `typescript-eslint`.
 - Prettier is the sole formatter.

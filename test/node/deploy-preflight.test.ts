@@ -29,7 +29,7 @@ function deps(
   const commands: { command: string; args: string[] }[] = [];
   return {
     commands,
-    nodeVersion: 'v24.21.0',
+    nodeVersion: 'v24.22.1',
     run: (command: string, args: string[]) => {
       commands.push({ command, args });
       if (args.includes('deployments')) return Promise.resolve(workerResult);
