@@ -14,7 +14,13 @@ This repository follows Matt Pocock's engineering skills workflow:
 2. `wayfinder` — resolve architectural/product decisions while there is still fog.
 3. `to-spec` — turn settled decisions into a durable implementation specification.
 4. `to-tickets` — split the spec into dependency-aware tracer-bullet vertical slices.
-5. `implement` — build one approved ticket at a time using TDD and code review.
+5. `implement` — build one approved ticket at a time using TDD, then hand off
+   to the direct p3 review pane.
+
+The operating handoff is explicit: p2 implements or corrects, p3 reviews the
+exact branch directly, and p1 coordinates, checks CI, merges, and operates
+releases. The implementation pane does not launch a reviewer or correction
+loop.
 
 See `AGENTS.md`, `GLOSSARY.md`, `docs/agents/`, and `docs/adr/` before making changes.
 
@@ -44,7 +50,6 @@ npx skills@latest add mattpocock/skills \
   --skill to-spec \
   --skill to-tickets \
   --skill tdd \
-  --skill code-review \
   --skill implement \
   --skill handoff \
   --skill grilling \

@@ -1,5 +1,7 @@
 # Matt skills v1.3 audit and glossary migration
 
+> Historical audit record only. Its former review workflow references are not operational guidance.
+
 Verified: 2026-10-04. Source ticket: #111.
 
 ## Scope and pinned sources

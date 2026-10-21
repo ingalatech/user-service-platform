@@ -12,5 +12,3 @@ coverage/
 !config/environments/.env.sandbox
 !config/environments/.env.production
 .DS_Store
-.review-cycle/
-.agent-ticket/
