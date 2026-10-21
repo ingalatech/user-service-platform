@@ -7,13 +7,6 @@ import {
 } from './provision-d1.js';
 import { parseWorkerDeploymentsOutput, workerDeploymentsListArgs } from './provision-worker.js';
 import {
-  checkSecretTextBindings,
-  parseSecretListOutput,
-  secretBindingsFailed,
-  secretListArgs,
-} from './secret-bindings.js';
-import { requiredWorkerSecrets } from './secrets.js';
-import {
   resolveEnvironmentDeployment,
   type EnvironmentFile,
   type ResolvedDeployment,
@@ -25,7 +18,6 @@ export type ProvisionResourceKind = (typeof PROVISION_RESOURCE_KINDS)[number];
 export type ProvisionMode = 'plan' | 'apply';
 export type ProvisionD1Action = 'ok' | 'adopt' | 'create' | 'created';
 export type ProvisionWorkerState = 'found' | 'absent' | 'unknown';
-export type ProvisionSecretStatus = 'ok' | 'missing' | 'worker-not-deployed' | 'unverified';
 
 export interface ProvisionRequest {
   readonly environment: DeployableEnvironment;
@@ -56,7 +48,6 @@ export interface ProvisionOutcome {
   readonly databaseId: string;
   readonly d1Action: ProvisionD1Action;
   readonly workerState: ProvisionWorkerState;
-  readonly secretStatus: ProvisionSecretStatus;
   readonly configUpdated: boolean;
 }
 
@@ -140,57 +131,14 @@ export async function runProvision(
   }
 
   const workerState = await discoverWorker(resolved, scopedRunner, io);
-  const secretStatus = await reportSecrets(resolved, workerState, scopedRunner, io);
   return {
     workerName: resolved.workerName,
     databaseName: resolved.databaseName,
     databaseId,
     d1Action: action,
     workerState,
-    secretStatus,
     configUpdated,
   };
-}
-
-function secretPutInstruction(workerName: string, secretName: string): string {
-  return `npx wrangler secret put ${secretName} --name ${workerName}`;
-}
-
-async function reportSecrets(
-  resolved: ResolvedDeployment,
-  workerState: ProvisionWorkerState,
-  runner: ProvisionCommandRunner,
-  io: ProvisionIo,
-): Promise<ProvisionSecretStatus> {
-  const required = requiredWorkerSecrets({
-    environment: resolved.environment,
-    vars: resolved.vars,
-  });
-  if (required.length === 0) return 'ok';
-  if (workerState === 'absent') {
-    io.log(
-      `worker ${resolved.workerName} is not deployed; configure required secrets after deployment:`,
-    );
-    required.forEach((name) => {
-      io.log(`  ${secretPutInstruction(resolved.workerName, name)}`);
-    });
-    return 'worker-not-deployed';
-  }
-  if (workerState === 'unknown') return 'unverified';
-  const listed = await runner('npx', [...secretListArgs(resolved.workerName)]);
-  if (listed.exitCode !== 0) return 'unverified';
-  try {
-    const results = checkSecretTextBindings(required, parseSecretListOutput(listed.stdout));
-    if (!secretBindingsFailed(results)) return 'ok';
-    results
-      .filter((result) => result.status !== 'ok')
-      .forEach((result) => {
-        io.log(`secret ${result.name} requires attention; configure it as a Cloudflare Secret.`);
-      });
-    return 'missing';
-  } catch {
-    return 'unverified';
-  }
 }
 
 async function discoverWorker(

@@ -90,17 +90,12 @@ describe('sandbox D1 provisioning', () => {
     expect(commands.calls).toHaveLength(1);
   });
 
-  it('is idempotent for an existing exact-name D1 and reports Worker/secret metadata', async () => {
+  it('is idempotent for an existing exact-name D1 without inspecting secrets', async () => {
     const file = environment({ D1_ID });
     const logs: string[] = [];
     const commands = runner([
       JSON.stringify([{ name: file.D1_NAME, uuid: D1_ID }]),
       JSON.stringify([{ id: 'deployment-1' }]),
-      JSON.stringify([
-        { name: 'BETTER_AUTH_SECRET', type: 'secret_text' },
-        { name: 'SMTP_USER', type: 'secret_text' },
-        { name: 'SMTP_PASSWORD', type: 'secret_text' },
-      ]),
     ]);
     const outcome = await runProvision(
       { environment: 'sandbox', mode: 'apply' },
@@ -116,18 +111,14 @@ describe('sandbox D1 provisioning', () => {
     expect(outcome).toMatchObject({
       d1Action: 'ok',
       workerState: 'found',
-      secretStatus: 'ok',
       configUpdated: false,
     });
     expect(commands.calls.some((args) => args.includes('create'))).toBe(false);
-    expect(commands.calls.some((args) => args.includes('secret') && args.includes('list'))).toBe(
-      true,
-    );
+    expect(commands.calls.some((args) => args.includes('secret'))).toBe(false);
     expect(logs.join('\n')).toContain('worker found');
-    expect(logs.join('\n')).not.toContain('secret_text');
   });
 
-  it('reports required secret names when the Worker is absent without listing secrets', async () => {
+  it('reports an absent Worker without listing or instructing secret operations', async () => {
     const file = environment();
     const logs: string[] = [];
     const commands = runner(['[]', '[]']);
@@ -140,11 +131,9 @@ describe('sandbox D1 provisioning', () => {
       },
       commands.run,
     );
-    expect(outcome).toMatchObject({ workerState: 'absent', secretStatus: 'worker-not-deployed' });
+    expect(outcome).toMatchObject({ workerState: 'absent' });
     expect(commands.calls.some((args) => args.includes('secret'))).toBe(false);
-    expect(logs.join('\n')).toContain('SMTP_USER');
-    expect(logs.join('\n')).toContain('SMTP_PASSWORD');
-    expect(logs.join('\n')).not.toContain('secret_text');
+    expect(logs.join('\n')).not.toMatch(/secret|SMTP_/i);
   });
 
   it('fails closed on post-create rediscovery failure without staging config', async () => {
@@ -170,7 +159,7 @@ describe('sandbox D1 provisioning', () => {
     ).toHaveLength(2);
   });
 
-  it('does not expose provider output when discovery or secret reporting fails', async () => {
+  it('does not expose provider output when discovery succeeds', async () => {
     const file = environment({ D1_ID });
     const canary = 'provider-secret-canary';
     const logs: string[] = [];
@@ -184,7 +173,7 @@ describe('sandbox D1 provisioning', () => {
       },
       commands.run,
     );
-    expect(outcome.secretStatus).toBe('unverified');
+    expect(outcome.workerState).toBe('unknown');
     expect(logs.join('\n')).not.toContain(canary);
   });
 });

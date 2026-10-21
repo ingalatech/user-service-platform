@@ -239,7 +239,7 @@ describe('sandbox smoke diagnostic tail lifecycle (ticket #96)', () => {
         if (args.includes('versions') && args.includes('list')) {
           return Promise.resolve({ exitCode: 0, stdout: '[]' });
         }
-        if (command === 'npm' && args.join(' ').includes('smoke:sandbox')) {
+        if (command === 'npm' && args.join(' ').includes('smoke:health')) {
           if (options.smokeFails === true) {
             return Promise.resolve({ exitCode: 1 });
           }
@@ -678,7 +678,7 @@ describe('smoke failure liveness (ticket #100)', () => {
       if (args.includes('versions') && args.includes('list')) {
         return Promise.resolve({ exitCode: 0, stdout: '[]' });
       }
-      if (command === 'npm' && args.join(' ').includes('smoke:sandbox')) {
+      if (command === 'npm' && args.join(' ').includes('smoke:health')) {
         return Promise.resolve({ exitCode: 1 });
       }
       return Promise.resolve({ exitCode: 0 });
@@ -710,7 +710,7 @@ describe('sandbox diagnostic tail post-failure drain (ticket #102)', () => {
       if (args.includes('versions') && args.includes('list')) {
         return Promise.resolve({ exitCode: 0, stdout: '[]' });
       }
-      if (command === 'npm' && args.join(' ').includes('smoke:sandbox')) {
+      if (command === 'npm' && args.join(' ').includes('smoke:health')) {
         return Promise.resolve({ exitCode: 1 });
       }
       return Promise.resolve({ exitCode: 0 });

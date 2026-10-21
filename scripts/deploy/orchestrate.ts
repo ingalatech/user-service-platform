@@ -69,7 +69,7 @@ export interface PromotionIo extends Pick<
 export function promotionSmokeCommand(
   environment: ResolvedDeployment['environment'],
 ): readonly [string, readonly string[]] {
-  return ['npm', ['run', environment === 'production' ? 'smoke:production' : 'smoke:sandbox']];
+  return ['npm', ['run', environment === 'production' ? 'smoke:production' : 'smoke:readiness']];
 }
 
 export async function runPromotion(
@@ -260,7 +260,7 @@ async function runSandboxSmokeWithDiagnostics(
     }
   }
   try {
-    await runStep('smoke-sandbox', 'npm', ['run', 'smoke:sandbox'], runner);
+    await runStep('smoke-sandbox', 'npm', ['run', 'smoke:health'], runner);
   } catch (smokeError) {
     if (tail !== null && tailExitedBeforeSmoke(tail)) {
       await collectTailLines(tail, io);
