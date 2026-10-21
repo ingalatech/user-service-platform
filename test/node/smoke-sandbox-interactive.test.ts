@@ -1,3 +1,4 @@
+import { PassThrough } from 'node:stream';
 import {
   loadEnvironmentFile,
   environmentFilePath,
@@ -5,6 +6,7 @@ import {
 import { resolveSmokeConfig, runSandboxSmokeWorkflow } from '../../scripts/smoke-sandbox.js';
 import {
   runInteractiveSandboxSmoke,
+  createLinePrompt,
   type InteractiveSmokePrompts,
 } from '../../scripts/smoke-sandbox-interactive.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -182,5 +184,30 @@ describe('interactive sandbox smoke', () => {
     });
 
     expect(output.join('\n')).toContain('skipped-token-not-provided');
+  });
+});
+
+describe('createLinePrompt readline seam', () => {
+  it('returns a normal answer before readline close settles EOF', async () => {
+    const input = new PassThrough();
+    const output = new PassThrough();
+    const result = createLinePrompt(input, output)('selection: ');
+
+    input.end('2\n');
+
+    await expect(result).resolves.toBe('2');
+  });
+
+  it('returns undefined for an explicit cancel and EOF', async () => {
+    const cancelledInput = new PassThrough();
+    const cancelled = createLinePrompt(cancelledInput, new PassThrough())('selection: ');
+    cancelledInput.end('q\n');
+
+    const eofInput = new PassThrough();
+    const eof = createLinePrompt(eofInput, new PassThrough())('selection: ');
+    eofInput.end();
+
+    await expect(cancelled).resolves.toBeUndefined();
+    await expect(eof).resolves.toBeUndefined();
   });
 });

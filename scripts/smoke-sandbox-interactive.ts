@@ -44,22 +44,56 @@ function allowlistedRecipients(value: string, runId: string): string[] {
   return [...new Set(recipients)];
 }
 
-function createLinePrompt(): (question: string) => Promise<string | undefined> {
+export function createLinePrompt(
+  input: NodeJS.ReadableStream = process.stdin,
+  output: NodeJS.WritableStream = process.stdout,
+): (question: string) => Promise<string | undefined> {
   return (question) =>
-    new Promise((resolve) => {
-      const readline = createInterface({ input: process.stdin, output: process.stdout });
-      readline.question(question, (answer) => {
+    new Promise((resolve, reject) => {
+      let settled = false;
+      const readline = createInterface({ input, output });
+      const cleanup = (): void => {
+        input.removeListener('error', onError);
+        output.removeListener('error', onError);
+        readline.removeListener('close', onEof);
         readline.close();
-        const normalized = answer.trim();
-        resolve(
-          normalized.toLowerCase() === 'q' || normalized.toLowerCase() === 'cancel'
-            ? undefined
-            : normalized,
-        );
-      });
-      readline.on('close', () => {
-        resolve(undefined);
-      });
+      };
+      const settle = (settlement: () => void): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        settlement();
+      };
+      const onError = (error: Error): void => {
+        settle(() => {
+          reject(error);
+        });
+      };
+      const onEof = (): void => {
+        settle(() => {
+          resolve(undefined);
+        });
+      };
+      input.once('error', onError);
+      output.once('error', onError);
+      readline.once('close', onEof);
+      try {
+        readline.question(question, (answer) => {
+          const normalized = answer.trim();
+          settle(() => {
+            resolve(
+              normalized.toLowerCase() === 'q' || normalized.toLowerCase() === 'cancel'
+                ? undefined
+                : normalized,
+            );
+          });
+        });
+      } catch (error: unknown) {
+        const reason = error instanceof Error ? error : new Error(String(error));
+        settle(() => {
+          reject(reason);
+        });
+      }
     });
 }
 
