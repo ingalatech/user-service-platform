@@ -4,7 +4,7 @@ import {
   parseWorkerDeploymentsOutput,
   workerDeploymentsListArgs,
 } from './provision-worker.js';
-import { isProvisionedDatabaseId, type ResolvedDeployment } from './environment-config.js';
+import { isProvisionedDatabaseId, type DeploymentTarget } from './environment-config.js';
 
 // Deployment preflight (ticket #78, ADR-0008).
 //
@@ -35,7 +35,7 @@ export interface PreflightDeps {
 }
 
 export interface PreflightInput {
-  readonly resolved: ResolvedDeployment;
+  readonly resolved: DeploymentTarget;
 }
 
 export interface PreflightCheck {
@@ -142,7 +142,7 @@ export function preflightFailed(checks: readonly PreflightCheck[]): boolean {
 }
 
 async function checkWorkerPresence(
-  resolved: ResolvedDeployment,
+  resolved: DeploymentTarget,
   deps: PreflightDeps,
 ): Promise<{ readonly check: PreflightCheck; readonly exists: boolean | undefined }> {
   const listed = await deps.run('npx', [...workerDeploymentsListArgs(resolved.workerName)]);

@@ -27,8 +27,10 @@ to infrastructure and encrypted secrets. A runtime binding whose name belongs
 to the compiled profile is ignored and emits only a structured warning with
 the binding names, never values. The root `.env` remains local-development-only
 and is never read by deploy, promote, or provision. Runtime secrets remain in
-Cloudflare and are preserved by version upload because release tooling never
-declares or mutates them. Sandbox D1 provisioning stages its discovered id
+Cloudflare; the current Wrangler upload path preserves encrypted secrets while
+release tooling never declares or mutates them. A local Wrangler dry-run only
+proves bundling and cannot independently prove remote secret presence. Sandbox
+D1 provisioning stages its discovered id
 back into `.env.sandbox` as an uncommitted, reviewable change; production
 provisioning is not supported.
 

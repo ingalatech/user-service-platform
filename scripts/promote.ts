@@ -5,12 +5,15 @@ import { join } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { removeTempWranglerConfig, writeTempWranglerConfig } from './deploy/materialize.js';
+import {
+  removeTempWranglerConfig,
+  writeTempPromotionWranglerConfig,
+} from './deploy/materialize.js';
 import {
   environmentFilePath,
   loadEnvironmentFile,
-  resolveEnvironmentDeployment,
-  type ResolvedDeployment,
+  resolveEnvironmentTarget,
+  type DeploymentTarget,
 } from './deploy/environment-config.js';
 import { formatPreflightError, preflightFailed, runPreflight } from './deploy/preflight.js';
 import {
@@ -50,7 +53,7 @@ export type PromotionSmokeSpawn = (
 ) => PromotionSmokeChild;
 
 export function runPromotionSmoke(
-  resolved: ResolvedDeployment,
+  resolved: DeploymentTarget,
   spawnFn: PromotionSmokeSpawn = (command, args, options) => spawn(command, [...args], options),
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
@@ -77,14 +80,17 @@ async function main(): Promise<void> {
   try {
     const environment =
       option('--env') ?? (await readline.question('Environment (sandbox/production): ')).trim();
-    const resolved = resolveEnvironmentDeployment(
+    // Promotion intentionally resolves only target identity. The selected
+    // immutable version already contains its compiled application profile;
+    // current non-secret environment values must not be re-materialized here.
+    const resolved = resolveEnvironmentTarget(
       loadEnvironmentFile(environmentFilePath(repoRoot, environment)),
       { requireRemoteReady: true },
     );
     const directory = mkdtempSync(join(tmpdir(), 'user-service-promote-'));
     let configPath = '';
     try {
-      configPath = writeTempWranglerConfig(resolved, directory, { repoRoot });
+      configPath = writeTempPromotionWranglerConfig(resolved, directory);
       const run: DeployCommandRunner = async (command, commandArgs) => {
         try {
           const { stdout } = await execFileAsync(command, commandArgs, {

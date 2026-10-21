@@ -7,8 +7,9 @@
   // `env` sections here: `npm run deploy` (ticket #78) selects a deployment
   // environment file and materializes a temporary
   // target-specific Wrangler config (deterministic Worker name
-  // `<company>-<site>-<service>-<environment>`, isolated D1, non-secret
-  // deployment vars) that is removed after the deployment. Do not reintroduce
+  // `<company>-<site>-<service>-<environment>`, isolated D1 and compiled
+  // non-secret application configuration) that is removed after the deployment.
+  // Do not reintroduce
   // generic `user-service-*` env sections: Cloudflare resources are
   // target-specific, while the application binding name stays the stable `DB`.
   "$schema": "./node_modules/wrangler/config-schema.json",
@@ -39,7 +40,7 @@
     "html_handling": "none",
   },
   // The local root `.env` is the only application configuration source for
-  // local development. Remote releases materialize vars from their complete
+  // local development. Remote releases compile the profile from their complete
   // `config/environments/.env.<environment>` file. Secrets (`BETTER_AUTH_SECRET`, `RESEND_API_KEY`, and
   // `SMTP_USER`/`SMTP_PASSWORD` when the SMTP transport is selected) are
   // always runtime secrets configured directly in Cloudflare for the selected
@@ -48,6 +49,9 @@
   "vars": {
     "ENVIRONMENT": "local",
   },
+  // Remote materialized configs explicitly reconcile Dashboard plaintext vars;
+  // encrypted secrets remain separately managed by Cloudflare.
+  "keep_vars": false,
   // Cloudflare-native observability baseline (ADR-0009, ticket #14): Worker
   // logs, traces and platform metrics are enabled for every environment.
   // Application logs stay structured/correlated with request ids and never

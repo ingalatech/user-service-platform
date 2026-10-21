@@ -48,12 +48,14 @@ interface Harness {
   removed: string[];
   logs: string[];
   preflightCalls: number;
+  preflightReads: string[];
 }
 
 function createHarness(failOn?: RegExp, failPreflight = false): Harness {
   const commands: { command: string; args: string[]; env?: NodeJS.ProcessEnv }[] = [];
   const removed: string[] = [];
   const logs: string[] = [];
+  const preflightReads: string[] = [];
   const harness: Harness = {
     io: {
       materialize: () => '/tmp/wrangler.deploy-test.json',
@@ -62,6 +64,7 @@ function createHarness(failOn?: RegExp, failPreflight = false): Harness {
       },
       preflight: () => {
         harness.preflightCalls += 1;
+        preflightReads.push('wrangler whoami', 'wrangler d1 list', 'wrangler deployments list');
         if (failPreflight) {
           return Promise.reject(
             new Error('Deployment preflight failed: worktree: worktree has uncommitted changes.'),
@@ -90,6 +93,7 @@ function createHarness(failOn?: RegExp, failPreflight = false): Harness {
     removed,
     logs,
     preflightCalls: 0,
+    preflightReads,
   };
   return harness;
 }
@@ -473,10 +477,15 @@ describe('deployment orchestration', () => {
     expect(harness.removed).toEqual(['/tmp/wrangler.deploy-test.json']);
   });
 
-  it('runs zero remote commands for a dry run', async () => {
+  it('runs preflight reads but zero remote mutations for a dry run', async () => {
     const harness = createHarness();
     await runDeployment({ resolved: SANDBOX, dryRun: true }, harness.io, harness.runner);
     expect(harness.commands).toEqual([]);
+    expect(harness.preflightReads).toEqual([
+      'wrangler whoami',
+      'wrangler d1 list',
+      'wrangler deployments list',
+    ]);
     expect(harness.removed).toEqual(['/tmp/wrangler.deploy-test.json']);
     expect(harness.logs.join('\n')).toContain('rch-rugbychampagne-user-service-sandbox');
   });

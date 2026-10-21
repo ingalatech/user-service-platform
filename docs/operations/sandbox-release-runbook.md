@@ -18,21 +18,32 @@ secrets remain operator-managed outside the repository.
 2. Run `npm run provision -- --env sandbox --plan`.
 3. Run `npm run provision -- --env sandbox --apply`.
 4. Review the staged `D1_ID` diff in `.env.sandbox` and commit it.
-5. Run `npm run deploy -- --env sandbox` and confirm the first deployment.
-6. Configure the runtime secrets in the Cloudflare Dashboard. Release tooling
+5. Before the first remote rollout, build and dry-run the exact materialized
+   candidate without uploading it:
+
+   ```bash
+   nvm use
+   npm run build:admin
+   candidate_config="$(mktemp /tmp/user-service-wrangler.XXXXXX.json)"
+   trap 'rm -f "$candidate_config"' EXIT
+   npm run deploy -- --env sandbox --write-config "$candidate_config"
+   npx wrangler deploy --dry-run --config "$candidate_config"
+   ```
+
+   This validates the local bundle and explicit `keep_vars: false`; it does
+   not prove preservation of remote encrypted secrets.
+
+6. Run `npm run deploy -- --env sandbox` and confirm the first deployment.
+7. Configure the runtime secrets in the Cloudflare Dashboard. Release tooling
    never lists, validates, uploads, prints or instructs CLI mutation of secrets.
    A same-name Dashboard binding for compiled application configuration is
    ignored by the Worker and produces a redacted warning; it cannot override
    the selected Git profile.
-   Before the first remote rollout, run the repository materialization through
-   the pinned Wrangler dry run. Confirm that it succeeds with `define` and no
-   plaintext `vars`; this exercises the current Wrangler bundle path without
-   uploading a version or changing encrypted secrets.
-7. Run `npm run smoke:readiness` to verify public health and anonymous Identity.
+8. Run `npm run smoke:readiness` to verify public health and anonymous Identity.
    During the temporary Identity-unavailable window, only `/v1/health` is
    expected to pass. Record the resulting Worker version after Dashboard
    secret changes.
-8. After readiness passes, perform the privileged manual acceptance with:
+9. After readiness passes, perform the privileged manual acceptance with:
    `npm run smoke:sandbox`. This explicitly covers registration, login and
    email verification through the allowlisted QA mailbox. Supply its QA-only
    values (`SMOKE_SANDBOX_EMAIL`, `SMOKE_PASSWORD` and, when completing the
@@ -48,8 +59,10 @@ promotion commands with the production environment file.
 
 ## Subsequent releases
 
-Use `npm run deploy -- --env sandbox --dry-run` to inspect a release, then run
-the same command without `--dry-run`. The candidate contains the compiled
+Use `npm run deploy -- --env sandbox --dry-run` to inspect the read-only
+release plan; it performs preflight reads but does not bundle or upload. Use
+the explicit materialization dry-run in step 5 to exercise bundling, then run
+the deploy command without `--dry-run`. The candidate contains the compiled
 profile and no plaintext application `vars`; the first deployment migrates,
 deploys and checks only `/v1/health`; later candidate uploads do not run an
 automatic smoke. Candidate upload, migration ordering, first-deploy
@@ -68,8 +81,15 @@ mutation.
 
 The generated target config contains only infrastructure bindings and the
 compiled non-secret profile. It declares no secrets and does not invoke secret
-management commands. A dry run of `wrangler deploy --dry-run` against that
-temporary config is the safe provider check: it bundles the candidate without
-uploading it, so existing encrypted Dashboard secrets remain untouched. Never
-replace this check with `wrangler secret list`, `wrangler secret get`, or a
-secret value in a command or log.
+management commands. The commands in step 5 are the safe local provider check:
+they bundle the candidate without uploading it. They therefore prove neither
+remote secret presence nor preservation.
+
+The current repository has no safe candidate-version HTTP smoke seam that can
+verify encrypted secrets before traffic activation. A future operator may
+upload a candidate with the normal deploy flow and inspect only version and
+deployment metadata, but metadata cannot prove secret values. Do not claim
+pre-activation secret preservation from that operation, and do not use secret
+listing/get commands or print values. Promotion remains blocked until an
+approved candidate verification seam exists if proving preservation is a
+release requirement.

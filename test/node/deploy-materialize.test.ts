@@ -7,8 +7,10 @@ import {
   BASE_ASSETS_DIRECTORY,
   BASE_COMPATIBILITY_DATE,
   BASE_COMPATIBILITY_FLAGS,
+  BASE_KEEP_VARS,
   BASE_OBSERVABILITY,
   BASE_WORKER_MAIN,
+  buildPromotionWranglerConfig,
   buildTargetWranglerConfig,
   removeTempWranglerConfig,
   resolveRepoAdminDistDir,
@@ -17,7 +19,7 @@ import {
   resolveRepoWorkerMain,
   writeTempWranglerConfig,
 } from '../../scripts/deploy/materialize.js';
-import { COMPILED_CONFIG_DEFINE_NAME } from '../../src/config/index.js';
+import { COMPILED_CONFIG_DEFINE_NAME, NON_SECRET_VAR_NAMES } from '../../src/config/index.js';
 import type { ResolvedDeployment } from '../../scripts/deploy/environment-config.js';
 import {
   CONTRACT_PRODUCTION_DATABASE_ID,
@@ -67,6 +69,7 @@ describe('wrangler config materialization', () => {
       expect(base).toContain(flag);
     }
     expect(base).toContain(`"main": "${BASE_WORKER_MAIN}"`);
+    expect(base).toContain(`"keep_vars": ${String(BASE_KEEP_VARS)}`);
     expect(BASE_OBSERVABILITY).toEqual({ enabled: true });
     expect(base).toContain('"enabled": true');
     // Ticket #124: the base config serves the built administration SPA
@@ -76,7 +79,7 @@ describe('wrangler config materialization', () => {
     expect(base).toContain(`"binding": "${BASE_ASSETS_BINDING}"`);
   });
 
-  it('materializes a target-specific config with the stable DB binding', () => {
+  it('reconciles legacy plaintext vars while retaining the stable DB binding', () => {
     const config = buildTargetWranglerConfig(SANDBOX_RESOLVED);
     const expectedMigrationsDir = resolveRepoMigrationsDir();
     const expectedMain = resolveRepoWorkerMain();
@@ -90,17 +93,21 @@ describe('wrangler config materialization', () => {
         migrations_dir: expectedMigrationsDir,
       },
     ]);
-    expect(config.define[COMPILED_CONFIG_DEFINE_NAME]).toBe(
-      JSON.stringify(SANDBOX_RESOLVED.applicationConfig),
-    );
+    expect(config.keep_vars).toBe(false);
     expect('vars' in config).toBe(false);
   });
 
   it('compiles the complete application profile without secret names', () => {
     const config = buildTargetWranglerConfig(SANDBOX_RESOLVED);
     const compiled = config.define[COMPILED_CONFIG_DEFINE_NAME];
-    expect(compiled).toBe(JSON.stringify(SANDBOX_RESOLVED.applicationConfig));
-    expect(compiled).toContain('AUTH_MAIL_TRANSPORT');
+    const profile = JSON.parse(compiled) as Record<string, string>;
+    expect(Object.keys(profile).sort()).toEqual([...NON_SECRET_VAR_NAMES].sort());
+    expect(profile).toMatchObject({
+      ENVIRONMENT: 'sandbox',
+      AUTH_REGISTRATION_ENABLED: 'true',
+      AUTH_MAIL_TRANSPORT: 'resend',
+      AUTH_MAIL_FROM: 'User Service <jg@ingalatech.com>',
+    });
     expect(compiled).not.toMatch(
       /BETTER_AUTH_SECRET|RESEND_API_KEY|SMTP_USER|SMTP_PASSWORD|CLOUDFLARE_API_TOKEN/,
     );
@@ -116,9 +123,11 @@ describe('wrangler config materialization', () => {
       databaseId: CONTRACT_PRODUCTION_DATABASE_ID,
       applicationConfig: productionProfile,
     });
-    expect(production.define[COMPILED_CONFIG_DEFINE_NAME]).toBe(JSON.stringify(productionProfile));
-    expect(production.define[COMPILED_CONFIG_DEFINE_NAME]).not.toBe(
-      JSON.stringify(SANDBOX_RESOLVED.applicationConfig),
+    expect(JSON.parse(production.define[COMPILED_CONFIG_DEFINE_NAME])).toMatchObject({
+      ENVIRONMENT: 'production',
+    });
+    expect(production.d1_databases[0].database_name).toBe(
+      'rch-rugbychampagne-user-service-production-db',
     );
   });
 
@@ -134,6 +143,28 @@ describe('wrangler config materialization', () => {
       AUTH_MAIL_FROM: 'User Service <jg@ingalatech.com>',
       AUTH_MAIL_ALLOWLIST: 'jonatangarbuyo@gmail.com,jg@ingalatech.com',
     });
+  });
+
+  it('builds promotion config from target identity without application configuration', () => {
+    const promotion = buildPromotionWranglerConfig(SANDBOX_RESOLVED);
+    expect(promotion).toEqual({
+      name: 'rch-rugbychampagne-user-service-sandbox',
+    });
+    expect(promotion).not.toHaveProperty('define');
+    expect(promotion).not.toHaveProperty('vars');
+  });
+
+  it('keeps promotion identity stable when current application config changes', () => {
+    const uploaded = buildPromotionWranglerConfig(SANDBOX_RESOLVED);
+    const changedCurrent = {
+      ...SANDBOX_RESOLVED,
+      applicationConfig: {
+        ...SANDBOX_RESOLVED.applicationConfig,
+        AUTH_APP_NAME: 'Changed after upload',
+      },
+    };
+
+    expect(buildPromotionWranglerConfig(changedCurrent)).toEqual(uploaded);
   });
 
   it('materializes the selected Cloudflare account as Wrangler account_id', () => {
@@ -197,7 +228,9 @@ describe('wrangler config materialization', () => {
     }[];
     const productionDatabases = (configOf(production) ?? []) as { database_id: string }[];
     expect(sandboxDatabases[0]?.database_id).not.toBe(productionDatabases[0]?.database_id);
-    expect(production.define[COMPILED_CONFIG_DEFINE_NAME]).toContain('"ENVIRONMENT":"production"');
+    expect(JSON.parse(production.define[COMPILED_CONFIG_DEFINE_NAME])).toMatchObject({
+      ENVIRONMENT: 'production',
+    });
   });
 
   it('writes and removes the temporary config around deployment', () => {

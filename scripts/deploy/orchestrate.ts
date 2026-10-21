@@ -1,4 +1,4 @@
-import type { ResolvedDeployment } from './environment-config.js';
+import type { DeploymentTarget, ResolvedDeployment } from './environment-config.js';
 import { parseWorkerVersions } from './versions.js';
 import { isAbsentWorkerError } from './provision-worker.js';
 import {
@@ -26,6 +26,9 @@ export type { SessionFailureTailHandle } from './diagnostic-tail.js';
 // implicitly. A dry run executes the read-only preflight and then returns
 // without running any mutating deployment command. The
 // temporary config is removed in `finally`, even when deployment fails.
+// Promotion is deliberately narrower: it receives only target identity and
+// uses a minimal Wrangler config, so changing the current environment profile
+// cannot rebuild or alter the immutable version selected for promotion.
 //
 // Secret boundary: the orchestrator passes Cloudflare credentials through by
 // inheritance (child processes keep their own environment) and never reads,
@@ -64,25 +67,26 @@ export type DeployCommandRunner = (
 ) => Promise<DeployCommandResult>;
 
 export interface PromotionRequest {
-  readonly resolved: ResolvedDeployment;
+  readonly resolved: DeploymentTarget;
   readonly versionId: string;
   readonly confirm?: string;
 }
 
-export interface PromotionIo extends Pick<
-  DeployIo,
-  'materialize' | 'cleanup' | 'preflight' | 'log'
-> {
-  readonly smoke: (resolved: ResolvedDeployment) => Promise<void>;
+export interface PromotionIo {
+  readonly materialize: (resolved: DeploymentTarget) => string;
+  readonly cleanup: (path: string) => void;
+  readonly preflight: (resolved: DeploymentTarget) => Promise<void>;
+  readonly log: (message: string) => void;
+  readonly smoke: (resolved: DeploymentTarget) => Promise<void>;
 }
 
 export function promotionSmokeCommand(
-  environment: ResolvedDeployment['environment'],
+  environment: DeploymentTarget['environment'],
 ): readonly [string, readonly string[]] {
   return ['npm', ['run', environment === 'production' ? 'smoke:production' : 'smoke:readiness']];
 }
 
-export function smokeEnvironment(resolved: ResolvedDeployment): NodeJS.ProcessEnv {
+export function smokeEnvironment(resolved: DeploymentTarget): NodeJS.ProcessEnv {
   const workerUrl = resolved.workerUrl.trim();
   if (workerUrl.length === 0) {
     throw new Error('Cannot run smoke without the selected environment Worker URL.');
@@ -174,7 +178,7 @@ export interface DeployIo {
 
 // The only accepted production confirmation is the target Worker name
 // itself: the operator must name the exact production Worker being mutated.
-export function productionConfirmFor(resolved: ResolvedDeployment): string {
+export function productionConfirmFor(resolved: DeploymentTarget): string {
   return resolved.workerName;
 }
 

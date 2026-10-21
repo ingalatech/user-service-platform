@@ -58,7 +58,7 @@ const KNOWN_NAMES = new Set<string>(ENVIRONMENT_VAR_NAMES);
 export type EnvironmentVarName = (typeof ENVIRONMENT_VAR_NAMES)[number];
 export type EnvironmentFile = Readonly<Record<EnvironmentVarName, string>>;
 
-export interface EnvironmentDeployment {
+export interface DeploymentTarget {
   readonly targetKey: string;
   readonly company: string;
   readonly site: string;
@@ -69,6 +69,9 @@ export interface EnvironmentDeployment {
   readonly databaseName: string;
   readonly databaseId: string;
   readonly accountId?: string;
+}
+
+export interface EnvironmentDeployment extends DeploymentTarget {
   readonly applicationConfig: NonSecretProfile;
 }
 
@@ -121,16 +124,14 @@ function assertEnvironmentValue(
   }
 }
 
-export function resolveEnvironmentDeployment(
+export function resolveEnvironmentTarget(
   file: EnvironmentFile,
   options: { readonly requireRemoteReady?: boolean } = {},
-): EnvironmentDeployment {
+): DeploymentTarget {
   const environment = parseDeployEnvironment(file.ENVIRONMENT);
   assertEnvironmentValue(file, 'WORKER_NAME', /^[a-z0-9-]+$/);
   assertEnvironmentValue(file, 'WORKER_URL', /^https:\/\//);
   assertEnvironmentValue(file, 'D1_NAME', /^[a-z0-9-]+$/);
-  assertEnvironmentValue(file, 'AUTH_MAIL_TRANSPORT');
-  assertEnvironmentValue(file, 'AUTH_MAIL_FROM');
   if (file.CLOUDFLARE_ACCOUNT_ID !== '' && !/^[0-9a-f]{32}$/i.test(file.CLOUDFLARE_ACCOUNT_ID)) {
     throw new Error('Invalid environment configuration value for "CLOUDFLARE_ACCOUNT_ID".');
   }
@@ -162,6 +163,27 @@ export function resolveEnvironmentDeployment(
   if (file.WORKER_NAME !== expectedWorker || file.D1_NAME !== expectedDatabase) {
     throw new Error('Environment configuration names do not match the selected environment.');
   }
+  return {
+    targetKey: 'rch-rugbychampagne',
+    company: 'rch',
+    site: 'rugbychampagne',
+    service: 'user-service',
+    environment,
+    workerName: file.WORKER_NAME,
+    workerUrl: file.WORKER_URL,
+    databaseName: file.D1_NAME,
+    databaseId: file.D1_ID,
+    accountId: file.CLOUDFLARE_ACCOUNT_ID,
+  };
+}
+
+export function resolveEnvironmentDeployment(
+  file: EnvironmentFile,
+  options: { readonly requireRemoteReady?: boolean } = {},
+): EnvironmentDeployment {
+  const target = resolveEnvironmentTarget(file, options);
+  assertEnvironmentValue(file, 'AUTH_MAIL_TRANSPORT');
+  assertEnvironmentValue(file, 'AUTH_MAIL_FROM');
   const vars = Object.fromEntries(
     ENVIRONMENT_VAR_NAMES.filter(
       (name) =>
@@ -175,7 +197,10 @@ export function resolveEnvironmentDeployment(
         ].includes(name),
     ).map((name) => [name, file[name]]),
   );
-  const applicationConfig = resolveEffectiveConfig({ environment, runtime: vars }).config;
+  const applicationConfig = resolveEffectiveConfig({
+    environment: target.environment,
+    runtime: vars,
+  }).config;
   resolveConsumerTokenConfig({
     environment: 'local',
     issuer: file.AUTH_JWT_ISSUER,
@@ -187,16 +212,7 @@ export function resolveEnvironmentDeployment(
     validateSmtpSettings({ SMTP_PORT: file.SMTP_PORT, SMTP_SECURE: file.SMTP_SECURE });
   }
   return {
-    targetKey: 'rch-rugbychampagne',
-    company: 'rch',
-    site: 'rugbychampagne',
-    service: 'user-service',
-    environment,
-    workerName: file.WORKER_NAME,
-    workerUrl: file.WORKER_URL,
-    databaseName: file.D1_NAME,
-    databaseId: file.D1_ID,
-    accountId: file.CLOUDFLARE_ACCOUNT_ID,
+    ...target,
     applicationConfig,
   };
 }
