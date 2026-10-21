@@ -1,11 +1,14 @@
 import {
   LOCAL_PROFILE,
   NON_SECRET_VAR_NAMES,
+  parseNonSecretProfile,
   type CanonicalEnvironment,
   type NonSecretProfile,
 } from './profiles.js';
 
 declare const __USER_SERVICE_COMPILED_CONFIG__: NonSecretProfile | undefined;
+
+const warnedRuntimeBindings = new WeakMap<NonSecretProfile, Set<string>>();
 
 // Resolved operational context. `test` is the isolated automated-test
 // context: it reuses the local non-secret shape but is never a deployment
@@ -36,7 +39,7 @@ function readCompiledProfile(): NonSecretProfile | undefined {
   if (typeof __USER_SERVICE_COMPILED_CONFIG__ === 'undefined') {
     return undefined;
   }
-  return __USER_SERVICE_COMPILED_CONFIG__;
+  return parseNonSecretProfile(__USER_SERVICE_COMPILED_CONFIG__);
 }
 
 export function readEffectiveEnvironment(
@@ -50,11 +53,22 @@ export function readEffectiveEnvironment(
   );
 }
 
-function warnIgnoredRuntimeBindings(runtime: Record<string, unknown>): void {
+function warnIgnoredRuntimeBindings(
+  compiledProfile: NonSecretProfile,
+  runtime: Record<string, unknown>,
+): void {
   const bindings = NON_SECRET_VAR_NAMES.filter((name) =>
     Object.prototype.hasOwnProperty.call(runtime, name),
   );
   if (bindings.length === 0) return;
+  const signature = bindings.join('\u0000');
+  const warned = warnedRuntimeBindings.get(compiledProfile);
+  if (warned?.has(signature)) return;
+  if (warned === undefined) {
+    warnedRuntimeBindings.set(compiledProfile, new Set([signature]));
+  } else {
+    warned.add(signature);
+  }
   console.warn(
     JSON.stringify({
       level: 'warn',
@@ -196,7 +210,10 @@ function validateAuthActionUrl(name: string, value: string, environment: string)
 // parse-and-validate entry point; every failure is a redacted `Error` carrying
 // variable names and expected shapes, never runtime values.
 export function resolveEffectiveConfig(input: ResolveEffectiveConfigInput): EffectiveConfig {
-  const compiledProfile = input.compiledProfile ?? readCompiledProfile();
+  const compiledProfile =
+    input.compiledProfile === undefined
+      ? readCompiledProfile()
+      : parseNonSecretProfile(input.compiledProfile);
   const environment = normalizeEnvironmentName(compiledProfile?.ENVIRONMENT ?? input.environment);
   const runtime = input.runtime ?? {};
   const merged: NonSecretProfile = compiledProfile
@@ -206,7 +223,7 @@ export function resolveEffectiveConfig(input: ResolveEffectiveConfigInput): Effe
         ENVIRONMENT: environment === 'test' ? 'local' : environment,
       };
   if (compiledProfile !== undefined) {
-    warnIgnoredRuntimeBindings(runtime);
+    warnIgnoredRuntimeBindings(compiledProfile, runtime);
   } else {
     for (const name of NON_SECRET_VAR_NAMES) {
       const value: unknown = runtime[name];

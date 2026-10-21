@@ -80,6 +80,12 @@ export interface PromotionIo {
   readonly smoke: (resolved: DeploymentTarget) => Promise<void>;
 }
 
+export function promotionVerificationBlocked(versionId: string): Error {
+  return new Error(
+    `Promotion blocked for immutable Worker Version ID "${versionId}": no approved version-bound behavior verification seam is configured. Enable and approve a safe Version URL or equivalent candidate test that exercises this exact Version ID before promotion; no traffic mutation was attempted.`,
+  );
+}
+
 export function promotionSmokeCommand(
   environment: DeploymentTarget['environment'],
 ): readonly [string, readonly string[]] {
@@ -139,19 +145,11 @@ export async function runPromotion(
     if (!parseWorkerVersions(versions).some((version) => version.id === versionId)) {
       throw new Error('The selected immutable Worker Version ID is not available for this Worker.');
     }
-    const promoted = await runner('npx', [
-      'wrangler',
-      'versions',
-      'deploy',
-      `${versionId}@100%`,
-      '--config',
-      configPath,
-    ]);
-    if (promoted.exitCode !== 0) {
-      throw new Error('promote-worker-version failed.');
-    }
-    await io.smoke(request.resolved);
-    io.log(`promoted worker=${request.resolved.workerName} version=${versionId}`);
+    // Cloudflare documents Version URLs as a possible pre-traffic seam, but
+    // this repository has no configured, approved endpoint and no way to prove
+    // secret-backed behavior for the selected version without guessing. Keep
+    // the command fail-closed until an evidence provider is implemented.
+    throw promotionVerificationBlocked(versionId);
   } finally {
     io.cleanup(configPath);
   }

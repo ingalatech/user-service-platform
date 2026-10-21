@@ -44,6 +44,10 @@ A Worker code rollback is not a data rollback. D1 Time Travel is the emergency p
 
 Smoke tests are required after sandbox and production deployment.
 
+Promotion remains fail-closed until a safe candidate-version behavior check is
+approved and implemented. The check must be tied to the selected immutable
+Version ID and exercise behavior without reading or listing secret values.
+
 ## Consequences
 
 - Local release tooling must select environment-specific bindings explicitly.

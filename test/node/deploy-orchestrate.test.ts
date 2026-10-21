@@ -12,6 +12,11 @@ import {
 } from '../../scripts/deploy/orchestrate.js';
 import type { ResolvedDeployment } from '../../scripts/deploy/environment-config.js';
 import {
+  formatPreflightError,
+  preflightFailed,
+  runPreflight,
+} from '../../scripts/deploy/preflight.js';
+import {
   CONTRACT_PRODUCTION_DATABASE_ID,
   CONTRACT_SANDBOX_DATABASE_ID,
 } from './deploy-test-utils.js';
@@ -48,14 +53,12 @@ interface Harness {
   removed: string[];
   logs: string[];
   preflightCalls: number;
-  preflightReads: string[];
 }
 
 function createHarness(failOn?: RegExp, failPreflight = false): Harness {
   const commands: { command: string; args: string[]; env?: NodeJS.ProcessEnv }[] = [];
   const removed: string[] = [];
   const logs: string[] = [];
-  const preflightReads: string[] = [];
   const harness: Harness = {
     io: {
       materialize: () => '/tmp/wrangler.deploy-test.json',
@@ -64,7 +67,6 @@ function createHarness(failOn?: RegExp, failPreflight = false): Harness {
       },
       preflight: () => {
         harness.preflightCalls += 1;
-        preflightReads.push('wrangler whoami', 'wrangler d1 list', 'wrangler deployments list');
         if (failPreflight) {
           return Promise.reject(
             new Error('Deployment preflight failed: worktree: worktree has uncommitted changes.'),
@@ -93,7 +95,6 @@ function createHarness(failOn?: RegExp, failPreflight = false): Harness {
     removed,
     logs,
     preflightCalls: 0,
-    preflightReads,
   };
   return harness;
 }
@@ -274,74 +275,66 @@ describe('deployment orchestration', () => {
     expect(harness.removed).toEqual(['/tmp/wrangler.deploy-test.json']);
   });
 
-  it('promotes only the selected existing version to 100% and does not build or migrate', async () => {
+  it('blocks promotion when no version-bound behavior evidence seam is configured', async () => {
     const harness = createHarness();
     const commands: string[] = [];
-    await runPromotion(
-      { resolved: SANDBOX, versionId: 'immutable-v1' },
-      {
-        materialize: () => '/tmp/promotion.json',
-        cleanup: (path) => harness.removed.push(path),
-        preflight: () => Promise.resolve(),
-        log: (message) => harness.logs.push(message),
-        smoke: () => {
-          commands.push('smoke');
-          return Promise.resolve();
+    await expect(
+      runPromotion(
+        { resolved: SANDBOX, versionId: 'immutable-v1' },
+        {
+          materialize: () => '/tmp/promotion.json',
+          cleanup: (path) => harness.removed.push(path),
+          preflight: () => Promise.resolve(),
+          log: (message) => harness.logs.push(message),
+          smoke: () => Promise.resolve(),
         },
-      },
-      (_command, args) => {
-        commands.push(args.join(' '));
-        return Promise.resolve(
-          args.includes('list')
-            ? {
-                exitCode: 0,
-                stdout:
-                  '[{"id":"immutable-v1","metadata":{"created_on":"2026-10-20T12:00:00Z"},"annotations":{"workers/tag":"candidate"}}]',
-              }
-            : { exitCode: 0 },
-        );
-      },
-    );
-    expect(commands).toEqual([
-      'wrangler versions list --json --config /tmp/promotion.json',
-      'wrangler versions deploy immutable-v1@100% --config /tmp/promotion.json',
-      'smoke',
-    ]);
+        (_command, args) => {
+          commands.push(args.join(' '));
+          return Promise.resolve(
+            args.includes('list')
+              ? {
+                  exitCode: 0,
+                  stdout:
+                    '[{"id":"immutable-v1","metadata":{"created_on":"2026-10-20T12:00:00Z"},"annotations":{"workers/tag":"candidate"}}]',
+                }
+              : { exitCode: 0 },
+          );
+        },
+      ),
+    ).rejects.toThrow(/Promotion blocked.*immutable-v1/);
+    expect(commands).toEqual(['wrangler versions list --json --config /tmp/promotion.json']);
     expect(harness.removed).toContain('/tmp/promotion.json');
   });
 
-  it('promotes production and runs the non-mutating production smoke after routing', async () => {
+  it('blocks production promotion before any traffic mutation', async () => {
     const harness = createHarness();
     const commands: string[] = [];
-    await runPromotion(
-      { resolved: PRODUCTION, versionId: 'immutable-v1', confirm: PRODUCTION.workerName },
-      {
-        materialize: () => '/tmp/production-promotion.json',
-        cleanup: (path) => harness.removed.push(path),
-        preflight: () => Promise.resolve(),
-        log: (message) => harness.logs.push(message),
-        smoke: () => {
-          commands.push('smoke:production');
-          return Promise.resolve();
+    await expect(
+      runPromotion(
+        { resolved: PRODUCTION, versionId: 'immutable-v1', confirm: PRODUCTION.workerName },
+        {
+          materialize: () => '/tmp/production-promotion.json',
+          cleanup: (path) => harness.removed.push(path),
+          preflight: () => Promise.resolve(),
+          log: (message) => harness.logs.push(message),
+          smoke: () => Promise.resolve(),
         },
-      },
-      (_command, args) => {
-        commands.push(args.join(' '));
-        return Promise.resolve(
-          args.includes('list')
-            ? {
-                exitCode: 0,
-                stdout:
-                  '[{"id":"immutable-v1","metadata":{"created_on":"2026-10-20T12:00:00Z"},"annotations":{}}]',
-              }
-            : { exitCode: 0 },
-        );
-      },
-    );
+        (_command, args) => {
+          commands.push(args.join(' '));
+          return Promise.resolve(
+            args.includes('list')
+              ? {
+                  exitCode: 0,
+                  stdout:
+                    '[{"id":"immutable-v1","metadata":{"created_on":"2026-10-20T12:00:00Z"},"annotations":{}}]',
+                }
+              : { exitCode: 0 },
+          );
+        },
+      ),
+    ).rejects.toThrow(/Promotion blocked.*immutable-v1/);
     expect(commands).toEqual([
       'wrangler versions list --json --config /tmp/production-promotion.json',
-      'wrangler versions deploy immutable-v1@100% --config /tmp/production-promotion.json',
-      'smoke:production',
     ]);
   });
 
@@ -421,8 +414,8 @@ describe('deployment orchestration', () => {
           );
         },
       ),
-    ).rejects.toThrow(/promote-worker-version/);
-    expect(commands).toHaveLength(2);
+    ).rejects.toThrow(/Promotion blocked.*immutable-v1/);
+    expect(commands).toHaveLength(1);
     expect(smokeCalls).toBe(0);
     expect(cleaned).toEqual(['/tmp/promotion-failure.json']);
   });
@@ -477,17 +470,58 @@ describe('deployment orchestration', () => {
     expect(harness.removed).toEqual(['/tmp/wrangler.deploy-test.json']);
   });
 
-  it('runs preflight reads but zero remote mutations for a dry run', async () => {
-    const harness = createHarness();
-    await runDeployment({ resolved: SANDBOX, dryRun: true }, harness.io, harness.runner);
-    expect(harness.commands).toEqual([]);
-    expect(harness.preflightReads).toEqual([
-      'wrangler whoami',
-      'wrangler d1 list',
-      'wrangler deployments list',
+  it('runs the real read-only preflight and no mutation commands for a dry run', async () => {
+    const commands: string[] = [];
+    const removed: string[] = [];
+    const logs: string[] = [];
+    const runner: DeployCommandRunner = (command, args) => {
+      commands.push(`${command} ${args.join(' ')}`);
+      return Promise.resolve({ exitCode: 0, stdout: args.includes('deployments') ? '[]' : '' });
+    };
+    const io: DeployIo = {
+      materialize: () => '/tmp/wrangler.dry-run.json',
+      cleanup: (path) => removed.push(path),
+      preflight: async (resolved) => {
+        const checks = await runPreflight(
+          { resolved },
+          {
+            nodeVersion: 'v24.21.0',
+            commands: [],
+            run: async (command, args) => {
+              const result = await runner(command, args);
+              return {
+                exitCode: result.exitCode,
+                stdout: result.stdout ?? '',
+                ...(result.stderr === undefined ? {} : { stderr: result.stderr }),
+              };
+            },
+          },
+        );
+        if (preflightFailed(checks)) throw formatPreflightError(checks);
+      },
+      log: (message) => logs.push(message),
+    };
+
+    await runDeployment({ resolved: SANDBOX, dryRun: true }, io, runner);
+
+    expect(commands).toEqual([
+      'npx wrangler --version',
+      'npx wrangler whoami',
+      'npx wrangler d1 list',
+      'git status --porcelain',
+      'npx wrangler deployments list --name rch-rugbychampagne-user-service-sandbox --json',
     ]);
-    expect(harness.removed).toEqual(['/tmp/wrangler.deploy-test.json']);
-    expect(harness.logs.join('\n')).toContain('rch-rugbychampagne-user-service-sandbox');
+    expect(
+      commands.some(
+        (command) =>
+          command.includes('migrations') ||
+          command.includes('wrangler deploy ') ||
+          command.includes('versions upload') ||
+          command.includes('versions deploy'),
+      ),
+    ).toBe(false);
+    expect(removed).toEqual(['/tmp/wrangler.dry-run.json']);
+    expect(logs.join('\n')).toContain('rch-rugbychampagne-user-service-sandbox');
   });
 
   it('executes the read-only preflight on a dry run without mutating commands', async () => {

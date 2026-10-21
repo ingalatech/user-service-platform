@@ -38,6 +38,7 @@
     "smoke:readiness": "tsx scripts/smoke-readiness.ts",
     "smoke:production": "tsx scripts/smoke-production.ts",
     "deploy": "tsx scripts/deploy.ts",
+    "deploy:dry-run": "tsx scripts/deploy-dry-run.ts",
     "promote": "tsx scripts/promote.ts",
     "deploy:production": "tsx scripts/deploy.ts --env production",
     "provision": "tsx scripts/provision.ts",

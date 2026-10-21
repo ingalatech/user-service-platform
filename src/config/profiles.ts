@@ -29,6 +29,33 @@ export type NonSecretVarName = (typeof NON_SECRET_VAR_NAMES)[number];
 export type NonSecretProfile = Record<NonSecretVarName, string>;
 export type CanonicalEnvironment = 'local' | 'sandbox' | 'production';
 
+const NON_SECRET_VAR_NAME_SET: ReadonlySet<string> = new Set(NON_SECRET_VAR_NAMES);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+export function isNonSecretProfile(value: unknown): value is NonSecretProfile {
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value);
+  return (
+    keys.length === NON_SECRET_VAR_NAMES.length &&
+    keys.every((name) => NON_SECRET_VAR_NAME_SET.has(name) && typeof value[name] === 'string')
+  );
+}
+
+// This is the runtime guard for the Wrangler `define` boundary. The key list
+// above is the only source of truth; an added, missing or non-string profile
+// value fails before configuration can reach application code.
+export function parseNonSecretProfile(value: unknown): NonSecretProfile {
+  if (!isNonSecretProfile(value)) {
+    throw new Error(
+      'Configuration error: compiled profile keys do not match the canonical profile.',
+    );
+  }
+  return value;
+}
+
 export const SECRET_VAR_NAMES = [
   'BETTER_AUTH_SECRET',
   'RESEND_API_KEY',

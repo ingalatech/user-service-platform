@@ -21,14 +21,13 @@ secrets remain operator-managed outside the repository.
 5. Before the first remote rollout, build and dry-run the exact materialized
    candidate without uploading it:
 
-   ```bash
+   ```text
    nvm use
-   npm run build:admin
-   candidate_config="$(mktemp /tmp/user-service-wrangler.XXXXXX.json)"
-   trap 'rm -f "$candidate_config"' EXIT
-   npm run deploy -- --env sandbox --write-config "$candidate_config"
-   npx wrangler deploy --dry-run --config "$candidate_config"
+   npm run deploy:dry-run -- --env sandbox
    ```
+
+   The repository command creates and removes its OS-native temporary config;
+   no shell-specific `mktemp`, quoting or trap is required.
 
    This validates the local bundle and explicit `keep_vars: false`; it does
    not prove preservation of remote encrypted secrets.
@@ -65,13 +64,18 @@ the explicit materialization dry-run in step 5 to exercise bundling, then run
 the deploy command without `--dry-run`. The candidate contains the compiled
 profile and no plaintext application `vars`; the first deployment migrates,
 deploys and checks only `/v1/health`; later candidate uploads do not run an
-automatic smoke. Candidate upload, migration ordering, first-deploy
-confirmation and immutable promotion remain unchanged.
+automatic smoke. Candidate upload, migration ordering and first-deploy
+confirmation remain unchanged; immutable promotion is currently fail-closed.
 
-Promotion is an explicit local operator action. Promote an immutable Worker
-version with `npm run promote -- --env sandbox`.
-Production promotion additionally requires `--confirm` with the exact Worker
-name and never happens as a side effect of sandbox deployment.
+Promotion is an explicit local operator action, and it is currently fail-closed.
+`npm run promote -- --env sandbox` may list
+versions and perform read-only preflight, but it refuses before
+`wrangler versions deploy` because the repository has no approved, safe
+behavior-verification seam tied to the selected Version ID. Cloudflare
+documents Version URLs as a possible seam, but enabling them and defining the
+secret-backed candidate checks requires an operator decision for each target.
+Production confirmation does not bypass this gate. No promotion is allowed
+until that evidence contract is implemented and approved.
 
 All malformed, duplicate, unknown or secret environment-file entries fail
 before a provider command. Empty or placeholder D1 IDs fail before remote
@@ -85,11 +89,11 @@ management commands. The commands in step 5 are the safe local provider check:
 they bundle the candidate without uploading it. They therefore prove neither
 remote secret presence nor preservation.
 
-The current repository has no safe candidate-version HTTP smoke seam that can
-verify encrypted secrets before traffic activation. A future operator may
-upload a candidate with the normal deploy flow and inspect only version and
-deployment metadata, but metadata cannot prove secret values. Do not claim
-pre-activation secret preservation from that operation, and do not use secret
-listing/get commands or print values. Promotion remains blocked until an
-approved candidate verification seam exists if proving preservation is a
-release requirement.
+The current repository has no approved candidate-version HTTP smoke seam that
+can verify encrypted-secret behavior before traffic activation. A future
+operator may upload a candidate with the normal deploy flow and inspect only
+version and deployment metadata, but metadata cannot prove secret values. Do
+not claim pre-activation secret preservation from that operation, and do not
+use secret listing/get commands or print values. Promotion is enforced
+fail-closed in the command until an approved Version-ID-bound candidate
+verification seam exists.

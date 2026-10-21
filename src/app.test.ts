@@ -57,6 +57,7 @@ describe('compiled configuration boundary', () => {
           bindings: ['ENVIRONMENT', 'AUTH_APP_NAME'],
         }),
       );
+      expect(warn).toHaveBeenCalledTimes(1);
       expect(warn.mock.calls.join(' ')).not.toContain('Dashboard Override');
     } finally {
       warn.mockRestore();

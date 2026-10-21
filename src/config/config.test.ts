@@ -9,6 +9,7 @@ import {
   ENVIRONMENT_PROFILES,
   LOCAL_PROFILE,
   NON_SECRET_VAR_NAMES,
+  parseNonSecretProfile,
   PRODUCTION_PROFILE,
   SANDBOX_PROFILE,
   SECRET_VAR_NAMES,
@@ -65,6 +66,16 @@ describe('environment profiles', () => {
       }
     }
   });
+
+  it('rejects a compiled profile whose keys diverge from the canonical source', () => {
+    const missing = Object.fromEntries(
+      Object.entries(LOCAL_PROFILE).filter(([name]) => name !== 'AUTH_APP_NAME'),
+    );
+    expect(() => parseNonSecretProfile(missing)).toThrow(/compiled profile keys/);
+    expect(() =>
+      parseNonSecretProfile({ ...LOCAL_PROFILE, UNEXPECTED_BINDING: 'ignored' }),
+    ).toThrow(/compiled profile keys/);
+  });
 });
 
 describe('resolveEffectiveConfig', () => {
@@ -119,6 +130,16 @@ describe('resolveEffectiveConfig', () => {
         }),
       );
       expect(warn.mock.calls.join(' ')).not.toContain('secret-marker');
+
+      resolveEffectiveConfig({
+        compiledProfile,
+        runtime: {
+          ENVIRONMENT: 'sandbox',
+          AUTH_APP_NAME: 'Dashboard Override',
+          AUTH_MAIL_TRANSPORT: 'inmemory',
+        },
+      });
+      expect(warn).toHaveBeenCalledTimes(1);
     } finally {
       warn.mockRestore();
     }
