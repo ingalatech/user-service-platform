@@ -83,8 +83,8 @@ export function promotionSmokeCommand(
 }
 
 export function smokeEnvironment(resolved: ResolvedDeployment): NodeJS.ProcessEnv {
-  const workerUrl = resolved.workerUrl?.trim();
-  if (workerUrl === undefined || workerUrl.length === 0) {
+  const workerUrl = resolved.workerUrl.trim();
+  if (workerUrl.length === 0) {
     throw new Error('Cannot run smoke without the selected environment Worker URL.');
   }
   const baseName =

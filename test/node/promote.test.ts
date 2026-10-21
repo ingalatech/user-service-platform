@@ -21,6 +21,14 @@ const SANDBOX: ResolvedDeployment = {
   vars: {},
 };
 
+const PRODUCTION: ResolvedDeployment = {
+  ...SANDBOX,
+  environment: 'production',
+  workerName: 'rch-rugbychampagne-user-service-production',
+  workerUrl: 'https://production.example.test',
+  databaseName: 'rch-rugbychampagne-user-service-production-db',
+};
+
 describe('promotion CLI version selection', () => {
   it('renders and selects the id from a Wrangler version record', () => {
     const prepared = preparePromotionVersions([
@@ -40,17 +48,15 @@ describe('promotion CLI version selection', () => {
     expect(prepared.versions[0]?.id).toBe('immutable-v1');
   });
 
-  it('spawns readiness with only the versioned sandbox URL and execution path', async () => {
-    let invocation:
-      | {
-          readonly command: string;
-          readonly args: readonly string[];
-          readonly env: NodeJS.ProcessEnv;
-        }
-      | undefined;
-    const child = new EventEmitter();
+  it('spawns environment-specific promotion smokes with only versioned URLs', async () => {
+    const invocations: {
+      readonly command: string;
+      readonly args: readonly string[];
+      readonly env: NodeJS.ProcessEnv;
+    }[] = [];
     const spawnFn: PromotionSmokeSpawn = (command, args, options) => {
-      invocation = { command, args, env: options.env };
+      const child = new EventEmitter();
+      invocations.push({ command, args, env: options.env });
       queueMicrotask(() => child.emit('close', 0));
       return child;
     };
@@ -58,18 +64,29 @@ describe('promotion CLI version selection', () => {
     process.env.SMTP_PASSWORD = 'must-not-enter-smoke';
     try {
       await runPromotionSmoke(SANDBOX, spawnFn);
+      await runPromotionSmoke(PRODUCTION, spawnFn);
     } finally {
       delete process.env.SMOKE_SANDBOX_BASE_URL;
       delete process.env.SMTP_PASSWORD;
     }
 
-    expect(invocation).toEqual({
-      command: 'npm',
-      args: ['run', 'smoke:readiness'],
-      env: {
-        PATH: process.env.PATH,
-        SMOKE_SANDBOX_BASE_URL: 'https://sandbox.example.test',
+    expect(invocations).toEqual([
+      {
+        command: 'npm',
+        args: ['run', 'smoke:readiness'],
+        env: {
+          PATH: process.env.PATH,
+          SMOKE_SANDBOX_BASE_URL: 'https://sandbox.example.test',
+        },
       },
-    });
+      {
+        command: 'npm',
+        args: ['run', 'smoke:production'],
+        env: {
+          PATH: process.env.PATH,
+          SMOKE_PRODUCTION_BASE_URL: 'https://production.example.test',
+        },
+      },
+    ]);
   });
 });

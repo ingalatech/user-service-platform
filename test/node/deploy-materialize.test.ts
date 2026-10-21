@@ -30,6 +30,7 @@ const SANDBOX_RESOLVED: ResolvedDeployment = {
   service: 'user-service',
   environment: 'sandbox',
   workerName: 'rch-rugbychampagne-user-service-sandbox',
+  workerUrl: 'https://sandbox.example.test',
   databaseName: 'rch-rugbychampagne-user-service-sandbox-db',
   databaseId: CONTRACT_SANDBOX_DATABASE_ID,
   vars: {
