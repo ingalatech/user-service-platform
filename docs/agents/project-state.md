@@ -92,6 +92,34 @@ ADR-0006 is authoritative:
 - Semicolons, single quotes, two-space indentation, 100-column print width.
 - npm with the repository-pinned versions.
 
+## Direct-browser consumer transport (2026-10-15)
+
+Decision #163 is resolved (operator delegated the choice, 2026-10-15) and the
+successor spec is #164: direct browser calls to a separate same-site service
+Worker with exact credentialed CORS and a service-only host-only HttpOnly
+session cookie; no Astro gateway/proxy and no per-page Identity lookup.
+ADR-0013 records the transport amendment. Slice #165 ("Authenticate directly
+from an approved browser origin with service-only session cookies") is the
+first executable slice; #166 is the shipped-client slice and is blocked by
+accepted #165 and #152. PR #154's branch is preserved and was not modified.
+
+#165 is implemented on branch `ticket/165-direct-browser-service-session`,
+created from main `b94bca996c9b68fed9af3d01e8ddd0f7df2c19c7` (accepted #151
+present). Changes are additive and confined to the identity slice:
+`AUTH_CONSUMER_ORIGINS` non-secret configuration, the consumer CORS module,
+the Origin/Fetch Metadata guard accepting exact consumer origins, an explicit
+host-only/HttpOnly/SameSite=Lax session-cookie pin, and the real-browser
+distinct-origin acceptance test. Direct-browser requests reuse the existing
+Better Auth/D1 session for issuance/renewal; JWT claims, lifetime and
+revocation rules are unchanged.
+
+Explicit limitations: this is not merged and not deployed; no live sandbox
+service URL, issuer, audience, DNS or TLS is verified by this work.
+`usuarios.rugbychampagneweb.com` remains a selected desired production
+hostname, not proof of activation. The exact reviewed commit SHA is published
+as PR/issue evidence; agent work stops at `READY FOR FINAL ACCEPTANCE` and
+does not merge or deploy.
+
 ## Maintaining this checkpoint
 
 Update this file when the product frontier, execution workflow, environment

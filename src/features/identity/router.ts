@@ -7,10 +7,15 @@ import { createConsumerTokenAuth, createIdentityAuth } from './auth.js';
 import { resolveAdminIdentity } from './authorization.js';
 import { getAdminUserById, listAdminUsers } from './admin-users.js';
 import { bootstrapAdminUser } from './admin.js';
+import { CONSUMER_CORS_PATHS, createConsumerCorsMiddleware } from './consumer-cors.js';
 import { resolveConsumerTokenConfig, extractTokenExpiry } from './consumer-tokens.js';
 import type { ConsumerJsonWebKey } from './contract.js';
 import { deferredAuthMailer, resolveAuthMailer, type AuthMailer } from './mailer.js';
-import { evaluateCookieMutationOrigin, resolveGatewayOrigins } from './origin-guard.js';
+import {
+  evaluateCookieMutationOrigin,
+  resolveConsumerOrigins,
+  resolveGatewayOrigins,
+} from './origin-guard.js';
 import { resolveAuthPolicy, type AuthPolicy } from './policy.js';
 import {
   adminBootstrapRoute,
@@ -240,12 +245,14 @@ function guardCookieMutation(
   cacheControl?: string,
 ): ReturnType<typeof problem> | null {
   let gatewayOrigins: string[];
+  let consumerOrigins: string[];
   try {
     const effective = resolveEffectiveConfig({
       environment: c.env.ENVIRONMENT,
       runtime: { ...c.env },
     });
     gatewayOrigins = resolveGatewayOrigins(effective.config.AUTH_GATEWAY_ORIGINS);
+    consumerOrigins = resolveConsumerOrigins(effective.config.AUTH_CONSUMER_ORIGINS);
   } catch {
     return problem(c, 500, 'internal-error', 'Internal Server Error', undefined, cacheControl);
   }
@@ -254,6 +261,7 @@ function guardCookieMutation(
     origin: c.req.header('origin') ?? null,
     secFetchSite: c.req.header('sec-fetch-site') ?? null,
     gatewayOrigins,
+    consumerOrigins,
   });
   if (!allowed) {
     return problem(
@@ -284,6 +292,15 @@ function forwardSessionCookies(c: IdentityContext, source: Response): void {
 export function createIdentityRouter(options: IdentityRouterOptions = {}) {
   const router = new OpenAPIHono<{ Bindings: Env; Variables: { requestId: string } }>();
   const override = options.authMailer;
+
+  // Direct-browser consumer transport (spec #164, ADR-0013): credentialed
+  // CORS is applied to the public consumer identity operations only. It is a
+  // browser permission boundary; mutation authorization stays with
+  // `guardCookieMutation`. Administrative routes are deliberately excluded.
+  const consumerCors = createConsumerCorsMiddleware();
+  for (const path of CONSUMER_CORS_PATHS) {
+    router.use(path, consumerCors);
+  }
 
   router.openapi(registerRoute, async (c) => {
     const rejected = guardCookieMutation(c);
@@ -492,6 +509,7 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
   });
 
   router.openapi(currentUserRoute, async (c) => {
+    c.header('Cache-Control', 'private, no-store');
     const session = await resolveSessionContext({
       env: c.env,
       headers: c.req.raw.headers,

@@ -77,6 +77,13 @@ export interface Env {
   // mutations in addition to the request origin. Empty means same-origin
   // only; wildcards are rejected.
   AUTH_GATEWAY_ORIGINS?: string;
+  // Comma-separated exact http(s) consumer origins for the direct-browser
+  // transport (spec #164, ADR-0013). Named origins receive credentialed CORS
+  // on the consumer identity operations and are accepted for cookie-auth
+  // mutations, coexisting with AUTH_GATEWAY_ORIGINS. Empty means no direct
+  // consumer origin: same-origin-only. Wildcards, null and arbitrary
+  // reflection are never granted.
+  AUTH_CONSUMER_ORIGINS?: string;
   // Provider-neutral SMTP transactional-mail configuration (ticket #58).
   // Host, port and TLS mode are deployment configuration; the authentication
   // credentials are secrets supplied via the ignored local `.env` or

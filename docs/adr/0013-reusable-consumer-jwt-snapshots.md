@@ -5,6 +5,11 @@
 Accepted by the operator on 2026-10-14. Decision #149, specification #150,
 implementation slices #151 and #152 under product map #146.
 
+Amended on 2026-10-15 by decision #163, specification #164 and slice #165:
+the consumer transport is direct browser CORS with a service-only host-only
+session cookie, not a same-origin gateway. The JWT verification, bounded
+revocation and no-per-page-Identity decisions above are unchanged.
+
 ## Decision
 
 Use short-lived, application-owned asymmetric JWTs for consumer identity and
@@ -34,12 +39,34 @@ for subscription state.
 
 ## Consumer contract
 
-The first supported browser transport is a same-origin API gateway configured
-by the consumer team, preserving cookies and the original browser Origin.
-The service validates cookie-auth mutations explicitly against same-origin
-or exact deployment-approved gateway origins and Fetch Metadata. The gateway
-does not make arbitrary forwarded headers trustworthy. Direct unrelated-origin
-browser calls, cross-site cookies and SSO are outside this increment.
+The supported browser transport is a direct call from an exact
+deployment-configured consumer origin to the service Worker at a distinct
+same-site origin (decision #163, spec #164). The browser uses
+`credentials: include` for the existing Better Auth/D1 HttpOnly session; the
+service grants credentialed CORS only to named origins, with the exact
+`Access-Control-Allow-Origin`, `Access-Control-Allow-Credentials: true` and
+`Vary: Origin` on relevant success and error responses. Preflight needs no
+session, is restricted to the methods and headers the consumer operations use
+and uses a bounded cache. Wildcards, `null` and arbitrary reflection are never
+granted. CORS is a browser permission boundary, not authentication: the
+service still validates cookie-auth mutations explicitly against same-origin
+or exact deployment-approved origins and Fetch Metadata.
+
+The renewal session cookie is service-only: it is HttpOnly and host-only to
+the service hostname (no `Domain` attribute), so it is never shared with the
+parent editorial hostname and never depends on unrelated-site cookies. The
+editorial HTML stays identical for anonymous and logged-in readers and makes
+no Identity request while a valid token is retained. The short asymmetric
+access JWT is verified locally against the cached public JWKS; receiving APIs
+verify independently. SSO and cookies shared with the editorial hostname
+remain outside this increment.
+
+The earlier same-origin gateway transport remains supported and coexists:
+`AUTH_GATEWAY_ORIGINS` still names an exact same-origin gateway, and
+`AUTH_CONSUMER_ORIGINS` separately names exact direct-browser consumer
+origins. Both sets are exact-match mutation grants; neither silently changes
+the meaning of the other. The gateway does not make arbitrary forwarded
+headers trustworthy.
 
 A framework-independent client uses generated OpenAPI types, keeps the access
 token and public-key cache in versioned per-tab sessionStorage namespaced by
@@ -80,8 +107,12 @@ accepted administration behavior; retaining it for renewal keeps that contract.
 ## Acceptance
 
 The real HTTP/D1 path proves issue, public-key verification, renewal and
-revocation of further issuance. A shipped-client/real-Worker browser fixture
-with separate document URLs proves zero Identity calls during valid-token
-navigation/reload. Generated client drift and OpenAPI compatibility checks
-protect the external handoff. Exact-HEAD Standards, Spec and CI remain
-required; production promotion is separate.
+revocation of further issuance. A real browser at an approved consumer origin
+against a real Worker/D1 at a distinct same-site service origin proves the
+direct-browser lifecycle, credentialed CORS, host-only service-cookie scope
+and hostile-origin rejection; two ports on one hostname cannot prove host
+isolation. A shipped-client/real-Worker browser fixture with separate document
+URLs proves zero Identity calls during valid-token navigation/reload.
+Generated client drift and OpenAPI compatibility checks protect the external
+handoff. Exact-HEAD Standards, Spec and CI remain required; production
+promotion is separate.

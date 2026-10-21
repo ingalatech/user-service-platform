@@ -31,20 +31,44 @@ consumer client is the follow-on slice (#152).
   default): a live session normally outlives any outstanding token, and the
   minted `exp` additionally never exceeds the authoritative session expiry.
 
-## Same-origin gateway transport
+## Direct-browser transport with consumer CORS
 
-The supported browser transport is a same-origin API gateway owned by the
-consumer team: the browser talks to the consumer origin, which forwards to
-this service. Direct unrelated-origin browser calls, cross-site cookies and
-full SSO are outside this increment.
+The supported browser transport is a direct call from an exact
+deployment-configured consumer origin to this service Worker at a distinct
+same-site origin (decision #163, spec #164, ADR-0013). The consumer document
+uses `credentials: include`; the service grants credentialed CORS only to
+origins named in `AUTH_CONSUMER_ORIGINS`:
+
+- Relevant success and error responses carry the exact
+  `Access-Control-Allow-Origin`, `Access-Control-Allow-Credentials: true` and
+  `Vary: Origin`. Wildcards, `null` and arbitrary reflection are never emitted.
+- `OPTIONS` preflight needs no session, allows only `GET`/`POST` and the
+  `Content-Type`/`Authorization` request headers, and uses
+  `Access-Control-Max-Age: 600`.
+- CORS is a browser permission boundary, not authentication. Cookie-auth
+  mutations stay authorized by the Origin/Fetch Metadata guard below, so an
+  unapproved origin cannot mutate state through an unguarded path.
+
+The service-only renewal session cookie is HttpOnly and host-only to the
+service hostname (no `Domain` attribute): it is never sent to the editorial
+hostname, and the editorial HTML/cache stays free of cookies and per-page
+Identity calls. `usuarios.rugbychampagneweb.com` is the selected desired
+production service hostname; live DNS/TLS/issuer/audience values are separate
+operational facts and must be verified before claiming sandbox/live readiness.
+
+The earlier same-origin API gateway transport remains supported and coexists:
+`AUTH_GATEWAY_ORIGINS` names exact gateway origins; `AUTH_CONSUMER_ORIGINS`
+separately names exact direct-browser consumer origins. Both are exact-match
+mutation grants and neither silently changes the other's meaning.
 
 Cookie-auth mutations (`POST /v1/auth/register`, `/v1/auth/login`,
 `/v1/auth/sign-out`, `/v1/auth/token`) enforce an explicit Origin/Fetch
 Metadata guard because the application-owned wrappers call `auth.api`
 directly:
 
-- An explicit `Origin` header must equal the request origin or an exact
-  configured gateway origin; `null` and unlisted origins are rejected (403).
+- An explicit `Origin` header must equal the request origin, an exact
+  configured gateway origin, or an exact configured consumer origin; `null`
+  and unlisted origins are rejected (403).
 - Without `Origin`, `Sec-Fetch-Site: cross-site` (or an unknown value) is
   rejected; `same-origin`, `same-site` and `none` are accepted.
 - Requests with neither header (curl, tests, server-to-server gateways) are
@@ -63,9 +87,14 @@ Non-secret deployment values (see `src/config/profiles.ts`):
 - `AUTH_JWT_TTL_SECONDS`: token lifetime in seconds, `1..900`, default
   `900`. Malformed values fail closed. The minted `exp` is additionally
   capped at the live session expiry.
-- `AUTH_GATEWAY_ORIGINS`: comma-separated exact `http(s)` origins accepted
-  in addition to the request origin. Empty means same-origin only;
-  wildcards, paths, credentials and fragments are rejected.
+- `AUTH_GATEWAY_ORIGINS`: comma-separated exact `http(s)` gateway origins
+  accepted for cookie-auth mutations in addition to the request origin. Empty
+  means same-origin only; wildcards, paths, credentials and fragments are
+  rejected.
+- `AUTH_CONSUMER_ORIGINS`: comma-separated exact `http(s)` direct-browser
+  consumer origins granted credentialed CORS and accepted for cookie-auth
+  mutations. Empty means same-origin only (no direct consumer origin);
+  wildcards, `null`, paths, credentials and fragments are rejected.
 
 Signing keys:
 

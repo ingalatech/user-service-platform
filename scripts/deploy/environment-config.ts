@@ -8,7 +8,10 @@ import {
 } from './naming.js';
 import { resolveEffectiveConfig } from '../../src/config/config.js';
 import { resolveConsumerTokenConfig } from '../../src/features/identity/consumer-tokens.js';
-import { resolveGatewayOrigins } from '../../src/features/identity/origin-guard.js';
+import {
+  resolveConsumerOrigins,
+  resolveGatewayOrigins,
+} from '../../src/features/identity/origin-guard.js';
 import { validateSmtpSettings } from '../../src/features/identity/smtp-transport.js';
 import type { NonSecretProfile } from '../../src/config/index.js';
 
@@ -41,6 +44,7 @@ export const ENVIRONMENT_VAR_NAMES = [
   'AUTH_JWT_AUDIENCE',
   'AUTH_JWT_TTL_SECONDS',
   'AUTH_GATEWAY_ORIGINS',
+  'AUTH_CONSUMER_ORIGINS',
   'SMTP_HOST',
   'SMTP_PORT',
   'SMTP_SECURE',
@@ -208,6 +212,7 @@ export function resolveEnvironmentDeployment(
     ttlSeconds: file.AUTH_JWT_TTL_SECONDS,
   });
   resolveGatewayOrigins(file.AUTH_GATEWAY_ORIGINS);
+  resolveConsumerOrigins(file.AUTH_CONSUMER_ORIGINS);
   if (file.AUTH_MAIL_TRANSPORT.trim().toLowerCase() === 'smtp') {
     validateSmtpSettings({ SMTP_PORT: file.SMTP_PORT, SMTP_SECURE: file.SMTP_SECURE });
   }

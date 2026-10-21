@@ -52,6 +52,7 @@ const SANDBOX_RESOLVED: ResolvedDeployment = {
     AUTH_JWT_AUDIENCE: '',
     AUTH_JWT_TTL_SECONDS: '',
     AUTH_GATEWAY_ORIGINS: '',
+    AUTH_CONSUMER_ORIGINS: '',
     SMTP_HOST: '',
     SMTP_PORT: '',
     SMTP_SECURE: '',

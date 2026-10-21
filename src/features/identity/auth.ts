@@ -165,6 +165,13 @@ function sharedOptions(input: IdentityAuthInput) {
           background(task);
         },
       },
+      // Service-only session cookie (spec #164, ADR-0013): pinned HttpOnly and
+      // SameSite=Lax with no `domain`, so the renewal credential is host-only
+      // to the service Worker and is never shared with the parent editorial
+      // hostname. `secure` stays engine-derived from the request HTTPS base
+      // URL (on in sandbox/production); `crossSubDomainCookies` stays
+      // disabled, so no `Domain` attribute is ever emitted.
+      defaultCookieAttributes: { httpOnly: true, sameSite: 'lax' as const },
     },
     emailAndPassword: {
       enabled: policy.emailPasswordEnabled,

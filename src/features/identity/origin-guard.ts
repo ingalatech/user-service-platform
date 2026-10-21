@@ -1,12 +1,13 @@
 // Explicit Origin/Fetch Metadata protection for cookie-auth mutation
 // operations (spec #150, ADR-0013). Application-owned wrappers call
 // `auth.api` directly, so engine-router CSRF middleware cannot be assumed to
-// apply. This boundary accepts legitimate same-origin requests and exact
-// configured gateway origins, rejects hostile/null origins and inconsistent
-// cross-site metadata, and preserves documented headerless non-browser flows
-// (curl, tests, server-to-server gateways). No wildcard CORS or arbitrary
-// forwarded-origin trust: only the request origin and exact
-// deployment-owned gateway origins are ever accepted.
+// apply. This boundary accepts legitimate same-origin requests plus exact
+// deployment-owned origins — the gateway-origin set and the direct-browser
+// consumer-origin set (spec #164) — rejects hostile/null origins and
+// inconsistent cross-site metadata, and preserves documented headerless
+// non-browser flows (curl, tests, server-to-server gateways). No wildcard
+// CORS or arbitrary forwarded-origin trust: only the request origin and exact
+// deployment-owned origins are ever accepted.
 export interface CookieMutationOriginInput {
   // The service origin derived from the request URL (never a forwarded host).
   readonly requestOrigin: string;
@@ -16,13 +17,18 @@ export interface CookieMutationOriginInput {
   readonly secFetchSite: string | null;
   // Exact deployment-owned gateway origins (empty means same-origin only).
   readonly gatewayOrigins: readonly string[];
+  // Exact deployment-owned direct-browser consumer origins (spec #164,
+  // ADR-0013). Distinct configuration from the gateway set so an operator can
+  // migrate transports without silently changing one into the other, but both
+  // are exact-match grants. Absent means none.
+  readonly consumerOrigins?: readonly string[];
 }
 
-// Parses the comma-separated AUTH_GATEWAY_ORIGINS slot into exact origins.
-// Each entry must be an absolute http(s) origin without credentials, path,
-// query or fragment; wildcards and reflected values are rejected. Failures
-// name only the variable and the expected shape, never the supplied value.
-export function resolveGatewayOrigins(raw: string | undefined): string[] {
+// Parses a comma-separated exact-origin configuration slot. Each entry must
+// be an absolute http(s) origin without credentials, path, query or fragment;
+// wildcards and reflected values are rejected. Failures name only the
+// variable and the expected shape, never the supplied value.
+function parseExactOrigins(varName: string, raw: string | undefined): string[] {
   const trimmed = (raw ?? '').trim();
   if (trimmed.length === 0) {
     return [];
@@ -37,11 +43,24 @@ export function resolveGatewayOrigins(raw: string | undefined): string[] {
   for (const origin of origins) {
     if (!isExactHttpOrigin(origin)) {
       throw new Error(
-        'Configuration error: AUTH_GATEWAY_ORIGINS must be a comma-separated list of exact http(s) origins without credentials, paths or wildcards.',
+        `Configuration error: ${varName} must be a comma-separated list of exact http(s) origins without credentials, paths or wildcards.`,
       );
     }
   }
   return origins;
+}
+
+// Parses the exact gateway-origin slot (same-origin API gateway transport).
+export function resolveGatewayOrigins(raw: string | undefined): string[] {
+  return parseExactOrigins('AUTH_GATEWAY_ORIGINS', raw);
+}
+
+// Parses the exact direct-browser consumer-origin slot (spec #164,
+// ADR-0013). The parser is deliberately identical to the gateway slot: only
+// exact absolute http(s) origins survive, so wildcards, `null` and arbitrary
+// reflection can never be granted.
+export function resolveConsumerOrigins(raw: string | undefined): string[] {
+  return parseExactOrigins('AUTH_CONSUMER_ORIGINS', raw);
 }
 
 function isExactHttpOrigin(value: string): boolean {
@@ -78,7 +97,11 @@ function isExactHttpOrigin(value: string): boolean {
 // fetch-metadata value. Requests with neither header are headerless
 // non-browser flows and are accepted.
 export function evaluateCookieMutationOrigin(input: CookieMutationOriginInput): boolean {
-  const allowed = new Set<string>([input.requestOrigin, ...input.gatewayOrigins]);
+  const allowed = new Set<string>([
+    input.requestOrigin,
+    ...input.gatewayOrigins,
+    ...(input.consumerOrigins ?? []),
+  ]);
   if (input.origin !== null && input.origin.trim().length > 0) {
     const origin = input.origin.trim();
     if (!allowed.has(origin)) {

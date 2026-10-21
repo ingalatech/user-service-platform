@@ -151,6 +151,16 @@ A narrow integration boundary for infrastructure whose implementation may change
 
 The user-facing verification/reset link delivered by transactional auth mail. It targets either a deployment-configured consumer action page or the service-owned fallback browser routes, and carries the engine token as a single `token` query parameter. The Better Auth callback URL is an engine implementation detail and never becomes an Auth Action URL.
 
+### Consumer Origin
+
+An exact, deployment-configured browser document origin (scheme + host + port,
+no wildcard) that is allowed to call the service directly with credentialed
+CORS for the consumer identity operations. It is distinct from a gateway
+origin and from the service origin; CORS grants browser read permission only
+and never replaces Origin/Fetch Metadata mutation authorization. The
+service-only renewal session cookie is host-only to the service hostname and
+is never shared with the consumer origin.
+
 ### Authenticated User
 
 The stable application-facing identity exposed to feature slices after authentication. It must not expose Better Auth persistence models or provider-specific types.
