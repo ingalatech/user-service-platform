@@ -47,6 +47,7 @@ const SANDBOX: ResolvedDeployment = {
   workerName: 'rch-rugbychampagne-user-service-sandbox',
   databaseName: 'rch-rugbychampagne-user-service-sandbox-db',
   databaseId: CONTRACT_SANDBOX_DATABASE_ID,
+  workerUrl: 'https://sandbox.example.test',
   vars: { AUTH_MAIL_TRANSPORT: 'smtp' },
 };
 

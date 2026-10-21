@@ -53,7 +53,15 @@ export interface DeployCommandResult {
   readonly stderr?: string;
 }
 
-export type DeployCommandRunner = (command: string, args: string[]) => Promise<DeployCommandResult>;
+export interface DeployCommandOptions {
+  readonly env?: NodeJS.ProcessEnv;
+}
+
+export type DeployCommandRunner = (
+  command: string,
+  args: string[],
+  options?: DeployCommandOptions,
+) => Promise<DeployCommandResult>;
 
 export interface PromotionRequest {
   readonly resolved: ResolvedDeployment;
@@ -72,6 +80,19 @@ export function promotionSmokeCommand(
   environment: ResolvedDeployment['environment'],
 ): readonly [string, readonly string[]] {
   return ['npm', ['run', environment === 'production' ? 'smoke:production' : 'smoke:readiness']];
+}
+
+export function smokeEnvironment(resolved: ResolvedDeployment): NodeJS.ProcessEnv {
+  const workerUrl = resolved.workerUrl.trim();
+  if (workerUrl.length === 0) {
+    throw new Error('Cannot run smoke without the selected environment Worker URL.');
+  }
+  const baseName =
+    resolved.environment === 'production' ? 'SMOKE_PRODUCTION_BASE_URL' : 'SMOKE_SANDBOX_BASE_URL';
+  return {
+    ...(process.env.PATH === undefined ? {} : { PATH: process.env.PATH }),
+    [baseName]: workerUrl,
+  };
 }
 
 export async function runPromotion(
@@ -262,7 +283,9 @@ async function runSandboxSmokeWithDiagnostics(
     }
   }
   try {
-    await runStep('smoke-sandbox', 'npm', ['run', 'smoke:health'], runner);
+    await runStep('smoke-sandbox', 'npm', ['run', 'smoke:health'], runner, {
+      env: smokeEnvironment(resolved),
+    });
   } catch (smokeError) {
     if (tail !== null && tailExitedBeforeSmoke(tail)) {
       await collectTailLines(tail, io);
@@ -298,8 +321,9 @@ async function runStep(
   command: string,
   args: string[],
   runner: DeployCommandRunner,
+  options?: DeployCommandOptions,
 ): Promise<void> {
-  const result = await runner(command, args);
+  const result = await runner(command, args, options);
   if (result.exitCode !== 0) {
     throw new Error(`${step} failed (exit ${String(result.exitCode)}).`);
   }

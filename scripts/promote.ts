@@ -10,11 +10,13 @@ import {
   environmentFilePath,
   loadEnvironmentFile,
   resolveEnvironmentDeployment,
+  type ResolvedDeployment,
 } from './deploy/environment-config.js';
 import { formatPreflightError, preflightFailed, runPreflight } from './deploy/preflight.js';
 import {
   promotionSmokeCommand,
   runPromotion,
+  smokeEnvironment,
   type DeployCommandRunner,
 } from './deploy/orchestrate.js';
 import { parseWorkerVersions, type WorkerVersionSummary } from './deploy/versions.js';
@@ -34,6 +36,35 @@ export function preparePromotionVersions(value: unknown): {
         `${String(index + 1)}) ${version.id} ${version.createdOn} ${version.annotations}`,
     ),
   };
+}
+
+export interface PromotionSmokeChild {
+  on(event: 'error', listener: (error: Error) => void): this;
+  on(event: 'close', listener: (code: number | null) => void): this;
+}
+
+export type PromotionSmokeSpawn = (
+  command: string,
+  args: readonly string[],
+  options: { readonly env: NodeJS.ProcessEnv; readonly stdio: 'inherit' },
+) => PromotionSmokeChild;
+
+export function runPromotionSmoke(
+  resolved: ResolvedDeployment,
+  spawnFn: PromotionSmokeSpawn = (command, args, options) => spawn(command, [...args], options),
+): Promise<void> {
+  return new Promise<void>((resolve, reject) => {
+    const [command, commandArgs] = promotionSmokeCommand(resolved.environment);
+    const child = spawnFn(command, commandArgs, {
+      env: smokeEnvironment(resolved),
+      stdio: 'inherit',
+    });
+    child.on('error', reject);
+    child.on('close', (code) => {
+      if (code === 0) resolve();
+      else reject(new Error('Sandbox smoke failed.'));
+    });
+  });
 }
 
 async function main(): Promise<void> {
@@ -113,20 +144,7 @@ async function main(): Promise<void> {
             if (preflightFailed(checks)) throw formatPreflightError(checks);
           },
           log: console.log,
-          smoke: async () => {
-            await new Promise<void>((resolve, reject) => {
-              const [command, commandArgs] = promotionSmokeCommand(resolved.environment);
-              const child = spawn(command, commandArgs, {
-                env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: resolved.accountId },
-                stdio: 'inherit',
-              });
-              child.on('error', reject);
-              child.on('close', (code) => {
-                if (code === 0) resolve();
-                else reject(new Error('Sandbox smoke failed.'));
-              });
-            });
-          },
+          smoke: () => runPromotionSmoke(resolved),
         },
         run,
       );

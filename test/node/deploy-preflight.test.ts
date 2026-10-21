@@ -13,6 +13,7 @@ const resolved: ResolvedDeployment = {
   service: 'user-service',
   environment: 'sandbox',
   workerName: 'rch-rugbychampagne-user-service-sandbox',
+  workerUrl: 'https://sandbox.example.test',
   databaseName: 'rch-rugbychampagne-user-service-sandbox-db',
   databaseId: 'a1b2c3d4-e5f6-4789-a3b5-c6d7e8f90a1b',
   vars: { AUTH_MAIL_TRANSPORT: 'smtp' },

@@ -64,7 +64,7 @@ export interface EnvironmentDeployment {
   readonly service: 'user-service';
   readonly environment: DeployableEnvironment;
   readonly workerName: string;
-  readonly workerUrl?: string;
+  readonly workerUrl: string;
   readonly databaseName: string;
   readonly databaseId: string;
   readonly accountId?: string;
