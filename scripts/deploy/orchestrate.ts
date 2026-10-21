@@ -85,7 +85,12 @@ export interface PromotionIo {
   readonly smoke: (resolved: DeploymentTarget, versionUrl: string) => Promise<void>;
 }
 
-const REQUIRED_PROMOTION_SECRETS = ['BETTER_AUTH_SECRET', 'SMTP_USER', 'SMTP_PASSWORD'] as const;
+const REQUIRED_PROMOTION_SECRETS = [
+  'BETTER_AUTH_SECRET',
+  'RESEND_API_KEY',
+  'SMTP_USER',
+  'SMTP_PASSWORD',
+] as const;
 
 export function promotionSmokeCommand(
   environment: DeploymentTarget['environment'],

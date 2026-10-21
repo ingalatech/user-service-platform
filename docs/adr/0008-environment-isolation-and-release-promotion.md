@@ -49,7 +49,7 @@ target-only Wrangler config with `preview_urls: true` to construct that
 version's documented Version URL. Readiness runs health followed by anonymous
 Identity against that URL, exercising `BETTER_AUTH_SECRET` behavior without
 reading or listing secret values. Exact-version metadata must also contain
-`BETTER_AUTH_SECRET`, `SMTP_USER` and `SMTP_PASSWORD` as encrypted
+`BETTER_AUTH_SECRET`, `RESEND_API_KEY`, `SMTP_USER` and `SMTP_PASSWORD` as encrypted
 `secret_text` bindings. This proves presence/type, not SMTP delivery.
 `wrangler versions deploy <id>@100%` is allowed only after all checks pass.
 Version overrides are not used because Cloudflare

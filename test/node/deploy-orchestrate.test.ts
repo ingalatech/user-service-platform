@@ -59,6 +59,7 @@ const VERSION_DETAILS = JSON.stringify({
   resources: {
     bindings: [
       { name: 'BETTER_AUTH_SECRET', type: 'secret_text' },
+      { name: 'RESEND_API_KEY', type: 'secret_text' },
       { name: 'SMTP_USER', type: 'secret_text' },
       { name: 'SMTP_PASSWORD', type: 'secret_text' },
     ],
@@ -72,6 +73,7 @@ const VERIFIED_VERSION_WITHOUT_PREVIEW = parseWorkerVersionDetails({
   resources: {
     bindings: [
       { name: 'BETTER_AUTH_SECRET', type: 'secret_text' },
+      { name: 'RESEND_API_KEY', type: 'secret_text' },
       { name: 'SMTP_USER', type: 'secret_text' },
       { name: 'SMTP_PASSWORD', type: 'secret_text' },
     ],
