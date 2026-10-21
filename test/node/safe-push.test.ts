@@ -1,13 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { checkSafePush } from '../../scripts/review/safe-push.js';
+import { checkSafePush } from '../../scripts/safe-push-guards.js';
 
 // Seam under test: deterministic push guards (ticket #16).
 // Models never receive generic `git push` permission; only this narrow script
 // may push, and only from a ticket branch to its own PR (base `main`).
 describe('safe-push guards', () => {
   const valid = {
-    currentBranch: 'chore/16-review-cycle',
-    prHead: 'chore/16-review-cycle',
+    currentBranch: 'chore/16-safe-push',
+    prHead: 'chore/16-safe-push',
     prBase: 'main',
     pushTarget: 'origin',
     worktreeClean: true,

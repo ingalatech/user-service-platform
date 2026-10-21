@@ -42,10 +42,6 @@
     "deploy:production": "tsx scripts/deploy.ts --env production",
     "provision": "tsx scripts/provision.ts",
     "acceptance:local": "tsx scripts/local-acceptance.ts",
-    "preagent:ticket": "tsx scripts/configure-agent-git-identity.ts",
-    "agent:ticket": "tsx scripts/agent-ticket.ts",
-    "agent:fix-cycle-correction": "tsx scripts/agent/fix-cycle-correction.ts",
-    "review:cycle": "tsx scripts/review-cycle.ts",
     "review:safe-push": "tsx scripts/safe-push.ts",
     "check": "npm run lint && npm run format:check"
   },

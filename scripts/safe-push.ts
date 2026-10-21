@@ -1,5 +1,5 @@
-import { safePushBranch } from './review/safe-push.js';
-import { getCurrentBranch, getPrForBranch } from './review/runner.js';
+import { getCurrentBranch, getPrForBranch } from './repository-command.js';
+import { safePushBranch } from './safe-push-guards.js';
 
 // Deterministic safe-push path (ticket #16). Models never receive generic
 // `git push` permission; only this script may push, and only when the current

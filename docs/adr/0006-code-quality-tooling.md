@@ -45,7 +45,7 @@ The first implementation tracer bullet must exercise TypeScript 6, Better Auth, 
 - Contributors run `nvm use` before installing or running project tooling.
 - Contributors run `npm run check` before proposing changes.
 - CI will make lint, formatting, typecheck, tests and contract checks mandatory once the executable skeleton exists.
-- Formatting changes are deterministic and should not consume code-review discussion.
+- Formatting changes are deterministic and should not consume review discussion.
 - We retain the ability to add rules for feature boundaries, forbidden imports, generated files and contract ownership.
 - TypeScript, ORM, auth and test-tool versions are pinned to mutually supported ranges instead of following `latest` independently.
 
