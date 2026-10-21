@@ -8,8 +8,6 @@ import {
 
 declare const __USER_SERVICE_COMPILED_CONFIG__: NonSecretProfile | undefined;
 
-const warnedRuntimeBindingSignatures = new Set<string>();
-
 // Resolved operational context. `test` is the isolated automated-test
 // context: it reuses the local non-secret shape but is never a deployment
 // target. The legacy `staging` runtime value normalizes to `sandbox`; no
@@ -33,6 +31,7 @@ export interface ResolveEffectiveConfigInput {
   // only when no compiled profile is present; compiled deployments ignore
   // same-name runtime bindings. Secrets and unknown keys are ignored.
   readonly runtime?: Record<string, unknown>;
+  readonly warningState?: Set<string>;
 }
 
 function readCompiledProfile(): NonSecretProfile | undefined {
@@ -46,24 +45,23 @@ export function readEffectiveEnvironment(
   runtime: {
     readonly ENVIRONMENT?: unknown;
   } = {},
+  warningState?: Set<string>,
 ): string {
-  return (
-    readCompiledProfile()?.ENVIRONMENT ??
-    (typeof runtime.ENVIRONMENT === 'string' ? runtime.ENVIRONMENT : 'local')
-  );
+  return resolveEffectiveConfig({ runtime, warningState }).environment;
 }
 
 function warnIgnoredRuntimeBindings(
   compiledProfile: NonSecretProfile,
   runtime: Record<string, unknown>,
+  warningState: Set<string>,
 ): void {
   const bindings = NON_SECRET_VAR_NAMES.filter((name) =>
     Object.prototype.hasOwnProperty.call(runtime, name),
   );
   if (bindings.length === 0) return;
   const signature = bindings.join('\u0000');
-  if (warnedRuntimeBindingSignatures.has(signature)) return;
-  warnedRuntimeBindingSignatures.add(signature);
+  if (warningState.size > 0 || warningState.has(signature)) return;
+  warningState.add(signature);
   console.warn(
     JSON.stringify({
       level: 'warn',
@@ -218,7 +216,9 @@ export function resolveEffectiveConfig(input: ResolveEffectiveConfigInput): Effe
         ENVIRONMENT: environment === 'test' ? 'local' : environment,
       };
   if (compiledProfile !== undefined) {
-    warnIgnoredRuntimeBindings(compiledProfile, runtime);
+    if (input.warningState !== undefined) {
+      warnIgnoredRuntimeBindings(compiledProfile, runtime, input.warningState);
+    }
   } else {
     for (const name of NON_SECRET_VAR_NAMES) {
       const value: unknown = runtime[name];

@@ -10,6 +10,7 @@ import {
   BASE_KEEP_VARS,
   BASE_OBSERVABILITY,
   BASE_WORKER_MAIN,
+  assertCompiledConfigDefineContract,
   buildPromotionWranglerConfig,
   buildTargetWranglerConfig,
   removeTempWranglerConfig,
@@ -94,6 +95,7 @@ describe('wrangler config materialization', () => {
       },
     ]);
     expect(config.keep_vars).toBe(false);
+    expect(config.preview_urls).toBe(true);
     expect('vars' in config).toBe(false);
   });
 
@@ -111,6 +113,17 @@ describe('wrangler config materialization', () => {
     expect(compiled).not.toMatch(
       /BETTER_AUTH_SECRET|RESEND_API_KEY|SMTP_USER|SMTP_PASSWORD|CLOUDFLARE_API_TOKEN/,
     );
+  });
+
+  it('rejects materialized define drift instead of trusting a duplicated key list', () => {
+    const config = buildTargetWranglerConfig(SANDBOX_RESOLVED);
+    const drifted = {
+      ...config,
+      define: Object.assign({}, config.define, { WRONG_DEFINE: '{}' }),
+    };
+    expect(() => {
+      assertCompiledConfigDefineContract(drifted);
+    }).toThrow(/canonical compiled profile/);
   });
 
   it('materializes distinct compiled profiles for sandbox and production', () => {

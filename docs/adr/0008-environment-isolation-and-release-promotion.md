@@ -47,9 +47,12 @@ Smoke tests are required after sandbox and production deployment.
 Promotion selects and validates one immutable Version ID, then uses a
 target-only Wrangler config with `preview_urls: true` to construct that
 version's documented Version URL. Readiness runs health followed by anonymous
-Identity against that URL, exercising secret-backed behavior without reading
-or listing secret values. `wrangler versions deploy <id>@100%` is allowed only
-after both checks pass. Version overrides are not used because Cloudflare
+Identity against that URL, exercising `BETTER_AUTH_SECRET` behavior without
+reading or listing secret values. Exact-version metadata must also contain
+`BETTER_AUTH_SECRET`, `SMTP_USER` and `SMTP_PASSWORD` as encrypted
+`secret_text` bindings. This proves presence/type, not SMTP delivery.
+`wrangler versions deploy <id>@100%` is allowed only after all checks pass.
+Version overrides are not used because Cloudflare
 requires the overridden version to already be in the current deployment. See
 Cloudflare's [Version URLs](https://developers.cloudflare.com/workers/versions-and-deployments/version-urls/),
 [Version overrides](https://developers.cloudflare.com/workers/versions-and-deployments/version-overrides/)

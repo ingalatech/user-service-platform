@@ -67,9 +67,15 @@ in the bundle. The first deployment migrates, deploys and checks only
 Promotion is an explicit local operator action. After selecting and validating
 the immutable Version ID, the command enables Version URLs in its minimal
 target-only Wrangler config, constructs the documented URL from that exact ID,
-and runs health followed by anonymous Identity (`GET /v1/me`) against it. This
-proves secret-backed request wiring without reading secret values. Only after
-both checks pass does it run `wrangler versions deploy <id>@100%`; production
+then queries the full Version metadata and uses its returned Version URL when
+available (otherwise the documented format only after the full-ID match), and
+runs health followed by anonymous Identity (`GET /v1/me`) against it. This
+proves `BETTER_AUTH_SECRET` request wiring without reading secret values. It
+also queries that exact Version ID's metadata and fails closed unless
+`BETTER_AUTH_SECRET`, `SMTP_USER` and `SMTP_PASSWORD` are present as
+`secret_text` bindings. This proves presence/type only, not SMTP delivery;
+the full privileged SMTP/Identity QA smoke remains manual. Only after all
+checks pass does it run `wrangler versions deploy <id>@100%`; production
 still requires the exact Worker-name confirmation. This follows Cloudflare's
 [Version URLs documentation](https://developers.cloudflare.com/workers/versions-and-deployments/version-urls/)
 and [deployment management documentation](https://developers.cloudflare.com/workers/versions-and-deployments/deployment-management/).

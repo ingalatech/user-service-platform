@@ -109,6 +109,7 @@ describe('resolveEffectiveConfig', () => {
       AUTH_APP_NAME: 'Compiled User Service',
       AUTH_MAIL_TRANSPORT: 'smtp',
     } satisfies NonSecretProfile;
+    const warningState = new Set<string>();
 
     try {
       const effective = resolveEffectiveConfig({
@@ -120,6 +121,7 @@ describe('resolveEffectiveConfig', () => {
           AUTH_MAIL_TRANSPORT: 'inmemory',
           SMTP_PASSWORD: 'secret-marker',
         },
+        warningState,
       });
 
       expect(effective.config).toEqual(compiledProfile);
@@ -139,6 +141,7 @@ describe('resolveEffectiveConfig', () => {
           AUTH_APP_NAME: 'Dashboard Override',
           AUTH_MAIL_TRANSPORT: 'inmemory',
         },
+        warningState,
       });
       expect(warn).toHaveBeenCalledTimes(1);
     } finally {

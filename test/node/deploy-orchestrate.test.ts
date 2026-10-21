@@ -7,10 +7,11 @@ import {
   runPromotion,
   runDeployment,
   smokeEnvironment,
-  versionUrlFor,
+  versionUrlForVerifiedVersion,
   type DeployCommandRunner,
   type DeployIo,
 } from '../../scripts/deploy/orchestrate.js';
+import { parseWorkerVersionDetails } from '../../scripts/deploy/versions.js';
 import type { ResolvedDeployment } from '../../scripts/deploy/environment-config.js';
 import {
   formatPreflightError,
@@ -50,6 +51,32 @@ const VERSION_URL_SANDBOX = {
   ...SANDBOX,
   workerUrl: 'https://rch-rugbychampagne-user-service-sandbox.rch-evolucion.workers.dev',
 };
+const VERSION_DETAILS = JSON.stringify({
+  id: 'immutable-v1',
+  metadata: { created_on: '2026-10-20T12:00:00Z' },
+  preview_url:
+    'https://authoritative-rch-rugbychampagne-user-service-sandbox.rch-evolucion.workers.dev',
+  resources: {
+    bindings: [
+      { name: 'BETTER_AUTH_SECRET', type: 'secret_text' },
+      { name: 'SMTP_USER', type: 'secret_text' },
+      { name: 'SMTP_PASSWORD', type: 'secret_text' },
+    ],
+  },
+});
+const PRODUCTION_VERSION_DETAILS = VERSION_DETAILS.replaceAll('sandbox', 'production');
+const VERIFIED_VERSION = parseWorkerVersionDetails(JSON.parse(VERSION_DETAILS));
+const VERIFIED_VERSION_WITHOUT_PREVIEW = parseWorkerVersionDetails({
+  id: 'immutable-v1',
+  metadata: { created_on: '2026-10-20T12:00:00Z' },
+  resources: {
+    bindings: [
+      { name: 'BETTER_AUTH_SECRET', type: 'secret_text' },
+      { name: 'SMTP_USER', type: 'secret_text' },
+      { name: 'SMTP_PASSWORD', type: 'secret_text' },
+    ],
+  },
+});
 
 interface Harness {
   io: DeployIo;
@@ -91,9 +118,11 @@ function createHarness(failOn?: RegExp, failPreflight = false): Harness {
       }
       return Promise.resolve({
         exitCode: 0,
-        stdout: text.includes('wrangler versions list')
-          ? '[{"id":"v1","metadata":{"created_on":"2026-10-20T12:00:00Z"},"annotations":{"workers/message":"test"}}]'
-          : '',
+        stdout: text.includes('wrangler versions view')
+          ? VERSION_DETAILS
+          : text.includes('wrangler versions list')
+            ? '[{"id":"v1","metadata":{"created_on":"2026-10-20T12:00:00Z"},"annotations":{"workers/message":"test"}}]'
+            : '',
       });
     },
     commands,
@@ -306,17 +335,20 @@ describe('deployment orchestration', () => {
                   stdout:
                     '[{"id":"immutable-v1","metadata":{"created_on":"2026-10-20T12:00:00Z"},"annotations":{"workers/tag":"candidate"}}]',
                 }
-              : { exitCode: 0 },
+              : args.includes('view')
+                ? { exitCode: 0, stdout: VERSION_DETAILS }
+                : { exitCode: 0 },
           );
         },
       ),
     ).resolves.toBeUndefined();
     expect(commands).toEqual([
       'wrangler versions list --json --config /tmp/promotion.json',
+      'wrangler versions view --json --version-id immutable-v1 --config /tmp/promotion.json',
       'wrangler versions deploy immutable-v1@100% --config /tmp/promotion.json',
     ]);
     expect(candidateUrl).toBe(
-      'https://immutabl-rch-rugbychampagne-user-service-sandbox.rch-evolucion.workers.dev',
+      'https://authoritative-rch-rugbychampagne-user-service-sandbox.rch-evolucion.workers.dev',
     );
     expect(harness.removed).toContain('/tmp/promotion.json');
   });
@@ -351,13 +383,16 @@ describe('deployment orchestration', () => {
                   stdout:
                     '[{"id":"immutable-v1","metadata":{"created_on":"2026-10-20T12:00:00Z"},"annotations":{}}]',
                 }
-              : { exitCode: 0 },
+              : args.includes('view')
+                ? { exitCode: 0, stdout: PRODUCTION_VERSION_DETAILS }
+                : { exitCode: 0 },
           );
         },
       ),
     ).resolves.toBeUndefined();
     expect(commands).toEqual([
       'wrangler versions list --json --config /tmp/production-promotion.json',
+      'wrangler versions view --json --version-id immutable-v1 --config /tmp/production-promotion.json',
       'wrangler versions deploy immutable-v1@100% --config /tmp/production-promotion.json',
     ]);
   });
@@ -434,23 +469,35 @@ describe('deployment orchestration', () => {
           return Promise.resolve(
             args.includes('list')
               ? { exitCode: 0, stdout: JSON.stringify([{ id: 'immutable-v1' }]) }
-              : { exitCode: 1, stdout: 'provider-canary' },
+              : args.includes('view')
+                ? { exitCode: 0, stdout: VERSION_DETAILS }
+                : { exitCode: 1, stdout: 'provider-canary' },
           );
         },
       ),
     ).rejects.toThrow(/candidate readiness failed/);
-    expect(commands).toHaveLength(1);
+    expect(commands).toHaveLength(2);
+    expect(commands[1]).toContain('versions view');
     expect(smokeCalls).toBe(1);
     expect(cleaned).toEqual(['/tmp/promotion-failure.json']);
   });
 
-  it('constructs a Version URL from the selected immutable ID and exact Worker host', () => {
-    expect(versionUrlFor(VERSION_URL_SANDBOX, 'immutable-v1')).toBe(
-      'https://immutabl-rch-rugbychampagne-user-service-sandbox.rch-evolucion.workers.dev',
+  it('constructs a Version URL only after full-ID metadata verification', () => {
+    if (VERIFIED_VERSION_WITHOUT_PREVIEW === undefined || VERIFIED_VERSION === undefined) {
+      throw new Error('version fixture was not parsed');
+    }
+    expect(
+      versionUrlForVerifiedVersion(VERSION_URL_SANDBOX, VERIFIED_VERSION_WITHOUT_PREVIEW),
+    ).toBe('https://immutabl-rch-rugbychampagne-user-service-sandbox.rch-evolucion.workers.dev');
+    expect(versionUrlForVerifiedVersion(VERSION_URL_SANDBOX, VERIFIED_VERSION)).toBe(
+      'https://authoritative-rch-rugbychampagne-user-service-sandbox.rch-evolucion.workers.dev',
     );
     expect(() =>
-      versionUrlFor({ ...SANDBOX, workerUrl: 'https://api.example.test' }, 'immutable-v1'),
-    ).toThrow(/workers.dev/);
+      versionUrlForVerifiedVersion(
+        { ...SANDBOX, workerUrl: 'https://api.example.test' },
+        VERIFIED_VERSION,
+      ),
+    ).toThrow(/invalid Version URL/);
   });
 
   it('builds the administration assets before any remote mutation (ticket #124)', async () => {

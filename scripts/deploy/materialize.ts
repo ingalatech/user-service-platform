@@ -82,10 +82,22 @@ export interface TargetWranglerConfig {
   readonly compatibility_date: typeof BASE_COMPATIBILITY_DATE;
   readonly compatibility_flags: readonly string[];
   readonly keep_vars: false;
+  readonly preview_urls: true;
   readonly define: Readonly<Record<typeof COMPILED_CONFIG_DEFINE_NAME, string>>;
   readonly observability: { readonly enabled: true };
   readonly assets: TargetAssets;
   readonly d1_databases: readonly [TargetD1Binding];
+}
+
+// The esbuild define token must remain a declared identifier in the Worker
+// source, so that token cannot be imported as a runtime value. This guard
+// inspects the actual materialized config instead: it fails if the generated
+// bundle input ever gains a second key or drifts from the one canonical name.
+export function assertCompiledConfigDefineContract(config: TargetWranglerConfig): void {
+  const keys = Object.keys(config.define);
+  if (keys.length !== 1 || keys[0] !== COMPILED_CONFIG_DEFINE_NAME) {
+    throw new Error('Materialized Wrangler define does not match the canonical compiled profile.');
+  }
 }
 
 export function buildTargetWranglerConfig(
@@ -106,6 +118,7 @@ export function buildTargetWranglerConfig(
     compatibility_date: BASE_COMPATIBILITY_DATE,
     compatibility_flags: [...BASE_COMPATIBILITY_FLAGS],
     keep_vars: BASE_KEEP_VARS,
+    preview_urls: true,
     define: {
       [COMPILED_CONFIG_DEFINE_NAME]: JSON.stringify(resolved.applicationConfig),
     },
@@ -125,6 +138,7 @@ export function buildTargetWranglerConfig(
       },
     ],
   };
+  assertCompiledConfigDefineContract(config);
   return config;
 }
 
