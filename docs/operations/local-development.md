@@ -19,9 +19,10 @@ cp .env.example .env
 
 `.env` lives at the repository root, is ignored by Git, and is loaded by
 `npm run dev:local` (`wrangler dev --env-file .env`). Every `AUTH_*` name in
-it matches the canonical runtime variable name used by the versioned
-environment profiles in `src/config/profiles.ts`, so a same-name value
-overrides the selected profile without translation. Sandbox/production
+it is a local runtime variable. Remote sandbox and production commands read
+only their complete files under `config/environments/`; they never read this
+root file. Remote releases compile their non-secret profile through Wrangler's
+bundle substitution instead of creating application `vars`. Sandbox/production
 secrets are configured directly in Cloudflare and never belong in `.env`.
 
 - Non-secret scenario toggles (for example `AUTH_REGISTRATION_ENABLED=false`)

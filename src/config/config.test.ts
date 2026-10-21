@@ -1,16 +1,20 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   assertValidNonSecretConfig,
+  readEffectiveEnvironment,
   resolveEffectiveConfig,
   type EffectiveConfig,
 } from './config.js';
 import {
   ENVIRONMENT_PROFILES,
+  COMPILED_CONFIG_DEFINE_NAME,
   LOCAL_PROFILE,
   NON_SECRET_VAR_NAMES,
+  parseNonSecretProfile,
   PRODUCTION_PROFILE,
   SANDBOX_PROFILE,
   SECRET_VAR_NAMES,
+  type NonSecretProfile,
 } from './profiles.js';
 
 // Seam under test (ticket #57, spec #8): the environment configuration
@@ -46,12 +50,9 @@ describe('environment profiles', () => {
     }
   });
 
-  it('keeps profiles independent instead of inheriting from a shared base', () => {
-    expect(LOCAL_PROFILE).not.toBe(SANDBOX_PROFILE);
-    expect(SANDBOX_PROFILE).not.toBe(PRODUCTION_PROFILE);
-    expect(LOCAL_PROFILE).not.toBe(PRODUCTION_PROFILE);
-    expect(SANDBOX_PROFILE.ENVIRONMENT).toBe('sandbox');
-    expect(PRODUCTION_PROFILE.ENVIRONMENT).toBe('production');
+  it('does not compile remote values into profiles', () => {
+    expect(SANDBOX_PROFILE).toBe(LOCAL_PROFILE);
+    expect(PRODUCTION_PROFILE).toBe(LOCAL_PROFILE);
   });
 
   it('freezes versioned profiles so runtime code cannot mutate them', () => {
@@ -72,22 +73,99 @@ describe('environment profiles', () => {
       }
     }
   });
+
+  it('rejects a compiled profile whose keys diverge from the canonical source', () => {
+    const missing = Object.fromEntries(
+      Object.entries(LOCAL_PROFILE).filter(([name]) => name !== 'AUTH_APP_NAME'),
+    );
+    expect(() => parseNonSecretProfile(missing)).toThrow(/compiled profile keys/);
+    expect(() =>
+      parseNonSecretProfile({ ...LOCAL_PROFILE, UNEXPECTED_BINDING: 'ignored' }),
+    ).toThrow(/compiled profile keys/);
+  });
 });
 
 describe('resolveEffectiveConfig', () => {
+  it('reads the profile from Wrangler define substitution when present', () => {
+    const compiledProfile = {
+      ...LOCAL_PROFILE,
+      ENVIRONMENT: 'production',
+      AUTH_APP_NAME: 'Bundled User Service',
+    } satisfies NonSecretProfile;
+    vi.stubGlobal(COMPILED_CONFIG_DEFINE_NAME, compiledProfile);
+
+    try {
+      const effective = resolveEffectiveConfig({
+        environment: 'local',
+        runtime: { AUTH_APP_NAME: 'Local Override' },
+      });
+      expect(effective.config).toEqual(compiledProfile);
+      expect(effective.environment).toBe('production');
+      expect(readEffectiveEnvironment({ ENVIRONMENT: 'local' })).toBe('production');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('uses the compiled profile and ignores same-name runtime bindings', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const compiledProfile = {
+      ...LOCAL_PROFILE,
+      ENVIRONMENT: 'sandbox',
+      AUTH_APP_NAME: 'Compiled User Service',
+      AUTH_MAIL_TRANSPORT: 'smtp',
+    } satisfies NonSecretProfile;
+    const warningState = new Set<string>();
+
+    try {
+      const effective = resolveEffectiveConfig({
+        environment: 'sandbox',
+        compiledProfile,
+        runtime: {
+          ENVIRONMENT: 'sandbox',
+          AUTH_APP_NAME: 'Dashboard Override',
+          AUTH_MAIL_TRANSPORT: 'inmemory',
+          SMTP_PASSWORD: 'secret-marker',
+        },
+        warningState,
+      });
+
+      expect(effective.config).toEqual(compiledProfile);
+      expect(warn).toHaveBeenCalledWith(
+        JSON.stringify({
+          level: 'warn',
+          event: 'config.runtime-binding-ignored',
+          bindings: ['ENVIRONMENT', 'AUTH_MAIL_TRANSPORT', 'AUTH_APP_NAME'],
+        }),
+      );
+      expect(warn.mock.calls.join(' ')).not.toContain('secret-marker');
+
+      resolveEffectiveConfig({
+        compiledProfile,
+        runtime: {
+          ENVIRONMENT: 'sandbox',
+          AUTH_APP_NAME: 'Dashboard Override',
+          AUTH_MAIL_TRANSPORT: 'inmemory',
+        },
+        warningState,
+      });
+      expect(warn).toHaveBeenCalledTimes(1);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('selects the local profile when no environment is provided', () => {
     const effective: EffectiveConfig = resolveEffectiveConfig({ runtime: {} });
     expect(effective.environment).toBe('local');
     expect(effective.config).toEqual(LOCAL_PROFILE);
   });
 
-  it('selects the matching complete profile per canonical environment', () => {
-    expect(resolveEffectiveConfig({ environment: 'sandbox', runtime: {} }).config).toEqual(
-      SANDBOX_PROFILE,
-    );
-    expect(resolveEffectiveConfig({ environment: 'production', runtime: {} }).config).toEqual(
-      PRODUCTION_PROFILE,
-    );
+  it('keeps remote configuration values unset until runtime vars arrive', () => {
+    const sandbox = resolveEffectiveConfig({ environment: 'sandbox', runtime: {} });
+    const production = resolveEffectiveConfig({ environment: 'production', runtime: {} });
+    expect(sandbox.config.AUTH_MAIL_TRANSPORT).toBe('');
+    expect(production.config.AUTH_MAIL_TRANSPORT).toBe('');
   });
 
   it('lets same-name runtime values override profile values', () => {
@@ -134,7 +212,7 @@ describe('resolveEffectiveConfig', () => {
   it('maps the legacy staging name onto the sandbox profile without adding staging config', () => {
     const effective = resolveEffectiveConfig({ environment: 'staging', runtime: {} });
     expect(effective.environment).toBe('sandbox');
-    expect(effective.config).toEqual(SANDBOX_PROFILE);
+    expect(effective.config.ENVIRONMENT).toBe('sandbox');
     expect(Object.keys(ENVIRONMENT_PROFILES)).not.toContain('staging');
   });
 

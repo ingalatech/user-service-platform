@@ -163,7 +163,7 @@ interface AuthenticateResult {
   readonly renewStatus: number;
   readonly hasRenewedToken: boolean;
   readonly jwksStatus: number;
-  readonly documentCookie: string;
+  readonly hasScriptReadableSessionCookie: boolean;
 }
 
 interface RevokeResult {
@@ -374,7 +374,8 @@ export async function runConsumerCorsBrowserTest(
         hasToken: !!(tokenBody && typeof tokenBody.accessToken === 'string'),
         renewStatus,
         hasRenewedToken: !!(renewBody && typeof renewBody.accessToken === 'string'),
-        jwksStatus, documentCookie: document.cookie
+        jwksStatus,
+        hasScriptReadableSessionCookie: document.cookie.includes('session_token')
       };
     })()`);
     assert(
@@ -390,7 +391,7 @@ export async function runConsumerCorsBrowserTest(
     );
     assert(authenticated.jwksStatus === 200, 'public JWKS readable across origins');
     assert(
-      !authenticated.documentCookie.includes('session_token'),
+      !authenticated.hasScriptReadableSessionCookie,
       'service session cookie is not script-readable on the editorial origin',
     );
 

@@ -46,6 +46,11 @@ export interface SmokeConfig {
   readonly verificationToken: string | undefined;
 }
 
+export interface SmokeWorkflowOptions {
+  readonly fetchImpl?: typeof fetch;
+  readonly requestVerificationToken?: () => Promise<string | undefined>;
+}
+
 type SmokeEnv = Pick<NodeJS.ProcessEnv, string> & {
   readonly SMOKE_SANDBOX_BASE_URL?: string;
   readonly SMOKE_SANDBOX_EMAIL?: string;
@@ -269,8 +274,11 @@ function fail(label: string, status: number, detail: string): never {
   throw new Error(`Sandbox smoke failed at ${label}: ${detail}`);
 }
 
-async function main(): Promise<void> {
-  const config = resolveSmokeConfig();
+export async function runSandboxSmokeWorkflow(
+  config: SmokeConfig,
+  options: SmokeWorkflowOptions = {},
+): Promise<void> {
+  const fetchImpl = options.fetchImpl ?? fetch;
   assertSafeSmokeTarget(config.baseUrl, { allowLocalhost: config.allowLocalhost });
   const base = config.baseUrl.replace(/\/+$/, '');
   const runId = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -289,7 +297,7 @@ async function main(): Promise<void> {
     if (cookie !== undefined) {
       headers.set('cookie', cookie);
     }
-    const res = await fetch(`${base}${path}`, { ...init, headers });
+    const res = await fetchImpl(`${base}${path}`, { ...init, headers });
     const payload = await readJson(res);
     logStep(label, res.status, problemCode(payload));
     return { res, payload };
@@ -400,11 +408,15 @@ async function main(): Promise<void> {
   // same credential plus the token proves verify -> sign-in. A credential
   // mismatch fails closed above, so a stale credential cannot create a
   // false PASS.
-  if (config.verificationToken !== undefined) {
+  let verificationToken = config.verificationToken;
+  if (verificationToken === undefined && options.requestVerificationToken !== undefined) {
+    verificationToken = await options.requestVerificationToken();
+  }
+  if (verificationToken !== undefined) {
     const verify = await request('verify-email', '/v1/auth/verify-email', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ token: config.verificationToken }),
+      body: JSON.stringify({ token: verificationToken }),
     });
     if (verify.res.status !== 200 || booleanField(verify.payload, 'emailVerified') !== true) {
       fail('verify-email', verify.res.status, 'expected 200 with emailVerified:true');
@@ -441,7 +453,13 @@ async function main(): Promise<void> {
 
 const invokedDirectly = process.argv[1]?.endsWith('smoke-sandbox.ts') === true;
 if (invokedDirectly) {
-  main().catch((error: unknown) => {
+  const interactive = process.argv.includes('--interactive');
+  const run = interactive
+    ? import('./smoke-sandbox-interactive.js').then(({ runInteractiveSandboxSmoke }) =>
+        runInteractiveSandboxSmoke(),
+      )
+    : runSandboxSmokeWorkflow(resolveSmokeConfig());
+  run.catch((error: unknown) => {
     const message = error instanceof Error ? error.message : 'unknown failure';
     console.log(JSON.stringify({ level: 'error', step: 'smoke', status: 0, detail: message }));
     process.exitCode = 1;

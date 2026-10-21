@@ -12,6 +12,10 @@ export default defineConfig(
       '.wrangler/**',
       '**/node_modules/**',
       'admin/src/kit/**',
+      // Generated consumer TypeScript contracts are openapi-typescript
+      // outputs (ADR-0007, ticket #152); drift is enforced by
+      // `npm run consumer:check`, not by lint.
+      'src/features/identity/consumer-client/generated/**',
     ],
   },
   {

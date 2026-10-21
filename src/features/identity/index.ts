@@ -60,3 +60,31 @@ export type {
   SessionResolvePhase,
 } from './session.js';
 export { resolveSessionContext, toAuthenticatedUser, toSessionContext } from './session.js';
+// Framework-independent consumer Identity client (spec #150, ADR-0013,
+// ticket #152). Vendored by the consumer team through
+// `./consumer-client/index.js`; it depends only on generated contracts and
+// `openapi-fetch`, never on server internals.
+export {
+  createBrowserLogoutBroadcast,
+  createConsumerClient,
+  createMemoryLogoutBroadcast,
+  ConsumerClientError,
+  type ConsumerClient,
+  type ConsumerClientOptions,
+  type ConsumerIdentitySnapshot,
+  type ConsumerLoginInput,
+  type ConsumerRegisterInput,
+  type LogoutBroadcast,
+} from './consumer-client/index.js';
+export { createJwksCache, type JwksCache, type JwksCacheInput } from './consumer-client/index.js';
+export {
+  ConsumerTokenError,
+  verifyConsumerToken,
+  // The client verification key mirrors the public contract key without
+  // importing server (Zod/Hono) types into the independently importable
+  // client boundary; the alias keeps the two representations distinct.
+  type ConsumerJsonWebKey as ConsumerVerificationKey,
+  type VerifiedConsumerSnapshot,
+  type VerifyConsumerTokenErrorCode,
+  type VerifyConsumerTokenInput,
+} from './consumer-client/index.js';

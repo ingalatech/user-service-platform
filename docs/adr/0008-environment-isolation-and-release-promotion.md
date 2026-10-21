@@ -16,7 +16,23 @@ Sandbox and production are separate Cloudflare Worker environments and use separ
 
 Pull requests initially run local/CI checks only; per-PR deployed Cloudflare infrastructure is deferred.
 
-Once deployment automation exists, merges to `main` may deploy automatically to sandbox. Production is an explicit promotion/release step and records the source commit plus resulting Worker version/deployment identifier.
+Sandbox and production releases are explicit local operator actions. GitHub Actions runs deterministic repository CI only; it does not execute agents, upload Worker versions, promote traffic, or mutate Cloudflare resources. Operators use the repository deployment commands from an isolated local worktree and record the source commit plus resulting Worker version/deployment identifier. Production remains a separately confirmed promotion.
+
+Remote release configuration is owned by one complete, versioned,
+secret-free `config/environments/.env.<environment>` file per environment.
+The release boundary compiles its non-secret application profile into the
+Worker bundle through Wrangler's `define` substitution. Materialized remote
+configs contain no plaintext application `vars`; runtime bindings are limited
+to infrastructure and encrypted secrets. A runtime binding whose name belongs
+to the compiled profile is ignored and emits only a structured warning with
+the binding names, never values. The root `.env` remains local-development-only
+and is never read by deploy, promote, or provision. Runtime secrets remain in
+Cloudflare; the current Wrangler upload path preserves encrypted secrets while
+release tooling never declares or mutates them. A local Wrangler dry-run only
+proves bundling and cannot independently prove remote secret presence. Sandbox
+D1 provisioning stages its discovered id
+back into `.env.sandbox` as an uncommitted, reviewable change; production
+provisioning is not supported.
 
 Database migrations are version controlled and validated against local/disposable D1 before merge. Production schema changes use an expand-deploy-contract strategy whenever rollback compatibility could matter:
 
@@ -28,9 +44,35 @@ A Worker code rollback is not a data rollback. D1 Time Travel is the emergency p
 
 Smoke tests are required after sandbox and production deployment.
 
+Promotion selects and validates one immutable Version ID, then uses a
+target-only Wrangler config with `preview_urls: true` to construct that
+version's documented Version URL. Candidate uploads carry a versioned,
+secret-free release manifest in Wrangler's supported `--message` and `--tag`
+annotations. The manifest contains a deterministic SHA-256 fingerprint of the
+compiled non-secret profile plus `AUTH_MAIL_TRANSPORT`, and the exact-version
+view must return matching manifest annotations. Promotion uses the manifest's
+transport to choose required bindings; it never reads the current application
+`.env` profile. Readiness runs health followed by anonymous Identity against
+that URL, exercising `BETTER_AUTH_SECRET` behavior without reading or listing
+secret values. Exact-version metadata must also contain `BETTER_AUTH_SECRET`
+always, plus `SMTP_USER` and `SMTP_PASSWORD` for `smtp`, or `RESEND_API_KEY`
+for `resend`, as encrypted `secret_text` bindings. Extra encrypted bindings are
+allowed; remote `inmemory`, empty or unknown transports fail closed. This proves
+presence/type, not SMTP delivery.
+`wrangler versions deploy <id>@100%` is allowed only after all checks pass.
+Wrangler 4.130 requires the Version ID as the positional argument to
+`wrangler versions view <version-id> --json`; `--version-id` is not a valid
+option for that subcommand.
+Version overrides are not used because Cloudflare
+requires the overridden version to already be in the current deployment. See
+Cloudflare's [Version URLs](https://developers.cloudflare.com/workers/versions-and-deployments/version-urls/),
+[Version overrides](https://developers.cloudflare.com/workers/versions-and-deployments/version-overrides/)
+and [deployment management](https://developers.cloudflare.com/workers/versions-and-deployments/deployment-management/)
+documentation.
+
 ## Consequences
 
-- Deployment automation must select environment-specific bindings explicitly.
+- Local release tooling must select environment-specific bindings explicitly.
 - Secrets are configured outside source control.
 - Migration design must account for the immediately preceding Worker version when rollback is plausible.
 - Destructive migrations cannot be casually coupled to the code release that stops using the old shape.

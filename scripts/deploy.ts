@@ -4,8 +4,8 @@
 // companies and sites:
 //
 // ```bash
-// npm run deploy -- --target rch-rugbychampagne --env sandbox
-// npm run deploy:production -- --target rch-rugbychampagne --confirm rch-rugbychampagne-user-service-production
+// npm run deploy -- --env sandbox
+// npm run deploy:production -- --confirm rch-rugbychampagne-user-service-production
 // ```
 //
 // The deployer selects a deployment target and canonical environment
@@ -22,93 +22,67 @@
 // or uploads secret values; Cloudflare credentials pass to Wrangler through
 // process inheritance only.
 import { execFile, spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import {
-  DEPLOY_HELP,
-  parseDeployArgs,
-  resolveDeploySelection,
-  type DeployArgs,
-} from './deploy/cli.js';
+import { DEPLOY_HELP, parseDeployArgs, type DeployArgs } from './deploy/cli.js';
+import type { DeployableEnvironment } from './deploy/naming.js';
 import {
   buildTargetWranglerConfig,
   removeTempWranglerConfig,
   writeTempWranglerConfig,
 } from './deploy/materialize.js';
-import { formatPreflightError, preflightFailed, runPreflight } from './deploy/preflight.js';
-import { runDeployment, type DeployIo } from './deploy/orchestrate.js';
-import { startSessionFailureTail } from './deploy/diagnostic-tail.js';
 import {
-  listTargetKeys,
-  loadTargetsFile,
-  resolveTargetDeployment,
-  type ResolvedDeployment,
-  type TargetsFile,
-} from './deploy/targets.js';
+  environmentFilePath,
+  loadEnvironmentFile,
+  resolveEnvironmentDeployment,
+} from './deploy/environment-config.js';
+import { formatPreflightError, preflightFailed, runPreflight } from './deploy/preflight.js';
+import { runDeployment, type DeployCommandOptions, type DeployIo } from './deploy/orchestrate.js';
+import { startSessionFailureTail } from './deploy/diagnostic-tail.js';
+import type { ResolvedDeployment } from './deploy/environment-config.js';
 
 const execFileAsync = promisify(execFile);
 
-function repoRoot(): string {
-  return dirname(dirname(fileURLToPath(import.meta.url)));
+function executable(name: string): string {
+  return process.platform === 'win32' ? `${name}.cmd` : name;
 }
 
-function loadTargets(): TargetsFile {
-  const raw = readFileSync(join(repoRoot(), 'deploy', 'targets.json'), 'utf8');
-  return loadTargetsFile(JSON.parse(raw) as unknown);
+function repoRoot(): string {
+  return dirname(dirname(fileURLToPath(import.meta.url)));
 }
 
 function isInteractive(): boolean {
   return process.stdin.isTTY && process.stdout.isTTY;
 }
 
-async function promptSelection(
-  args: DeployArgs,
-  targets: TargetsFile,
-  interactive: boolean,
-): Promise<DeployArgs> {
-  if (args.target !== undefined && args.environment !== undefined) {
+async function promptSelection(args: DeployArgs, interactive: boolean): Promise<DeployArgs> {
+  if (args.environment !== undefined) {
     return args;
   }
   if (!interactive) {
     throw new Error(
-      'Missing deployment selection: pass --target <company>-<site> and --env <sandbox|production>, or set DEPLOY_TARGET/DEPLOY_ENV.',
+      'Missing deployment environment: pass --env <sandbox|production> or set DEPLOY_ENV.',
     );
   }
   const readline = createInterface({ input: process.stdin, output: process.stdout });
   try {
-    let target = args.target;
-    if (target === undefined) {
-      const keys = listTargetKeys(targets);
-      console.log('Deployment targets:');
-      keys.forEach((key, index) => {
-        console.log(`  ${String(index + 1)}) ${key}`);
-      });
-      const answer = (await readline.question('Select a target (number): ')).trim();
-      const selected = keys[Number.parseInt(answer, 10) - 1];
-      if (selected === undefined) {
-        throw new Error('No deployment target selected.');
-      }
-      target = selected;
+    let environment: DeployableEnvironment;
+    console.log('Environments:');
+    console.log('  1) sandbox');
+    console.log('  2) production');
+    const answer = (await readline.question('Select an environment (number): ')).trim();
+    if (answer === '1') {
+      environment = 'sandbox';
+    } else if (answer === '2') {
+      environment = 'production';
+    } else {
+      throw new Error('No deployment environment selected.');
     }
-    let environment = args.environment;
-    if (environment === undefined) {
-      console.log('Environments:');
-      console.log('  1) sandbox');
-      console.log('  2) production');
-      const answer = (await readline.question('Select an environment (number): ')).trim();
-      if (answer === '1') {
-        environment = 'sandbox';
-      } else if (answer === '2') {
-        environment = 'production';
-      } else {
-        throw new Error('No deployment environment selected.');
-      }
-    }
-    return { ...args, target, environment };
+    return { ...args, environment };
   } finally {
     readline.close();
   }
@@ -117,9 +91,23 @@ async function promptSelection(
 // Runs a deployment step with inherited stdio so the operator sees Wrangler
 // output directly. Credentials pass through process inheritance only; this
 // command never reads secret values.
-function runInherited(command: string, commandArgs: string[]): Promise<{ exitCode: number }> {
+function runInherited(
+  command: string,
+  commandArgs: string[],
+  accountId?: string,
+  options?: DeployCommandOptions,
+): Promise<{ exitCode: number }> {
   return new Promise((resolvePromise) => {
-    const child = spawn(command, commandArgs, { env: process.env, stdio: 'inherit' });
+    const child = spawn(executable(command), commandArgs, {
+      env:
+        options?.env ??
+        (accountId === undefined
+          ? process.env
+          : { ...process.env, CLOUDFLARE_ACCOUNT_ID: accountId }),
+      // Provider stderr is never operator output. Discovery captures it for
+      // code classification; mutating commands expose only their exit code.
+      stdio: ['inherit', 'inherit', 'ignore'],
+    });
     child.on('error', () => {
       resolvePromise({ exitCode: 1 });
     });
@@ -129,9 +117,16 @@ function runInherited(command: string, commandArgs: string[]): Promise<{ exitCod
   });
 }
 
+function processStderr(error: unknown): string {
+  if (typeof error === 'object' && error !== null && 'stderr' in error) {
+    const stderr = (error as { readonly stderr?: unknown }).stderr;
+    return typeof stderr === 'string' ? stderr : '';
+  }
+  return '';
+}
+
 async function main(): Promise<void> {
   const parsed = parseDeployArgs(process.argv.slice(2), {
-    DEPLOY_TARGET: process.env.DEPLOY_TARGET,
     DEPLOY_ENV: process.env.DEPLOY_ENV,
     DEPLOY_CONFIRM: process.env.DEPLOY_CONFIRM,
   });
@@ -139,13 +134,12 @@ async function main(): Promise<void> {
     console.log(DEPLOY_HELP);
     return;
   }
-  const targets = loadTargets();
-  const args = await promptSelection(parsed, targets, isInteractive() && !parsed.nonInteractive);
-  const selection = resolveDeploySelection(args, {
-    targets: listTargetKeys(targets),
-    interactive: isInteractive() && !args.nonInteractive,
-  });
-  const resolved = resolveTargetDeployment(targets, selection);
+  const args = await promptSelection(parsed, isInteractive() && !parsed.nonInteractive);
+  if (args.environment === undefined) throw new Error('No deployment environment selected.');
+  const resolved = resolveEnvironmentDeployment(
+    loadEnvironmentFile(environmentFilePath(repoRoot(), args.environment)),
+    { requireRemoteReady: true },
+  );
 
   if (args.writeConfig !== undefined) {
     const destination = resolve(args.writeConfig);
@@ -183,11 +177,14 @@ async function main(): Promise<void> {
           run: async (command, commandArgs) => {
             try {
               const { stdout } = await execFileAsync(command, commandArgs, {
-                env: process.env,
+                env:
+                  target.accountId === ''
+                    ? process.env
+                    : { ...process.env, CLOUDFLARE_ACCOUNT_ID: target.accountId },
               });
               return { exitCode: 0, stdout };
-            } catch {
-              return { exitCode: 1, stdout: '' };
+            } catch (error: unknown) {
+              return { exitCode: 1, stdout: '', stderr: processStderr(error) };
             }
           },
         },
@@ -199,10 +196,32 @@ async function main(): Promise<void> {
     log: (message: string) => {
       console.log(message);
     },
-    // Sandbox-only diagnostics (ticket #96): the deploy boundary starts this
-    // tail immediately before `smoke-sandbox` and always stops it afterward.
-    // Production `runDeployment` paths never consult this hook, so production
-    // gains no automatic tailing.
+    sourceMetadata: async () => {
+      const [commit, branch] = await Promise.all([
+        execFileAsync('git', ['rev-parse', '--short', 'HEAD'], { cwd: deployRepoRoot }),
+        execFileAsync('git', ['branch', '--show-current'], { cwd: deployRepoRoot }),
+      ]);
+      return { commit: commit.stdout.trim(), branch: branch.stdout.trim() || 'detached' };
+    },
+    confirmFirstDeployment: async (workerName) => {
+      if (!isInteractive()) {
+        return false;
+      }
+      const readline = createInterface({ input: process.stdin, output: process.stdout });
+      try {
+        const expected = `FIRST DEPLOY ${workerName}`;
+        console.log(
+          'Cloudflare activates a Worker’s first version immediately; no inactive candidate is possible.',
+        );
+        return (
+          (await readline.question(`Type exactly "${expected}" to continue: `)).trim() === expected
+        );
+      } finally {
+        readline.close();
+      }
+    },
+    // Diagnostic tailing is retained for the full privileged sandbox smoke;
+    // bootstrap and public readiness do not inspect runtime secret state.
     startSessionFailureTail: (target: ResolvedDeployment, configPath: string) => {
       if (target.environment !== 'sandbox') {
         return Promise.reject(new Error('Diagnostic tailing is sandbox-only.'));
@@ -213,7 +232,22 @@ async function main(): Promise<void> {
   const outcome = await runDeployment(
     { resolved, confirm: args.confirm, dryRun: args.dryRun },
     io,
-    (command, commandArgs) => runInherited(command, commandArgs),
+    async (command, commandArgs, options) => {
+      if (commandArgs.includes('list') && commandArgs.includes('--json')) {
+        try {
+          const { stdout } = await execFileAsync(command, commandArgs, {
+            env:
+              resolved.accountId === ''
+                ? process.env
+                : { ...process.env, CLOUDFLARE_ACCOUNT_ID: resolved.accountId },
+          });
+          return { exitCode: 0, stdout };
+        } catch (error: unknown) {
+          return { exitCode: 1, stdout: '', stderr: processStderr(error) };
+        }
+      }
+      return runInherited(command, commandArgs, resolved.accountId, options);
+    },
   );
   console.log(`deployment complete worker=${outcome.workerName}`);
 }

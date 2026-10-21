@@ -1,5 +1,7 @@
 # Diagnostic: repeated Standards review timeout blocking PR #154
 
+> Historical research record only. This retired workflow is not operational guidance.
+
 Date: 2026-10-15. Source ticket: #158 (`ready-for-agent`, bounded
 research/diagnostic slice). Base: main at
 `805b3629aa20e0bf0e437fd24c9271635ede39d9` (includes PR #157).

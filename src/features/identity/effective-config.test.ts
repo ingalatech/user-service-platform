@@ -108,7 +108,7 @@ describe('effective configuration as Identity source of truth', () => {
     expect(resolveAuthMailer({ ...localEffective.config })).toBeInstanceOf(DevelopmentAuthMailer);
 
     const sandboxEffective = resolveEffectiveConfig({ environment: 'sandbox', runtime: {} });
-    expect(sandboxEffective.config.AUTH_MAIL_TRANSPORT).toBe('resend');
+    expect(sandboxEffective.config.AUTH_MAIL_TRANSPORT).toBe('');
     expect(() => resolveAuthMailer({ ...sandboxEffective.config })).toThrow(/RESEND_API_KEY/);
 
     const overridden = resolveEffectiveConfig({

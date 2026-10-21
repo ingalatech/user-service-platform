@@ -214,6 +214,11 @@ export function resolveSmtpConfig(env: SmtpEnv): SmtpTransportConfig {
   };
 }
 
+export function validateSmtpSettings(input: Pick<SmtpEnv, 'SMTP_PORT' | 'SMTP_SECURE'>): void {
+  parsePort(input.SMTP_PORT);
+  parseSecure(input.SMTP_SECURE);
+}
+
 function recipientDomain(to: string): string {
   return to.split('@')[1]?.toLowerCase() ?? 'invalid';
 }

@@ -1,16 +1,5 @@
-// Versioned non-secret environment profiles (spec #8, ticket #57).
-//
-// Each operational environment owns one complete profile using the exact
-// canonical runtime variable names, so runtime overrides apply by the same
-// key without a translation vocabulary. Profiles are independent literals:
-// they never spread from a shared base, and they are frozen so runtime code
-// cannot mutate versioned defaults.
-//
-// Secrets are structurally excluded: the profile type only admits
-// `NonSecretVarName` keys, so placing `BETTER_AUTH_SECRET`, `RESEND_API_KEY`
-// or SMTP credentials through this path is a type error, not a review
-// observation. Sandbox/production secrets are configured directly in
-// Cloudflare and never appear here.
+// Runtime variable names and local-only defaults. Remote values are owned by
+// config/environments/.env.<environment> and compiled by release tooling.
 export const NON_SECRET_VAR_NAMES = [
   'ENVIRONMENT',
   'AUTH_REGISTRATION_ENABLED',
@@ -32,19 +21,42 @@ export const NON_SECRET_VAR_NAMES = [
   'SMTP_SECURE',
 ] as const;
 
+// Wrangler substitutes this identifier during remote bundling. The value is a
+// complete non-secret profile; runtime secrets and infrastructure bindings stay
+// outside the bundle.
+export const COMPILED_CONFIG_DEFINE_NAME = '__USER_SERVICE_COMPILED_CONFIG__' as const;
+
 export type NonSecretVarName = (typeof NON_SECRET_VAR_NAMES)[number];
-
-// Complete non-secret configuration for one environment. Every key is a
-// required string: an empty string marks an explicitly unset slot (same
-// semantics as an absent runtime variable), never a missing key.
 export type NonSecretProfile = Record<NonSecretVarName, string>;
-
-// Canonical operational environments (ADR-0008). There is no `staging`
-// profile: historical staging references mean `sandbox`.
 export type CanonicalEnvironment = 'local' | 'sandbox' | 'production';
 
-// Known secret inputs. They must never enter versioned profiles or merged
-// non-secret configuration; they travel as runtime secrets only.
+const NON_SECRET_VAR_NAME_SET: ReadonlySet<string> = new Set(NON_SECRET_VAR_NAMES);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+export function isNonSecretProfile(value: unknown): value is NonSecretProfile {
+  if (!isRecord(value)) return false;
+  const keys = Object.keys(value);
+  return (
+    keys.length === NON_SECRET_VAR_NAMES.length &&
+    keys.every((name) => NON_SECRET_VAR_NAME_SET.has(name) && typeof value[name] === 'string')
+  );
+}
+
+// This is the runtime guard for the Wrangler `define` boundary. The key list
+// above is the only source of truth; an added, missing or non-string profile
+// value fails before configuration can reach application code.
+export function parseNonSecretProfile(value: unknown): NonSecretProfile {
+  if (!isNonSecretProfile(value)) {
+    throw new Error(
+      'Configuration error: compiled profile keys do not match the canonical profile.',
+    );
+  }
+  return value;
+}
+
 export const SECRET_VAR_NAMES = [
   'BETTER_AUTH_SECRET',
   'RESEND_API_KEY',
@@ -58,16 +70,6 @@ function freezeProfile(profile: NonSecretProfile): NonSecretProfile {
   return Object.freeze({ ...profile });
 }
 
-// Local development defaults: open registration gated on verified email with
-// the metadata-only development mail sink (unset transport). SMTP slots stay
-// explicitly unset until a real-delivery local scenario selects the SMTP
-// transport (ticket #58). Auth action URL slots stay explicitly unset so local
-// mail targets the service-owned fallback action pages (ticket #77).
-// Consumer JWT slots (spec #150) stay explicitly unset so local/test runs use
-// deterministic local-only issuer/audience/TTL defaults; sandbox/production
-// fail closed without explicit stable deployment values. Exact direct-browser
-// consumer-origin slots (spec #164, ADR-0013) stay unset: consumer CORS is
-// opt-in per deployment and same-origin-only until an operator names origins.
 export const LOCAL_PROFILE: NonSecretProfile = freezeProfile({
   ENVIRONMENT: 'local',
   AUTH_REGISTRATION_ENABLED: 'true',
@@ -89,74 +91,12 @@ export const LOCAL_PROFILE: NonSecretProfile = freezeProfile({
   SMTP_SECURE: '',
 } satisfies NonSecretProfile);
 
-// Sandbox defaults: verified-email policy with the Resend transport selected
-// explicitly. The recipient allowlist is intentionally empty here and must be
-// supplied out-of-band per deployment; delivery without one fails closed.
-// SMTP slots stay explicitly unset until a deployment selects the SMTP
-// transport (ticket #58). Auth action URL slots stay explicitly unset so
-// sandbox mail targets the service-owned fallback pages unless a deployment
-// configures branded consumer pages (ticket #77). Consumer JWT issuer,
-// audience, TTL, gateway-origin and direct-consumer-origin slots stay
-// explicitly unset and must be supplied out-of-band per deployment; token
-// issuance without issuer/audience fails closed (spec #150) and consumer
-// CORS stays same-origin-only until exact consumer origins are named
-// (spec #164, ADR-0013).
-export const SANDBOX_PROFILE: NonSecretProfile = freezeProfile({
-  ENVIRONMENT: 'sandbox',
-  AUTH_REGISTRATION_ENABLED: 'true',
-  AUTH_EMAIL_PASSWORD_ENABLED: 'true',
-  AUTH_REQUIRE_EMAIL_VERIFICATION: 'true',
-  AUTH_MAIL_TRANSPORT: 'resend',
-  AUTH_MAIL_FROM: 'User Service <noreply@example.com>',
-  AUTH_APP_NAME: 'User Service',
-  AUTH_MAIL_ALLOWLIST: '',
-  AUTH_VERIFY_EMAIL_ACTION_URL: '',
-  AUTH_RESET_PASSWORD_ACTION_URL: '',
-  AUTH_JWT_ISSUER: '',
-  AUTH_JWT_AUDIENCE: '',
-  AUTH_JWT_TTL_SECONDS: '',
-  AUTH_GATEWAY_ORIGINS: '',
-  AUTH_CONSUMER_ORIGINS: '',
-  SMTP_HOST: '',
-  SMTP_PORT: '',
-  SMTP_SECURE: '',
-} satisfies NonSecretProfile);
-
-// Production defaults: verified-email policy with the Resend transport. The
-// allowlist slot stays empty because production deliveries are not
-// allowlist-guarded; sandbox/production secrets still live outside this file.
-// SMTP slots stay explicitly unset until a deployment selects the SMTP
-// transport (ticket #58). Auth action URL slots stay explicitly unset so
-// production mail targets the service-owned fallback pages unless a
-// deployment configures branded consumer pages (ticket #77). Consumer JWT
-// issuer, audience, TTL, gateway-origin and direct-consumer-origin slots stay
-// explicitly unset and must be supplied out-of-band per deployment; token
-// issuance without issuer/audience fails closed (spec #150) and consumer CORS
-// stays same-origin-only until exact consumer origins are named (spec #164,
-// ADR-0013).
-export const PRODUCTION_PROFILE: NonSecretProfile = freezeProfile({
-  ENVIRONMENT: 'production',
-  AUTH_REGISTRATION_ENABLED: 'true',
-  AUTH_EMAIL_PASSWORD_ENABLED: 'true',
-  AUTH_REQUIRE_EMAIL_VERIFICATION: 'true',
-  AUTH_MAIL_TRANSPORT: 'resend',
-  AUTH_MAIL_FROM: 'User Service <noreply@example.com>',
-  AUTH_APP_NAME: 'User Service',
-  AUTH_MAIL_ALLOWLIST: '',
-  AUTH_VERIFY_EMAIL_ACTION_URL: '',
-  AUTH_RESET_PASSWORD_ACTION_URL: '',
-  AUTH_JWT_ISSUER: '',
-  AUTH_JWT_AUDIENCE: '',
-  AUTH_JWT_TTL_SECONDS: '',
-  AUTH_GATEWAY_ORIGINS: '',
-  AUTH_CONSUMER_ORIGINS: '',
-  SMTP_HOST: '',
-  SMTP_PORT: '',
-  SMTP_SECURE: '',
-} satisfies NonSecretProfile);
-
+// These aliases keep the local/test profile API stable. Remote release files
+// provide the actual profile to the materializer instead of these defaults.
+export const SANDBOX_PROFILE = LOCAL_PROFILE;
+export const PRODUCTION_PROFILE = LOCAL_PROFILE;
 export const ENVIRONMENT_PROFILES: Record<CanonicalEnvironment, NonSecretProfile> = {
   local: LOCAL_PROFILE,
-  sandbox: SANDBOX_PROFILE,
-  production: PRODUCTION_PROFILE,
+  sandbox: LOCAL_PROFILE,
+  production: LOCAL_PROFILE,
 };

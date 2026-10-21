@@ -1,13 +1,12 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { assertWorkerName, parseDeployEnvironment } from './naming.js';
 import {
-  checkSecretTextBindings,
-  formatSecretBindingsError,
-  parseSecretListOutput,
-  secretBindingsFailed,
-  secretListArgs,
-} from './secret-bindings.js';
-import { requiredWorkerSecrets } from './secrets.js';
-import { isProvisionedDatabaseId, type ResolvedDeployment } from './targets.js';
+  isAbsentWorkerError,
+  parseWorkerDeploymentsOutput,
+  workerDeploymentsListArgs,
+} from './provision-worker.js';
+import { isProvisionedDatabaseId, type DeploymentTarget } from './environment-config.js';
 
 // Deployment preflight (ticket #78, ADR-0008).
 //
@@ -18,11 +17,7 @@ import { isProvisionedDatabaseId, type ResolvedDeployment } from './targets.js';
 //
 // Secret boundary: preflight never reads provider/auth secret values. Cloudflare
 // authentication is probed through `wrangler whoami` exit status, and command
-// output is reduced to pass/fail — outputs never enter check details, so
-// tokens or account identifiers cannot leak through diagnostics. Required
-// Worker secrets are verified through the provider-supported names/types-only
-// `secret list` mechanism (ticket #106): only binding `name`/`type` fields are
-// consumed, and failure details carry required names/status only.
+// output is reduced to pass/fail.
 
 export interface PreflightCommand {
   readonly command: string;
@@ -32,6 +27,7 @@ export interface PreflightCommand {
 export interface PreflightResult {
   readonly exitCode: number;
   readonly stdout: string;
+  readonly stderr?: string;
 }
 
 export interface PreflightDeps {
@@ -41,7 +37,7 @@ export interface PreflightDeps {
 }
 
 export interface PreflightInput {
-  readonly resolved: ResolvedDeployment;
+  readonly resolved: DeploymentTarget;
 }
 
 export interface PreflightCheck {
@@ -50,13 +46,79 @@ export interface PreflightCheck {
   readonly detail: string;
 }
 
-function nodeMajor(version: string): number {
-  const match = /^v?(\d+)\./.exec(version.trim());
-  if (match?.[1] === undefined) {
-    return 0;
+interface NodeVersion {
+  readonly major: number;
+  readonly minor: number;
+  readonly patch: number;
+}
+
+interface NodeRange {
+  readonly minimum: NodeVersion;
+  readonly exclusiveMaximumMajor: number;
+  readonly text: string;
+}
+
+function readNodeRange(): NodeRange {
+  const packageJson = JSON.parse(
+    readFileSync(fileURLToPath(new URL('../../package.json', import.meta.url)), 'utf8'),
+  ) as { readonly engines?: { readonly node?: unknown } };
+  const text = packageJson.engines?.node;
+  const engineText = typeof text === 'string' ? text : undefined;
+  const match = engineText === undefined ? null : /^>=(\d+)\.(\d+)\.(\d+) <(\d+)$/.exec(engineText);
+  const minimumMajor = match?.[1];
+  const minimumMinor = match?.[2];
+  const minimumPatch = match?.[3];
+  const exclusiveMaximumMajor = match?.[4];
+  if (
+    engineText === undefined ||
+    minimumMajor === undefined ||
+    minimumMinor === undefined ||
+    minimumPatch === undefined ||
+    exclusiveMaximumMajor === undefined
+  ) {
+    throw new Error('package.json must declare a Node engine range like ">=24.22.1 <25".');
   }
-  const major = Number.parseInt(match[1], 10);
-  return Number.isInteger(major) ? major : 0;
+  return {
+    minimum: {
+      major: Number.parseInt(minimumMajor, 10),
+      minor: Number.parseInt(minimumMinor, 10),
+      patch: Number.parseInt(minimumPatch, 10),
+    },
+    exclusiveMaximumMajor: Number.parseInt(exclusiveMaximumMajor, 10),
+    text: engineText,
+  };
+}
+
+const NODE_RANGE = readNodeRange();
+
+function parseNodeVersion(version: string): NodeVersion | undefined {
+  const match = /^v?(\d+)\.(\d+)\.(\d+)(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.exec(
+    version.trim(),
+  );
+  const major = match?.[1];
+  const minor = match?.[2];
+  const patch = match?.[3];
+  if (major === undefined || minor === undefined || patch === undefined) return undefined;
+  return {
+    major: Number.parseInt(major, 10),
+    minor: Number.parseInt(minor, 10),
+    patch: Number.parseInt(patch, 10),
+  };
+}
+
+function compareNodeVersions(left: NodeVersion, right: NodeVersion): number {
+  if (left.major !== right.major) return left.major - right.major;
+  if (left.minor !== right.minor) return left.minor - right.minor;
+  return left.patch - right.patch;
+}
+
+function nodeVersionSatisfies(version: string): boolean {
+  const parsed = parseNodeVersion(version);
+  return (
+    parsed !== undefined &&
+    parsed.major < NODE_RANGE.exclusiveMaximumMajor &&
+    compareNodeVersions(parsed, NODE_RANGE.minimum) >= 0
+  );
 }
 
 export async function runPreflight(
@@ -65,11 +127,11 @@ export async function runPreflight(
 ): Promise<PreflightCheck[]> {
   const checks: PreflightCheck[] = [];
 
-  const major = nodeMajor(deps.nodeVersion);
+  const nodeOk = nodeVersionSatisfies(deps.nodeVersion);
   checks.push({
     name: 'node',
-    ok: major >= 24,
-    detail: major >= 24 ? 'node >= 24' : 'node >= 24 is required',
+    ok: nodeOk,
+    detail: nodeOk ? `node ${NODE_RANGE.text}` : `node ${NODE_RANGE.text} is required`,
   });
 
   const versionResult = await deps.run('npx', ['wrangler', '--version']);
@@ -137,7 +199,8 @@ export async function runPreflight(
     detail: workerOk ? 'worker name valid' : 'worker name invalid',
   });
 
-  checks.push(await checkWorkerSecrets(input.resolved, deps));
+  const workerPresence = await checkWorkerPresence(input.resolved, deps);
+  checks.push(workerPresence.check);
 
   return checks;
 }
@@ -146,55 +209,51 @@ export function preflightFailed(checks: readonly PreflightCheck[]): boolean {
   return checks.some((check) => !check.ok);
 }
 
-// Required-secret binding-type gate (ticket #106): `secrets.required`
-// accepts a same-name plaintext Worker `vars` entry, so preflight lists the
-// target Worker's secrets through the provider-supported names/types-only
-// mechanism and requires every required name (derived from the same
-// `requiredWorkerSecrets` set owned by #104) to exist as `secret_text`. The
-// check fails closed before `wrangler deploy` and smoke; details carry
-// required names/status only, never values or provider output.
-async function checkWorkerSecrets(
-  resolved: ResolvedDeployment,
+async function checkWorkerPresence(
+  resolved: DeploymentTarget,
   deps: PreflightDeps,
-): Promise<PreflightCheck> {
-  const required = requiredWorkerSecrets({
-    environment: resolved.environment,
-    vars: resolved.vars,
-  });
-  if (required.length === 0) {
-    return { name: 'worker-secrets', ok: true, detail: 'no required Worker secrets' };
-  }
-  const listed = await deps.run('npx', [...secretListArgs(resolved.workerName)]);
+): Promise<{ readonly check: PreflightCheck; readonly exists: boolean | undefined }> {
+  const listed = await deps.run('npx', [...workerDeploymentsListArgs(resolved.workerName)]);
   if (listed.exitCode !== 0) {
+    if (isAbsentWorkerError(listed.stderr)) {
+      return {
+        check: {
+          name: 'worker-presence',
+          ok: true,
+          detail: 'Worker absent; first deploy is allowed',
+        },
+        exists: false,
+      };
+    }
     return {
-      name: 'worker-secrets',
-      ok: false,
-      detail: `required Worker secrets unverified as secret_text bindings: ${required.join(', ')}`,
+      check: {
+        name: 'worker-presence',
+        ok: false,
+        detail: 'Worker existence could not be determined',
+      },
+      exists: undefined,
     };
   }
-  let remote;
   try {
-    remote = parseSecretListOutput(listed.stdout);
+    const discovery = parseWorkerDeploymentsOutput(listed.stdout);
+    return {
+      check: {
+        name: 'worker-presence',
+        ok: true,
+        detail: discovery.found ? 'Worker exists' : 'Worker absent; first deploy is allowed',
+      },
+      exists: discovery.found,
+    };
   } catch {
     return {
-      name: 'worker-secrets',
-      ok: false,
-      detail: `required Worker secrets unverified as secret_text bindings: ${required.join(', ')}`,
+      check: {
+        name: 'worker-presence',
+        ok: false,
+        detail: 'Worker existence could not be determined',
+      },
+      exists: undefined,
     };
   }
-  const results = checkSecretTextBindings(required, remote);
-  if (secretBindingsFailed(results)) {
-    return {
-      name: 'worker-secrets',
-      ok: false,
-      detail: formatSecretBindingsError(resolved.workerName, results).message,
-    };
-  }
-  return {
-    name: 'worker-secrets',
-    ok: true,
-    detail: 'required Worker secrets present as secret_text bindings',
-  };
 }
 
 // Formats only check names plus static details: command output (which may

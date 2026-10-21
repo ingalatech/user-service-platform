@@ -1,104 +1,25 @@
-# Trusted publication handoff for workflow-file corrections
+# Pane handoff
 
-Ticket #36 policy. Remote agent corrections may legitimately modify
-`.github/workflows/**`, but the ordinary Actions `GITHUB_TOKEN` cannot create
-or update workflow files, and model/OpenCode processes must never receive a
-broad workflow-write credential. Product-ticket automation keeps the existing
-least-privilege token boundary: none of the repository workflows grant
-`workflows: write`.
+The repository uses explicit local pane responsibilities rather than an
+automated reviewer/correction loop:
 
-## Handoff instead of privilege
+```text
+p2 implements or corrects -> p3 reviews directly -> p1 coordinates and decides
+```
 
-1. Agent/correction work may edit workflow files locally and run the
-   deterministic quality gates.
-2. Before an ordinary push, repository-owned code detects changes under
-   `.github/workflows/**` over the exact known commit range.
-3. Ordinary remote automation does not attempt the doomed generic push and
-   does not gain more privilege. It stops with a `BLOCKED` state whose reason
-   carries the `trusted-publication-required` marker, which is deliberately
-   distinct from ordinary safe-push validation failures (wrong branch, PR
-   head/base mismatch, dirty worktree, push to `main`).
-4. The blocked run persists the correction as a patch plus exact base/head
-   metadata and publishes the explicit `BLOCKED` / trusted-publication-required
-   status through the normal durable status surface (with owner attention
-   mention, like other `BLOCKED` states).
-5. A trusted human or separately authorized ChatGPT GitHub operation publishes
-   the reviewed workflow change.
-6. Normal exact-HEAD dual review and CI resume after publication: rerun
-   `review:cycle` (or `/agent-fix-cycle`) so both review axes report against
-   the newly published exact HEAD.
+P2 hands the exact branch, commit, ticket acceptance evidence, changed-file
+summary, and gate results to P3. P3 reports Standards and Spec findings
+directly against that exact commit; P2 applies valid corrections and reruns the
+repository gates. P1 resolves escalation, inspects CI, merges, and operates
+releases.
 
-A fully automated privileged publisher is not required now. A later dedicated
-publisher may be considered only if it runs from trusted repository code, uses
-a narrowly scoped credential not exposed to the model process, and has an
-explicit approval boundary.
+GitHub Actions remains a quality-gates boundary only. It has read-only
+repository permissions and does not run agents, reviewers, correction loops,
+approval automation, deployments, or promotions.
 
-## Detection points
+`review:safe-push` remains available as an independently tested, narrow branch
+publication guard. It is not a review orchestrator and never merges or deploys.
 
-Detection lives in deterministic repository-owned TypeScript, tested at the
-Node seam, never in model-authored logic:
-
-- `scripts/review/workflow-handoff.ts` — path matching, range-diff/patch
-  command builders, handoff record format, and bundle persistence.
-- `scripts/agent/ticket-flow.ts` — the initial ticket-branch push is refused
-  when the range from `origin/main` at start through the implementation HEAD
-  touches workflow files.
-- `scripts/review-cycle.ts` — both the start `push-and-refresh` path and the
-  post-`address-review` correction push are refused when their exact ranges
-  touch workflow files.
-- `.github/workflows/agent-fix-cycle.yml` — a guard step before the direct
-  safe-push refuses when the range from the validated PR HEAD through the
-  correction HEAD touches workflow files.
-
-## Evidence bundle
-
-A blocked handoff leaves, under `.agent-ticket/`:
-
-- `workflow-handoff.patch` — the full correction diff for the exact range
-  (workflow files plus any accompanying scripts/tests/docs), so the trusted
-  publisher never needs to reconstruct non-workflow changes from runner logs.
-- `workflow-handoff.json` — version, branch, exact base/head SHAs, the
-  workflow files that triggered handoff, patch path, and the
-  `trusted-publication-required` reason.
-
-Remote workflows upload this bundle as run artifacts alongside
-`.review-cycle/latest.json` (and `.agent-ticket/outcome.json` for
-`agent-ticket` runs), so the trusted publisher never reconstructs work from
-runner logs. The terminal status comment carries the marker, the touched
-files, and the action required.
-
-## Source-ticket provenance and exact-HEAD CI
-
-Ticket #82 adds a source-ticket comment alongside the evidence bundle:
-`<!-- trusted-workflow-handoff:v1 {...} -->`. Repository-owned
-`agent-ticket` code publishes it as `github-actions[bot]`; its JSON records
-the ticket number, ticket branch, original base/implementation SHAs and every
-workflow file in the handoff. The patch and metadata bundle remain required
-for reviewing and publishing the correction.
-
-The trusted approver keeps the ordinary bot-PR path unchanged, including its
-refusal of workflow-file changes. Its separate trusted-handoff path requires
-all of the following:
-
-- an open, same-repository PR against `main`, with matching ticket/branch/title/body;
-- the source ticket open and labelled `ready-for-agent`;
-- a non-empty workflow-file set fully covered by a matching bot-authored
-  source-ticket marker;
-- the PR's canonical publication app slug `chatgpt-codex-connector`;
-- independent equality between the CI run SHA and the current PR HEAD.
-
-The marker's original base/head identify the reviewed handoff for audit; they
-are not equality gates for later correction commits. Every correction still
-requires current exact-HEAD reviews and CI. PR author, owner association,
-labels or copied marker text alone cannot establish trusted provenance.
-Read/parse failures, missing coverage and zero-workflow non-bot handoffs
-refuse approval. `action_required` remains pending approval, never CI success.
-
-## Trusted publication procedure
-
-1. Download the handoff bundle from the blocked run's artifacts.
-2. Review the patch and the exact base/head metadata.
-3. Publish the reviewed workflow change to the ticket branch through a trusted
-   operation (human push or separately authorized connector operation).
-4. Rerun review on the published HEAD so Standards, Spec, and CI evidence is
-   stamped against the exact commit under review.
+When a change touches workflow files, P1 performs any separately authorized
+publication step. No automated workflow-file handoff or reviewer marker is
+required.

@@ -4,29 +4,30 @@
 // deployment target through one documented command:
 //
 // ```bash
-// npm run provision -- --target rch-rugbychampagne --env sandbox --plan
-// npm run provision -- --target rch-rugbychampagne --env sandbox --apply
+// npm run provision -- --env sandbox --plan
+// npm run provision -- --env sandbox --apply
 // ```
 //
-// Plan is the default no-mutation mode. Apply discovers the exact canonical
-// D1 database (creating it when absent), reports read-only Worker/deployment
-// state, reports required secrets by names/types only, and stages the
-// non-secret database id in `deploy/targets.json` as a reviewable worktree
-// diff. Production apply requires `--confirm` equal to the target Worker
-// name; production planning stays read-only.
+// Plan is the default no-mutation mode. The selected environment file is the
+// authority for names, account scope and non-secret values. Sandbox apply
+// discovers the exact canonical D1 database (creating it when absent), reports
+// read-only Worker/deployment state, reports required secret names/types only,
+// and stages the non-secret database id in
+// `config/environments/.env.sandbox` as a reviewable worktree diff.
+// Production provisioning is rejected; production uses the deploy/promotion
+// flow after its environment file is complete.
 //
 // Provisioning never deploys application code, never creates a placeholder
 // Worker, never reads/writes/copies/prints secret values, never commits or
-// pushes, and never uses Wrangler `--update-config`: the repository target
-// registry stays authoritative.
+// pushes, and never uses Wrangler `--update-config`: the selected environment
+// file stays authoritative.
 //
 // Secret boundary: Wrangler child processes inherit Cloudflare credentials
 // from the operator environment only. Provider output is reduced to
 // pass/fail plus names/ids at the orchestration boundary; raw provider
 // bodies never reach logs or errors.
 import { execFile } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import {
@@ -35,20 +36,17 @@ import {
   resolveProvisionSelection,
 } from './deploy/provision-cli.js';
 import { runProvision, type ProvisionCommandResult } from './deploy/provision.js';
-import { listTargetKeys, loadTargetsFile, type TargetsFile } from './deploy/targets.js';
+import {
+  environmentFilePath,
+  loadEnvironmentFile,
+  stageDatabaseId,
+} from './deploy/environment-config.js';
+import type { EnvironmentFile } from './deploy/environment-config.js';
 
 const execFileAsync = promisify(execFile);
 
 function repoRoot(): string {
   return dirname(dirname(fileURLToPath(import.meta.url)));
-}
-
-function targetsPath(): string {
-  return join(repoRoot(), 'deploy', 'targets.json');
-}
-
-function readTargetsFile(): TargetsFile {
-  return loadTargetsFile(JSON.parse(readFileSync(targetsPath(), 'utf8')) as unknown);
 }
 
 // Runs a Wrangler read/create step, capturing machine-readable stdout for
@@ -58,9 +56,12 @@ function readTargetsFile(): TargetsFile {
 async function runProvisionCommand(
   command: string,
   args: readonly string[],
+  accountId: string,
 ): Promise<ProvisionCommandResult> {
   try {
-    const { stdout } = await execFileAsync(command, [...args], { env: process.env });
+    const { stdout } = await execFileAsync(command, [...args], {
+      env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: accountId },
+    });
     return { exitCode: 0, stdout };
   } catch {
     return { exitCode: 1, stdout: '' };
@@ -69,7 +70,6 @@ async function runProvisionCommand(
 
 async function main(): Promise<void> {
   const parsed = parseProvisionArgs(process.argv.slice(2), {
-    PROVISION_TARGET: process.env.PROVISION_TARGET,
     PROVISION_ENV: process.env.PROVISION_ENV,
     PROVISION_CONFIRM: process.env.PROVISION_CONFIRM,
   });
@@ -77,32 +77,34 @@ async function main(): Promise<void> {
     console.log(PROVISION_HELP);
     return;
   }
-  const targets = readTargetsFile();
+  if (parsed.environment === 'production') {
+    throw new Error('Production provisioning is not supported; provision sandbox only.');
+  }
+  if (parsed.environment === undefined) throw new Error('No provisioning environment selected.');
   const selection = resolveProvisionSelection(parsed, {
-    targets: listTargetKeys(targets),
     interactive: false,
   });
+  const environmentPath = environmentFilePath(repoRoot(), selection.environment);
   const outcome = await runProvision(
     {
-      target: selection.target,
       environment: selection.environment,
       mode: parsed.mode,
       confirm: parsed.confirm,
     },
     {
-      loadTargets: () => readTargetsFile(),
-      writeTargets: (file) => {
-        writeFileSync(targetsPath(), `${JSON.stringify(file, null, 2)}\n`, 'utf8');
+      loadEnvironment: () => loadEnvironmentFile(environmentPath),
+      writeEnvironment: (file: EnvironmentFile) => {
+        if (file.D1_ID !== '') stageDatabaseId(environmentPath, file.D1_ID);
       },
       log: (message) => {
         console.log(message);
       },
     },
-    (command, args) => runProvisionCommand(command, args),
+    (command, args, scope) => runProvisionCommand(command, args, scope?.accountId ?? ''),
   );
   if (outcome.configUpdated) {
     console.log(
-      'provisioning staged deploy/targets.json: review the diff, then commit it before deploying.',
+      `provisioning staged ${environmentPath}: review the diff, then commit it before deploying.`,
     );
   }
 }

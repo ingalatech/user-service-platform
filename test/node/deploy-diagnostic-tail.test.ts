@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { LOCAL_PROFILE } from '../../src/config/index.js';
 import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import {
@@ -23,7 +24,7 @@ import {
   type DeployCommandRunner,
   type DeployIo,
 } from '../../scripts/deploy/orchestrate.js';
-import type { ResolvedDeployment } from '../../scripts/deploy/targets.js';
+import type { ResolvedDeployment } from '../../scripts/deploy/environment-config.js';
 import { CONTRACT_SANDBOX_DATABASE_ID } from './deploy-test-utils.js';
 
 // Seams under test (ticket #96, ADR-0009):
@@ -47,7 +48,8 @@ const SANDBOX: ResolvedDeployment = {
   workerName: 'rch-rugbychampagne-user-service-sandbox',
   databaseName: 'rch-rugbychampagne-user-service-sandbox-db',
   databaseId: CONTRACT_SANDBOX_DATABASE_ID,
-  vars: { AUTH_MAIL_TRANSPORT: 'smtp' },
+  workerUrl: 'https://sandbox.example.test',
+  applicationConfig: { ...LOCAL_PROFILE, ENVIRONMENT: 'sandbox', AUTH_MAIL_TRANSPORT: 'smtp' },
 };
 
 const DIRECT = JSON.stringify({
@@ -236,7 +238,10 @@ describe('sandbox smoke diagnostic tail lifecycle (ticket #96)', () => {
     const harness: TailHarness = {
       io: undefined as unknown as DeployIo,
       runner: (command, args) => {
-        if (command === 'npm' && args.join(' ').includes('smoke:sandbox')) {
+        if (args.includes('versions') && args.includes('list')) {
+          return Promise.resolve({ exitCode: 0, stdout: '[]' });
+        }
+        if (command === 'npm' && args.join(' ').includes('smoke:health')) {
           if (options.smokeFails === true) {
             return Promise.resolve({ exitCode: 1 });
           }
@@ -254,6 +259,7 @@ describe('sandbox smoke diagnostic tail lifecycle (ticket #96)', () => {
       materialize: () => '/tmp/wrangler.tail-test.json',
       cleanup: () => undefined,
       preflight: () => Promise.resolve(undefined),
+      confirmFirstDeployment: () => Promise.resolve(true),
       log: (message) => {
         harness.logs.push(message);
       },
@@ -647,6 +653,7 @@ describe('smoke failure liveness (ticket #100)', () => {
       materialize: () => '/tmp/wrangler.tail-liveness.json',
       cleanup: () => undefined,
       preflight: () => Promise.resolve(undefined),
+      confirmFirstDeployment: () => Promise.resolve(true),
       log: (message) => {
         logs.push(message);
       },
@@ -670,7 +677,10 @@ describe('smoke failure liveness (ticket #100)', () => {
         }),
     };
     const runner: DeployCommandRunner = (command, args) => {
-      if (command === 'npm' && args.join(' ').includes('smoke:sandbox')) {
+      if (args.includes('versions') && args.includes('list')) {
+        return Promise.resolve({ exitCode: 0, stdout: '[]' });
+      }
+      if (command === 'npm' && args.join(' ').includes('smoke:health')) {
         return Promise.resolve({ exitCode: 1 });
       }
       return Promise.resolve({ exitCode: 0 });
@@ -699,7 +709,10 @@ describe('sandbox diagnostic tail post-failure drain (ticket #102)', () => {
 
   function failingRunner(): DeployCommandRunner {
     return (command, args) => {
-      if (command === 'npm' && args.join(' ').includes('smoke:sandbox')) {
+      if (args.includes('versions') && args.includes('list')) {
+        return Promise.resolve({ exitCode: 0, stdout: '[]' });
+      }
+      if (command === 'npm' && args.join(' ').includes('smoke:health')) {
         return Promise.resolve({ exitCode: 1 });
       }
       return Promise.resolve({ exitCode: 0 });
@@ -707,7 +720,11 @@ describe('sandbox diagnostic tail post-failure drain (ticket #102)', () => {
   }
 
   function passingRunner(): DeployCommandRunner {
-    return () => Promise.resolve({ exitCode: 0 });
+    return (_command, args) =>
+      Promise.resolve({
+        exitCode: 0,
+        ...(args.includes('versions') && args.includes('list') ? { stdout: '[]' } : {}),
+      });
   }
 
   it('declares a small bounded drain window well inside existing lifecycle bounds', async () => {
@@ -868,6 +885,7 @@ describe('sandbox diagnostic tail post-failure drain (ticket #102)', () => {
       materialize: () => '/tmp/wrangler.tail-drain.json',
       cleanup: () => undefined,
       preflight: () => Promise.resolve(undefined),
+      confirmFirstDeployment: () => Promise.resolve(true),
       log: (message) => {
         logs.push(message);
       },
@@ -920,6 +938,7 @@ describe('sandbox diagnostic tail post-failure drain (ticket #102)', () => {
       materialize: () => '/tmp/wrangler.tail-drain-empty.json',
       cleanup: () => undefined,
       preflight: () => Promise.resolve(undefined),
+      confirmFirstDeployment: () => Promise.resolve(true),
       log: (message) => {
         logs.push(message);
       },
@@ -947,6 +966,7 @@ describe('sandbox diagnostic tail post-failure drain (ticket #102)', () => {
       materialize: () => '/tmp/wrangler.tail-exited.json',
       cleanup: () => undefined,
       preflight: () => Promise.resolve(undefined),
+      confirmFirstDeployment: () => Promise.resolve(true),
       log: (message) => {
         logs.push(message);
       },
@@ -977,6 +997,7 @@ describe('sandbox diagnostic tail post-failure drain (ticket #102)', () => {
       materialize: () => '/tmp/wrangler.tail-success.json',
       cleanup: () => undefined,
       preflight: () => Promise.resolve(undefined),
+      confirmFirstDeployment: () => Promise.resolve(true),
       log: (message) => {
         logs.push(message);
       },
@@ -1006,6 +1027,7 @@ describe('sandbox diagnostic tail post-failure drain (ticket #102)', () => {
       materialize: () => '/tmp/wrangler.tail-redaction.json',
       cleanup: () => undefined,
       preflight: () => Promise.resolve(undefined),
+      confirmFirstDeployment: () => Promise.resolve(true),
       log: (message) => {
         logs.push(message);
       },

@@ -1,5 +1,5 @@
 import type { Env } from '../../env.js';
-import { resolveEffectiveConfig } from '../../config/index.js';
+import { readEffectiveEnvironment, resolveEffectiveConfig } from '../../config/index.js';
 import { createIdentityAuth } from './auth.js';
 import { deferredAuthMailer, type AuthMailer } from './mailer.js';
 import { resolveAuthPolicy } from './policy.js';
@@ -133,7 +133,7 @@ export async function resolveSessionContext(
     logSessionResolveFailure({
       phase: 'config',
       requestId: input.requestId,
-      environment: input.env.ENVIRONMENT ?? 'local',
+      environment: readEffectiveEnvironment(input.env),
     });
     throw error;
   }

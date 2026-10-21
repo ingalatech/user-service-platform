@@ -7,6 +7,8 @@ coverage/
 .env
 .env.*
 !.env.example
+!config/
+!config/environments/
+!config/environments/.env.sandbox
+!config/environments/.env.production
 .DS_Store
-.review-cycle/
-.agent-ticket/

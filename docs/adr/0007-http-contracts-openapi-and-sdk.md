@@ -53,9 +53,11 @@ Once executable application scaffolding exists, CI must:
 
 Before the first external consumer relies on `/v1`, CI must also gain an OpenAPI compatibility-diff gate so breaking changes cannot land accidentally.
 
-## Deferred
+## First consumer integration (ticket #152, operator decision 2026-10-15)
 
-The exact SDK package registry/distribution mechanism and exact OpenAPI compatibility-diff tool are deferred until release automation and the first consumer integration are designed.
+Distribution for this increment: source and generated artifacts are delivered in this repository and consumed from a pinned commit, without npm publication. This was already authorized by spec #150 and ticket #152.
+
+Compatibility tool for this increment: retain the project-owned comparator in `scripts/openapi-compat.ts`, exercised by `npm run openapi:compat` and `test/node/openapi-compat.test.ts`. It is not a claim of universal OpenAPI compatibility analysis. Its supported scope is the contract keywords it compares (`type`, `format`, `required`, `properties`, `items`, `enum`, operations and parameters); documentation text never breaks compatibility, while other changed validation constraints or compositions conservatively require review. Maintenance responsibility stays with this service: retain the meaningful compatible/breaking regression fixtures, preserve the existing compatibility gate, and update the pinned baseline deliberately with breaking-change justification. Revisit registry distribution or an off-the-shelf differ only through a later explicit decision.
 
 ## Research
 

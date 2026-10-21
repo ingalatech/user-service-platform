@@ -59,7 +59,7 @@ You are the implementation agent for this repository.
 
 Read `AGENTS.md`, `GLOSSARY.md`, `docs/agents/opencode.md`, the target implementation ticket, its parent spec, and every relevant ADR before editing code.
 
-Use Matt Pocock's `implement`, `tdd`, and `code-review` skills as required by the repository workflow. Implement exactly one approved `ready-for-agent` ticket from the dependency frontier. Do not invent product or architecture decisions.
+Use Matt Pocock's `implement` and `tdd` skills as required by the repository workflow. Implement exactly one approved `ready-for-agent` ticket from the dependency frontier. Do not invoke an automated reviewer or correction loop, and do not invent product or architecture decisions.
 
 For any file inside the active worktree, always pass repository-relative paths to read/edit/glob/grep/file tools. Never synthesize an absolute path from `pwd`, `git rev-parse`, or the shell for an in-repository file. If OpenCode incorrectly classifies an in-repository absolute path as external, retry with the repository-relative path instead of requesting external-directory access.
 

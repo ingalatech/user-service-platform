@@ -1,6 +1,6 @@
 # Engineering agent contract
 
-This repository is developed through explicit architecture, contracts, vertical slices, tests, and review. Do not introduce new architectural patterns ad hoc.
+This repository is developed through explicit architecture, contracts, vertical slices, tests, and direct pane-based review. Do not introduce new architectural patterns ad hoc.
 
 ## Agent skills
 
@@ -28,7 +28,7 @@ When writing or reviewing TypeScript, consult `.agents/skills/better-typescript/
 
 ### OpenCode implementation
 
-When OpenCode is used as the implementation harness, follow `docs/agents/opencode.md`. Implementation agents work only from approved `ready-for-agent` implementation tickets, one isolated ticket branch/worktree at a time.
+When OpenCode is used as the implementation harness, follow `docs/agents/opencode.md`. P2 implements or corrects one approved `ready-for-agent` ticket in an isolated ticket branch/worktree; P3 reviews directly; P1 coordinates, checks CI, merges, and operates releases.
 
 ## Required workflow
 
@@ -37,7 +37,7 @@ For substantial work, follow this progression:
 1. `wayfinder` while material product or architecture decisions remain unresolved.
 2. `to-spec` once the route is clear.
 3. `to-tickets` to produce dependency-aware tracer-bullet vertical slices.
-4. `implement` one ticket at a time, using TDD where possible and code review before completion.
+4. `implement` one ticket at a time, using TDD where possible, then hand off to the designated direct reviewer.
 
 Do not skip directly from a broad idea to implementation.
 

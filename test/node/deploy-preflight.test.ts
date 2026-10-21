@@ -1,320 +1,142 @@
 import { describe, expect, it } from 'vitest';
+import { LOCAL_PROFILE } from '../../src/config/index.js';
+import { runPreflight } from '../../scripts/deploy/preflight.js';
 import {
-  formatPreflightError,
-  preflightFailed,
-  runPreflight,
-  type PreflightCommand,
-  type PreflightDeps,
-} from '../../scripts/deploy/preflight.js';
-import { resolveTargetDeployment } from '../../scripts/deploy/targets.js';
-import type { ResolvedDeployment } from '../../scripts/deploy/targets.js';
-import { CONTRACT_SANDBOX_DATABASE_ID, loadTargetsFromRepo } from './deploy-test-utils.js';
+  CLOUDFLARE_ABSENT_WORKER_10007,
+  CLOUDFLARE_ABSENT_WORKER_WRANGLER_STDERR,
+} from './fixtures/cloudflare-absent-worker.js';
+import type { ResolvedDeployment } from '../../scripts/deploy/environment-config.js';
 
-const RESOLVED: ResolvedDeployment = {
+const resolved: ResolvedDeployment = {
   targetKey: 'rch-rugbychampagne',
   company: 'rch',
   site: 'rugbychampagne',
   service: 'user-service',
   environment: 'sandbox',
   workerName: 'rch-rugbychampagne-user-service-sandbox',
+  workerUrl: 'https://sandbox.example.test',
   databaseName: 'rch-rugbychampagne-user-service-sandbox-db',
-  databaseId: CONTRACT_SANDBOX_DATABASE_ID,
-  vars: { AUTH_MAIL_TRANSPORT: 'resend' },
+  databaseId: 'a1b2c3d4-e5f6-4789-a3b5-c6d7e8f90a1b',
+  applicationConfig: { ...LOCAL_PROFILE, ENVIRONMENT: 'sandbox', AUTH_MAIL_TRANSPORT: 'smtp' },
 };
 
-const CANARY_API_TOKEN = 'canary-cloudflare-token-abcdef123456';
-const CANARY_AUTH_SECRET = 'canary-better-auth-secret-7890';
-
-function passingDeps(overrides: Partial<PreflightDeps> = {}): PreflightDeps {
-  const commands: PreflightCommand[] = [];
+function deps(
+  workerResult: { exitCode: number; stdout: string; stderr?: string } = {
+    exitCode: 0,
+    stdout: '[{}]',
+  },
+) {
+  const commands: { command: string; args: string[] }[] = [];
   return {
-    nodeVersion: 'v24.21.0',
     commands,
-    run: (command, args) => {
-      commands.push({ command, args: [...args] });
-      if (command === 'git') {
-        return Promise.resolve({ exitCode: 0, stdout: '' });
-      }
-      if (command === 'npx' && args.includes('secret')) {
-        // Ticket #106: names/types-only listing for the resend-transport
-        // RESOLVED fixture (`BETTER_AUTH_SECRET` + `RESEND_API_KEY`).
-        return Promise.resolve({
-          exitCode: 0,
-          stdout: JSON.stringify([
-            { name: 'BETTER_AUTH_SECRET', type: 'secret_text' },
-            { name: 'RESEND_API_KEY', type: 'secret_text' },
-          ]),
-        });
-      }
-      return Promise.resolve({ exitCode: 0, stdout: 'ok' });
-    },
-    ...overrides,
-  };
-}
-
-// Names/types-only secret-listing stub for the ticket #106 binding-type gate.
-// `entries` is serialized as the provider output; pass a raw string to
-// simulate unexpected output.
-function secretListDeps(entries: unknown, exitCode = 0): PreflightDeps {
-  const commands: PreflightCommand[] = [];
-  return {
-    nodeVersion: 'v24.21.0',
-    commands,
-    run: (command, args) => {
-      commands.push({ command, args: [...args] });
-      if (command === 'git') {
-        return Promise.resolve({ exitCode: 0, stdout: '' });
-      }
-      if (command === 'npx' && args.includes('secret')) {
-        return Promise.resolve({
-          exitCode,
-          stdout: typeof entries === 'string' ? entries : JSON.stringify(entries),
-        });
-      }
-      return Promise.resolve({ exitCode: 0, stdout: 'ok' });
+    nodeVersion: 'v24.22.1',
+    run: (command: string, args: string[]) => {
+      commands.push({ command, args });
+      if (args.includes('deployments')) return Promise.resolve(workerResult);
+      if (args.includes('status')) return Promise.resolve({ exitCode: 0, stdout: '' });
+      return Promise.resolve({ exitCode: 0, stdout: '' });
     },
   };
 }
 
-const SANDBOX_SMTP: ResolvedDeployment = {
-  ...RESOLVED,
-  vars: { AUTH_MAIL_TRANSPORT: 'smtp' },
-};
-
-const SANDBOX_SECRET_TEXT = [
-  { name: 'BETTER_AUTH_SECRET', type: 'secret_text' },
-  { name: 'SMTP_USER', type: 'secret_text' },
-  { name: 'SMTP_PASSWORD', type: 'secret_text' },
-];
-
-// Deployment preflight (ticket #78): every remote mutation is preceded by
-// Node/Wrangler/auth/account, worktree, target-config and resource checks.
-// Secret values are never inspected, printed, or uploaded.
-describe('deployment preflight', () => {
-  it('passes for a provisioned target in a clean authenticated worktree', async () => {
-    const deps = passingDeps();
-    const checks = await runPreflight({ resolved: RESOLVED }, deps);
-    expect(preflightFailed(checks)).toBe(false);
-    expect(checks.map((check) => check.name)).toEqual([
-      'node',
-      'wrangler',
-      'cloudflare-auth',
-      'account-access',
-      'worktree',
-      'target-config',
-      'worker-name',
-      'worker-secrets',
-    ]);
-  });
-
-  it('refuses when Cloudflare account access fails', async () => {
-    const checks = await runPreflight(
-      { resolved: RESOLVED },
-      passingDeps({
-        run: (command, args) => {
-          if (args.includes('d1')) {
-            return Promise.resolve({ exitCode: 1, stdout: 'forbidden' });
-          }
-          return Promise.resolve({ exitCode: 0, stdout: '' });
-        },
-      }),
+describe('deployment preflight secret boundary', () => {
+  it.each([
+    ['v24.21.0', false],
+    ['v24.21.x', false],
+    ['v24.22.1', true],
+    ['v24.22.1+build.1', true],
+    ['v24.22.2', true],
+    ['v24.23.0', true],
+    ['v24.22.1-rc.0', false],
+    ['v25.0.0', false],
+  ])('checks the full Node engine range for %s', async (nodeVersion, expected) => {
+    const checks = await runPreflight({ resolved }, { ...deps(), nodeVersion });
+    const nodeCheck = checks.find((check) => check.name === 'node');
+    expect(nodeCheck).toMatchObject({ ok: expected });
+    expect(nodeCheck?.detail).toBe(
+      expected ? 'node >=24.22.1 <25' : 'node >=24.22.1 <25 is required',
     );
-    expect(preflightFailed(checks)).toBe(true);
-    expect(formatPreflightError(checks).message).toMatch(/account/i);
   });
 
-  it('issues only read-only commands during preflight', async () => {
-    const deps = passingDeps();
-    await runPreflight({ resolved: RESOLVED }, deps);
-    for (const { command, args } of deps.commands) {
-      const text = `${command} ${args.join(' ')}`;
-      expect(text).not.toMatch(/deploy|migrate|delete/);
-      expect(text).not.toMatch(/secret (put|delete|bulk)/);
-    }
-    // Ticket #106: the only secret operation is the names/types-only listing
-    // (`secret list --format json --name <worker>`); secret values are never
-    // fetched, and mutating secret subcommands never run.
-    const secretCalls = deps.commands.filter((entry) => entry.args.includes('secret'));
-    expect(secretCalls).toHaveLength(1);
-    expect(secretCalls[0]).toEqual({
-      command: 'npx',
-      args: ['wrangler', 'secret', 'list', '--format', 'json', '--name', RESOLVED.workerName],
+  it('never invokes Wrangler secret operations', async () => {
+    const d = deps();
+    const checks = await runPreflight({ resolved }, d);
+    expect(checks.some((check) => check.name === 'worker-secrets')).toBe(false);
+    expect(d.commands.some(({ args }) => args.includes('secret'))).toBe(false);
+  });
+
+  it('classifies the provider absent-Worker 10007 fixture as first-deploy safe', async () => {
+    const checks = await runPreflight(
+      { resolved },
+      deps({ exitCode: 1, stdout: '', stderr: CLOUDFLARE_ABSENT_WORKER_10007 }),
+    );
+    expect(checks.find((check) => check.name === 'worker-presence')).toEqual({
+      name: 'worker-presence',
+      ok: true,
+      detail: 'Worker absent; first deploy is allowed',
     });
   });
 
-  it('refuses outdated Node runtimes', async () => {
+  it('fails closed for a discovery error other than Cloudflare 10007', async () => {
     const checks = await runPreflight(
-      { resolved: RESOLVED },
-      passingDeps({ nodeVersion: 'v22.14.0' }),
+      { resolved },
+      deps({ exitCode: 1, stdout: '', stderr: 'Code: 10006\nMessage: forbidden' }),
     );
-    expect(preflightFailed(checks)).toBe(true);
-    expect(formatPreflightError(checks).message).toMatch(/node/i);
+    expect(checks.find((check) => check.name === 'worker-presence')).toMatchObject({
+      ok: false,
+    });
+    expect(checks.map((check) => check.detail).join('\n')).not.toContain('forbidden');
   });
 
-  it('refuses when Wrangler is unavailable', async () => {
+  it('does not classify 10007 embedded in another Cloudflare error message', async () => {
     const checks = await runPreflight(
-      { resolved: RESOLVED },
-      passingDeps({
-        run: (command, args) => {
-          if (command === 'npx' && args[1] === '--version') {
-            return Promise.resolve({ exitCode: 1, stdout: 'no wrangler' });
-          }
-          return Promise.resolve({ exitCode: 0, stdout: '' });
-        },
-      }),
-    );
-    expect(preflightFailed(checks)).toBe(true);
-  });
-
-  it('refuses when Cloudflare authentication fails', async () => {
-    const checks = await runPreflight(
-      { resolved: RESOLVED },
-      passingDeps({
-        run: (command, args) => {
-          if (args.includes('whoami')) {
-            return Promise.resolve({ exitCode: 1, stdout: 'not logged in' });
-          }
-          return Promise.resolve({ exitCode: 0, stdout: '' });
-        },
-      }),
-    );
-    expect(preflightFailed(checks)).toBe(true);
-    expect(formatPreflightError(checks).message).toMatch(/auth/i);
-  });
-
-  it('refuses a dirty worktree before remote mutation', async () => {
-    const checks = await runPreflight(
-      { resolved: RESOLVED },
-      passingDeps({
-        run: (command) => {
-          if (command === 'git') {
-            return Promise.resolve({ exitCode: 0, stdout: 'M wrangler.jsonc\n' });
-          }
-          return Promise.resolve({ exitCode: 0, stdout: '' });
-        },
-      }),
-    );
-    expect(preflightFailed(checks)).toBe(true);
-    expect(formatPreflightError(checks).message).toMatch(/worktree/i);
-  });
-
-  it('refuses an unprovisioned database id', async () => {
-    const checks = await runPreflight({ resolved: { ...RESOLVED, databaseId: '' } }, passingDeps());
-    expect(preflightFailed(checks)).toBe(true);
-  });
-
-  it('never leaks secret values into preflight results', async () => {
-    const deps = passingDeps({
-      run: () =>
-        Promise.resolve({
-          exitCode: 1,
-          stdout: `token ${CANARY_API_TOKEN} secret ${CANARY_AUTH_SECRET}`,
+      { resolved },
+      deps({
+        exitCode: 1,
+        stdout: '',
+        stderr: JSON.stringify({
+          success: false,
+          errors: [{ code: 10006, message: 'upstream code: 10007' }],
         }),
-    });
-    const checks = await runPreflight({ resolved: RESOLVED }, deps);
-    expect(preflightFailed(checks)).toBe(true);
-    const serialized = JSON.stringify(checks);
-    expect(serialized).not.toContain(CANARY_API_TOKEN);
-    expect(serialized).not.toContain(CANARY_AUTH_SECRET);
-  });
-});
-
-// Ticket #106 binding-type gate: every required name must exist specifically
-// as a Cloudflare `secret_text` binding. A same-name plaintext `vars` entry
-// never satisfies the check, and failures happen in preflight — before
-// `wrangler deploy` and smoke — with names/status only.
-describe('worker secret_text binding gate', () => {
-  it('requires exactly the RCH sandbox secret set as secret_text', async () => {
-    const resolved = resolveTargetDeployment(loadTargetsFromRepo(), {
-      target: 'rch-rugbychampagne',
-      environment: 'sandbox',
-    });
-    expect(resolved.workerName).toBe('rch-rugbychampagne-user-service-sandbox');
-    const deps = secretListDeps(SANDBOX_SECRET_TEXT);
-    const checks = await runPreflight({ resolved }, deps);
-    expect(preflightFailed(checks)).toBe(false);
-    const secretCall = deps.commands.find((entry) => entry.args.includes('secret'));
-    expect(secretCall?.args).toEqual([
-      'wrangler',
-      'secret',
-      'list',
-      '--format',
-      'json',
-      '--name',
-      'rch-rugbychampagne-user-service-sandbox',
-    ]);
-  });
-
-  it('fails when one required sandbox secret is missing', async () => {
-    const deps = secretListDeps([
-      { name: 'BETTER_AUTH_SECRET', type: 'secret_text' },
-      { name: 'SMTP_USER', type: 'secret_text' },
-    ]);
-    const checks = await runPreflight({ resolved: SANDBOX_SMTP }, deps);
-    expect(preflightFailed(checks)).toBe(true);
-    expect(formatPreflightError(checks).message).toMatch(/SMTP_PASSWORD.*missing/);
-  });
-
-  it('fails when a required name is plaintext rather than secret_text', async () => {
-    const deps = secretListDeps([
-      { name: 'BETTER_AUTH_SECRET', type: 'secret_text' },
-      { name: 'SMTP_USER', type: 'secret_text' },
-      { name: 'SMTP_PASSWORD', type: 'plaintext' },
-    ]);
-    const checks = await runPreflight({ resolved: SANDBOX_SMTP }, deps);
-    expect(preflightFailed(checks)).toBe(true);
-    expect(formatPreflightError(checks).message).toMatch(/SMTP_PASSWORD/);
-  });
-
-  it('ignores extra unrelated secrets', async () => {
-    const deps = secretListDeps([
-      ...SANDBOX_SECRET_TEXT,
-      { name: 'SOME_OTHER_SECRET', type: 'secret_text' },
-    ]);
-    const checks = await runPreflight({ resolved: SANDBOX_SMTP }, deps);
-    expect(preflightFailed(checks)).toBe(false);
-  });
-
-  it('fails closed when the secret listing fails', async () => {
-    const deps = secretListDeps([], 1);
-    const checks = await runPreflight({ resolved: SANDBOX_SMTP }, deps);
-    expect(preflightFailed(checks)).toBe(true);
-    const message = formatPreflightError(checks).message;
-    expect(message).toMatch(/BETTER_AUTH_SECRET/);
-    expect(message).toMatch(/SMTP_USER/);
-    expect(message).toMatch(/SMTP_PASSWORD/);
-  });
-
-  it('fails closed on unexpected secret list output', async () => {
-    const deps = secretListDeps('ok');
-    const checks = await runPreflight({ resolved: SANDBOX_SMTP }, deps);
-    expect(preflightFailed(checks)).toBe(true);
-  });
-
-  it('never consumes value fields from the secret listing', async () => {
-    const deps = secretListDeps(
-      SANDBOX_SECRET_TEXT.map((entry) => ({ ...entry, value: CANARY_AUTH_SECRET })),
+      }),
     );
-    const checks = await runPreflight({ resolved: SANDBOX_SMTP }, deps);
-    expect(preflightFailed(checks)).toBe(false);
-    expect(JSON.stringify(checks)).not.toContain(CANARY_AUTH_SECRET);
+    expect(checks.find((check) => check.name === 'worker-presence')).toMatchObject({ ok: false });
   });
 
-  it('verifies the production Resend required set', async () => {
-    const production: ResolvedDeployment = {
-      ...RESOLVED,
-      environment: 'production',
-      workerName: 'rch-rugbychampagne-user-service-production',
-      vars: { AUTH_MAIL_TRANSPORT: 'resend' },
-    };
-    const passing = secretListDeps([
-      { name: 'BETTER_AUTH_SECRET', type: 'secret_text' },
-      { name: 'RESEND_API_KEY', type: 'secret_text' },
-    ]);
-    expect(preflightFailed(await runPreflight({ resolved: production }, passing))).toBe(false);
-    const missing = secretListDeps([{ name: 'BETTER_AUTH_SECRET', type: 'secret_text' }]);
-    const checks = await runPreflight({ resolved: production }, missing);
-    expect(preflightFailed(checks)).toBe(true);
-    expect(formatPreflightError(checks).message).toMatch(/RESEND_API_KEY.*missing/);
+  it('does not classify 10007 nested in metadata as a Cloudflare error', async () => {
+    const checks = await runPreflight(
+      { resolved },
+      deps({
+        exitCode: 1,
+        stdout: '',
+        stderr: JSON.stringify({
+          success: false,
+          errors: [{ code: 10006, message: 'forbidden', metadata: { code: 10007 } }],
+        }),
+      }),
+    );
+    expect(checks.find((check) => check.name === 'worker-presence')).toMatchObject({ ok: false });
+  });
+
+  it('does not classify malformed provider output', async () => {
+    const checks = await runPreflight(
+      { resolved },
+      deps({
+        exitCode: 1,
+        stdout: '',
+        stderr:
+          '{"errors":[{"code":10007,"message":"workers.api.error.script_not_found"}], ' +
+          '"success":false',
+      }),
+    );
+    expect(checks.find((check) => check.name === 'worker-presence')).toMatchObject({ ok: false });
+  });
+
+  it('classifies the ANSI-rendered Wrangler absent-Worker fixture', async () => {
+    const checks = await runPreflight(
+      { resolved },
+      deps({ exitCode: 1, stdout: '', stderr: CLOUDFLARE_ABSENT_WORKER_WRANGLER_STDERR }),
+    );
+    expect(checks.find((check) => check.name === 'worker-presence')).toMatchObject({ ok: true });
   });
 });

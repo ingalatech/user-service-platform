@@ -1,5 +1,7 @@
 # Probe report: safe reviewer-progress capture + one Standards attempt for PR #154
 
+> Historical research record only. This retired workflow is not operational guidance.
+
 Date: 2026-10-15. Source ticket: #161 (`ready-for-agent`), parent spec #160,
 diagnostic evidence #158 / PR #159. Ticket branch:
 `ticket/161-implement-safe-reviewer-progress-capture-and-one-standards-p`.
