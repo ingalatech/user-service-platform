@@ -1,5 +1,5 @@
 // Runtime variable names and local-only defaults. Remote values are owned by
-// config/environments/.env.<environment> and materialized by release tooling.
+// config/environments/.env.<environment> and compiled by release tooling.
 export const NON_SECRET_VAR_NAMES = [
   'ENVIRONMENT',
   'AUTH_REGISTRATION_ENABLED',
@@ -19,6 +19,11 @@ export const NON_SECRET_VAR_NAMES = [
   'SMTP_PORT',
   'SMTP_SECURE',
 ] as const;
+
+// Wrangler substitutes this identifier during remote bundling. The value is a
+// complete non-secret profile; runtime secrets and infrastructure bindings stay
+// outside the bundle.
+export const COMPILED_CONFIG_DEFINE_NAME = '__USER_SERVICE_COMPILED_CONFIG__' as const;
 
 export type NonSecretVarName = (typeof NON_SECRET_VAR_NAMES)[number];
 export type NonSecretProfile = Record<NonSecretVarName, string>;
@@ -57,8 +62,8 @@ export const LOCAL_PROFILE: NonSecretProfile = freezeProfile({
   SMTP_SECURE: '',
 } satisfies NonSecretProfile);
 
-// Remote profiles are aliases only for the runtime type boundary. They are
-// never used to supply remote values; release files provide every value.
+// These aliases keep the local/test profile API stable. Remote release files
+// provide the actual profile to the materializer instead of these defaults.
 export const SANDBOX_PROFILE = LOCAL_PROFILE;
 export const PRODUCTION_PROFILE = LOCAL_PROFILE;
 export const ENVIRONMENT_PROFILES: Record<CanonicalEnvironment, NonSecretProfile> = {

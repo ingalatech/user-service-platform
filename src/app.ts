@@ -2,6 +2,7 @@ import { OpenAPIHono } from '@hono/zod-openapi';
 import type { Context } from 'hono';
 import { requestId } from 'hono/request-id';
 import { routePath } from 'hono/route';
+import { readEffectiveEnvironment } from './config/index.js';
 import type { Env } from './env.js';
 import { createHealthRouter } from './features/health/index.js';
 import {
@@ -27,7 +28,7 @@ export interface AppBindings {
 // liveness and error paths must never crash on that.
 function readEnvironment(c: Context<AppBindings>): string {
   const bindings = c.env as Partial<Env> | undefined;
-  return bindings?.ENVIRONMENT ?? 'local';
+  return readEffectiveEnvironment(bindings);
 }
 
 // Telemetry-safe request path (ticket #126, ADR-0009): parameterized routes

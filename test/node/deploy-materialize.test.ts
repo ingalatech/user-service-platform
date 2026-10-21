@@ -17,6 +17,7 @@ import {
   resolveRepoWorkerMain,
   writeTempWranglerConfig,
 } from '../../scripts/deploy/materialize.js';
+import { COMPILED_CONFIG_DEFINE_NAME } from '../../src/config/index.js';
 import type { ResolvedDeployment } from '../../scripts/deploy/environment-config.js';
 import {
   CONTRACT_PRODUCTION_DATABASE_ID,
@@ -33,10 +34,24 @@ const SANDBOX_RESOLVED: ResolvedDeployment = {
   workerUrl: 'https://sandbox.example.test',
   databaseName: 'rch-rugbychampagne-user-service-sandbox-db',
   databaseId: CONTRACT_SANDBOX_DATABASE_ID,
-  vars: {
+  applicationConfig: {
+    ENVIRONMENT: 'sandbox',
+    AUTH_REGISTRATION_ENABLED: 'true',
+    AUTH_EMAIL_PASSWORD_ENABLED: 'true',
+    AUTH_REQUIRE_EMAIL_VERIFICATION: 'true',
     AUTH_MAIL_TRANSPORT: 'resend',
     AUTH_MAIL_FROM: 'User Service <jg@ingalatech.com>',
+    AUTH_APP_NAME: 'User Service',
     AUTH_MAIL_ALLOWLIST: 'jonatangarbuyo@gmail.com,jg@ingalatech.com',
+    AUTH_VERIFY_EMAIL_ACTION_URL: '',
+    AUTH_RESET_PASSWORD_ACTION_URL: '',
+    AUTH_JWT_ISSUER: '',
+    AUTH_JWT_AUDIENCE: '',
+    AUTH_JWT_TTL_SECONDS: '',
+    AUTH_GATEWAY_ORIGINS: '',
+    SMTP_HOST: '',
+    SMTP_PORT: '',
+    SMTP_SECURE: '',
   },
 };
 
@@ -75,7 +90,45 @@ describe('wrangler config materialization', () => {
         migrations_dir: expectedMigrationsDir,
       },
     ]);
-    expect(config.vars).toMatchObject({
+    expect(config.define[COMPILED_CONFIG_DEFINE_NAME]).toBe(
+      JSON.stringify(SANDBOX_RESOLVED.applicationConfig),
+    );
+    expect('vars' in config).toBe(false);
+  });
+
+  it('compiles the complete application profile without secret names', () => {
+    const config = buildTargetWranglerConfig(SANDBOX_RESOLVED);
+    const compiled = config.define[COMPILED_CONFIG_DEFINE_NAME];
+    expect(compiled).toBe(JSON.stringify(SANDBOX_RESOLVED.applicationConfig));
+    expect(compiled).toContain('AUTH_MAIL_TRANSPORT');
+    expect(compiled).not.toMatch(
+      /BETTER_AUTH_SECRET|RESEND_API_KEY|SMTP_USER|SMTP_PASSWORD|CLOUDFLARE_API_TOKEN/,
+    );
+  });
+
+  it('materializes distinct compiled profiles for sandbox and production', () => {
+    const productionProfile = { ...SANDBOX_RESOLVED.applicationConfig, ENVIRONMENT: 'production' };
+    const production = buildTargetWranglerConfig({
+      ...SANDBOX_RESOLVED,
+      environment: 'production',
+      workerName: 'rch-rugbychampagne-user-service-production',
+      databaseName: 'rch-rugbychampagne-user-service-production-db',
+      databaseId: CONTRACT_PRODUCTION_DATABASE_ID,
+      applicationConfig: productionProfile,
+    });
+    expect(production.define[COMPILED_CONFIG_DEFINE_NAME]).toBe(JSON.stringify(productionProfile));
+    expect(production.define[COMPILED_CONFIG_DEFINE_NAME]).not.toBe(
+      JSON.stringify(SANDBOX_RESOLVED.applicationConfig),
+    );
+  });
+
+  it('retains the compiled profile values in the Wrangler define entry', () => {
+    const config = buildTargetWranglerConfig(SANDBOX_RESOLVED);
+    const compiled = JSON.parse(config.define[COMPILED_CONFIG_DEFINE_NAME]) as Record<
+      string,
+      string
+    >;
+    expect(compiled).toMatchObject({
       ENVIRONMENT: 'sandbox',
       AUTH_MAIL_TRANSPORT: 'resend',
       AUTH_MAIL_FROM: 'User Service <jg@ingalatech.com>',
@@ -126,7 +179,7 @@ describe('wrangler config materialization', () => {
     const config = buildTargetWranglerConfig(SANDBOX_RESOLVED);
     expect('secrets' in config).toBe(false);
     expect(JSON.stringify(config)).not.toMatch(
-      /wrangler\s+secret|BETTER_AUTH_SECRET|SMTP_PASSWORD/,
+      /wrangler\s+secret|BETTER_AUTH_SECRET|RESEND_API_KEY|SMTP_USER|SMTP_PASSWORD|CLOUDFLARE_API_TOKEN/,
     );
   });
 
@@ -137,14 +190,14 @@ describe('wrangler config materialization', () => {
       workerName: 'rch-rugbychampagne-user-service-production',
       databaseName: 'rch-rugbychampagne-user-service-production-db',
       databaseId: CONTRACT_PRODUCTION_DATABASE_ID,
-      vars: { AUTH_MAIL_TRANSPORT: 'resend' },
+      applicationConfig: { ...SANDBOX_RESOLVED.applicationConfig, ENVIRONMENT: 'production' },
     });
     const sandboxDatabases = (configOf(buildTargetWranglerConfig(SANDBOX_RESOLVED)) ?? []) as {
       database_id: string;
     }[];
     const productionDatabases = (configOf(production) ?? []) as { database_id: string }[];
     expect(sandboxDatabases[0]?.database_id).not.toBe(productionDatabases[0]?.database_id);
-    expect(production.vars).toMatchObject({ ENVIRONMENT: 'production' });
+    expect(production.define[COMPILED_CONFIG_DEFINE_NAME]).toContain('"ENVIRONMENT":"production"');
   });
 
   it('writes and removes the temporary config around deployment', () => {

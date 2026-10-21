@@ -18,8 +18,8 @@ describe('release environment files', () => {
     );
     expect(sandbox.workerName).toContain('-sandbox');
     expect(production.workerName).toContain('-production');
-    expect(sandbox.vars.SMTP_HOST).toBe('smtp.gmail.com');
-    expect(production.vars.SMTP_HOST).toBe('smtp.gmail.com');
+    expect(sandbox.applicationConfig.SMTP_HOST).toBe('smtp.gmail.com');
+    expect(production.applicationConfig.SMTP_HOST).toBe('smtp.gmail.com');
   });
 
   it.each([

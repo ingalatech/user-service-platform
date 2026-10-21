@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { LOCAL_PROFILE } from '../../src/config/index.js';
 import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import {
@@ -48,7 +49,7 @@ const SANDBOX: ResolvedDeployment = {
   databaseName: 'rch-rugbychampagne-user-service-sandbox-db',
   databaseId: CONTRACT_SANDBOX_DATABASE_ID,
   workerUrl: 'https://sandbox.example.test',
-  vars: { AUTH_MAIL_TRANSPORT: 'smtp' },
+  applicationConfig: { ...LOCAL_PROFILE, ENVIRONMENT: 'sandbox', AUTH_MAIL_TRANSPORT: 'smtp' },
 };
 
 const DIRECT = JSON.stringify({

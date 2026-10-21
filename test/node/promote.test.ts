@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { describe, expect, it } from 'vitest';
+import { LOCAL_PROFILE } from '../../src/config/index.js';
 import {
   preparePromotionVersions,
   runPromotionSmoke,
@@ -18,7 +19,7 @@ const SANDBOX: ResolvedDeployment = {
   workerUrl: 'https://sandbox.example.test',
   databaseName: 'rch-rugbychampagne-user-service-sandbox-db',
   databaseId: CONTRACT_SANDBOX_DATABASE_ID,
-  vars: {},
+  applicationConfig: { ...LOCAL_PROFILE, ENVIRONMENT: 'sandbox' },
 };
 
 const PRODUCTION: ResolvedDeployment = {

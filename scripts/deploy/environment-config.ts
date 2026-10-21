@@ -10,6 +10,7 @@ import { resolveEffectiveConfig } from '../../src/config/config.js';
 import { resolveConsumerTokenConfig } from '../../src/features/identity/consumer-tokens.js';
 import { resolveGatewayOrigins } from '../../src/features/identity/origin-guard.js';
 import { validateSmtpSettings } from '../../src/features/identity/smtp-transport.js';
+import type { NonSecretProfile } from '../../src/config/index.js';
 
 const DATABASE_ID_PATTERN =
   /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
@@ -68,7 +69,7 @@ export interface EnvironmentDeployment {
   readonly databaseName: string;
   readonly databaseId: string;
   readonly accountId?: string;
-  readonly vars: Record<string, string>;
+  readonly applicationConfig: NonSecretProfile;
 }
 
 export type ResolvedDeployment = EnvironmentDeployment;
@@ -174,7 +175,7 @@ export function resolveEnvironmentDeployment(
         ].includes(name),
     ).map((name) => [name, file[name]]),
   );
-  resolveEffectiveConfig({ environment, runtime: vars });
+  const applicationConfig = resolveEffectiveConfig({ environment, runtime: vars }).config;
   resolveConsumerTokenConfig({
     environment: 'local',
     issuer: file.AUTH_JWT_ISSUER,
@@ -196,7 +197,7 @@ export function resolveEnvironmentDeployment(
     databaseName: file.D1_NAME,
     databaseId: file.D1_ID,
     accountId: file.CLOUDFLARE_ACCOUNT_ID,
-    vars,
+    applicationConfig,
   };
 }
 

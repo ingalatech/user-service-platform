@@ -2,15 +2,16 @@ import { rmSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ResolvedDeployment } from './environment-config.js';
+import { COMPILED_CONFIG_DEFINE_NAME } from '../../src/config/index.js';
 
 // Temporary Wrangler materialization (ticket #78, ADR-0008).
 //
 // The deployer derives one target-specific Wrangler config from the base
-// application config plus the selected deployment target, so Worker name, D1
-// binding and non-secret deployment vars are target/environment-specific
-// while application code keeps using the stable `DB` binding. The generated
-// file is temporary: the orchestrator removes it even when deployment fails,
-// and it is never committed.
+// application config plus the selected deployment target, so Worker name and
+// D1 binding are target-specific while the complete non-secret application
+// profile is compiled into the bundle. The generated file is temporary: the
+// orchestrator removes it even when deployment fails, and it is never
+// committed.
 //
 // Base application values below mirror the top-level `wrangler.jsonc`
 // (`deploy-materialize.test.ts` fails on drift so the two cannot diverge
@@ -79,7 +80,7 @@ export interface TargetWranglerConfig {
   readonly main: string;
   readonly compatibility_date: typeof BASE_COMPATIBILITY_DATE;
   readonly compatibility_flags: readonly string[];
-  readonly vars: Record<string, string>;
+  readonly define: Readonly<Record<typeof COMPILED_CONFIG_DEFINE_NAME, string>>;
   readonly observability: { readonly enabled: true };
   readonly assets: TargetAssets;
   readonly d1_databases: readonly [TargetD1Binding];
@@ -102,7 +103,9 @@ export function buildTargetWranglerConfig(
     main,
     compatibility_date: BASE_COMPATIBILITY_DATE,
     compatibility_flags: [...BASE_COMPATIBILITY_FLAGS],
-    vars: { ENVIRONMENT: resolved.environment, ...resolved.vars },
+    define: {
+      [COMPILED_CONFIG_DEFINE_NAME]: JSON.stringify(resolved.applicationConfig),
+    },
     observability: { ...BASE_OBSERVABILITY },
     assets: {
       directory: adminDistDir,

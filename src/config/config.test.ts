@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   assertValidNonSecretConfig,
+  readEffectiveEnvironment,
   resolveEffectiveConfig,
   type EffectiveConfig,
 } from './config.js';
@@ -11,6 +12,7 @@ import {
   PRODUCTION_PROFILE,
   SANDBOX_PROFILE,
   SECRET_VAR_NAMES,
+  type NonSecretProfile,
 } from './profiles.js';
 
 // Seam under test (ticket #57, spec #8): the environment configuration
@@ -66,6 +68,62 @@ describe('environment profiles', () => {
 });
 
 describe('resolveEffectiveConfig', () => {
+  it('reads the profile from Wrangler define substitution when present', () => {
+    const compiledProfile = {
+      ...LOCAL_PROFILE,
+      ENVIRONMENT: 'production',
+      AUTH_APP_NAME: 'Bundled User Service',
+    } satisfies NonSecretProfile;
+    vi.stubGlobal('__USER_SERVICE_COMPILED_CONFIG__', compiledProfile);
+
+    try {
+      const effective = resolveEffectiveConfig({
+        environment: 'local',
+        runtime: { AUTH_APP_NAME: 'Local Override' },
+      });
+      expect(effective.config).toEqual(compiledProfile);
+      expect(effective.environment).toBe('production');
+      expect(readEffectiveEnvironment({ ENVIRONMENT: 'local' })).toBe('production');
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('uses the compiled profile and ignores same-name runtime bindings', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const compiledProfile = {
+      ...LOCAL_PROFILE,
+      ENVIRONMENT: 'sandbox',
+      AUTH_APP_NAME: 'Compiled User Service',
+      AUTH_MAIL_TRANSPORT: 'smtp',
+    } satisfies NonSecretProfile;
+
+    try {
+      const effective = resolveEffectiveConfig({
+        environment: 'sandbox',
+        compiledProfile,
+        runtime: {
+          ENVIRONMENT: 'sandbox',
+          AUTH_APP_NAME: 'Dashboard Override',
+          AUTH_MAIL_TRANSPORT: 'inmemory',
+          SMTP_PASSWORD: 'secret-marker',
+        },
+      });
+
+      expect(effective.config).toEqual(compiledProfile);
+      expect(warn).toHaveBeenCalledWith(
+        JSON.stringify({
+          level: 'warn',
+          event: 'config.runtime-binding-ignored',
+          bindings: ['ENVIRONMENT', 'AUTH_MAIL_TRANSPORT', 'AUTH_APP_NAME'],
+        }),
+      );
+      expect(warn.mock.calls.join(' ')).not.toContain('secret-marker');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('selects the local profile when no environment is provided', () => {
     const effective: EffectiveConfig = resolveEffectiveConfig({ runtime: {} });
     expect(effective.environment).toBe('local');
