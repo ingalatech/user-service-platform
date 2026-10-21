@@ -7,6 +7,7 @@ import {
   runPromotion,
   runDeployment,
   smokeEnvironment,
+  versionUrlFor,
   type DeployCommandRunner,
   type DeployIo,
 } from '../../scripts/deploy/orchestrate.js';
@@ -45,6 +46,10 @@ const PRODUCTION: ResolvedDeployment = {
 };
 
 const CANARY = 'canary-deploy-secret-abcdef123456';
+const VERSION_URL_SANDBOX = {
+  ...SANDBOX,
+  workerUrl: 'https://rch-rugbychampagne-user-service-sandbox.rch-evolucion.workers.dev',
+};
 
 interface Harness {
   io: DeployIo;
@@ -275,18 +280,22 @@ describe('deployment orchestration', () => {
     expect(harness.removed).toEqual(['/tmp/wrangler.deploy-test.json']);
   });
 
-  it('blocks promotion when no version-bound behavior evidence seam is configured', async () => {
+  it('runs candidate readiness before deploying the selected immutable version', async () => {
     const harness = createHarness();
     const commands: string[] = [];
+    let candidateUrl = '';
     await expect(
       runPromotion(
-        { resolved: SANDBOX, versionId: 'immutable-v1' },
+        { resolved: VERSION_URL_SANDBOX, versionId: 'immutable-v1' },
         {
           materialize: () => '/tmp/promotion.json',
           cleanup: (path) => harness.removed.push(path),
           preflight: () => Promise.resolve(),
           log: (message) => harness.logs.push(message),
-          smoke: () => Promise.resolve(),
+          smoke: (_resolved, versionUrl) => {
+            candidateUrl = versionUrl;
+            return Promise.resolve();
+          },
         },
         (_command, args) => {
           commands.push(args.join(' '));
@@ -301,8 +310,14 @@ describe('deployment orchestration', () => {
           );
         },
       ),
-    ).rejects.toThrow(/Promotion blocked.*immutable-v1/);
-    expect(commands).toEqual(['wrangler versions list --json --config /tmp/promotion.json']);
+    ).resolves.toBeUndefined();
+    expect(commands).toEqual([
+      'wrangler versions list --json --config /tmp/promotion.json',
+      'wrangler versions deploy immutable-v1@100% --config /tmp/promotion.json',
+    ]);
+    expect(candidateUrl).toBe(
+      'https://immutabl-rch-rugbychampagne-user-service-sandbox.rch-evolucion.workers.dev',
+    );
     expect(harness.removed).toContain('/tmp/promotion.json');
   });
 
@@ -311,7 +326,15 @@ describe('deployment orchestration', () => {
     const commands: string[] = [];
     await expect(
       runPromotion(
-        { resolved: PRODUCTION, versionId: 'immutable-v1', confirm: PRODUCTION.workerName },
+        {
+          resolved: {
+            ...PRODUCTION,
+            workerUrl:
+              'https://rch-rugbychampagne-user-service-production.rch-evolucion.workers.dev',
+          },
+          versionId: 'immutable-v1',
+          confirm: PRODUCTION.workerName,
+        },
         {
           materialize: () => '/tmp/production-promotion.json',
           cleanup: (path) => harness.removed.push(path),
@@ -332,9 +355,10 @@ describe('deployment orchestration', () => {
           );
         },
       ),
-    ).rejects.toThrow(/Promotion blocked.*immutable-v1/);
+    ).resolves.toBeUndefined();
     expect(commands).toEqual([
       'wrangler versions list --json --config /tmp/production-promotion.json',
+      'wrangler versions deploy immutable-v1@100% --config /tmp/production-promotion.json',
     ]);
   });
 
@@ -367,7 +391,7 @@ describe('deployment orchestration', () => {
     const cleaned: string[] = [];
     await expect(
       runPromotion(
-        { resolved: SANDBOX, versionId: 'immutable-v1' },
+        { resolved: VERSION_URL_SANDBOX, versionId: 'immutable-v1' },
         {
           materialize: () => '/tmp/promotion-discovery-failure.json',
           cleanup: (path) => cleaned.push(path),
@@ -388,13 +412,13 @@ describe('deployment orchestration', () => {
     expect(logs.join('\n')).not.toContain('provider-canary');
   });
 
-  it('cleans up and does not smoke when immutable promotion fails', async () => {
+  it('cleans up and does not promote when candidate readiness fails', async () => {
     const commands: string[] = [];
     const cleaned: string[] = [];
     let smokeCalls = 0;
     await expect(
       runPromotion(
-        { resolved: SANDBOX, versionId: 'immutable-v1' },
+        { resolved: VERSION_URL_SANDBOX, versionId: 'immutable-v1' },
         {
           materialize: () => '/tmp/promotion-failure.json',
           cleanup: (path) => cleaned.push(path),
@@ -402,7 +426,7 @@ describe('deployment orchestration', () => {
           log: () => undefined,
           smoke: () => {
             smokeCalls += 1;
-            return Promise.resolve();
+            return Promise.reject(new Error('candidate readiness failed'));
           },
         },
         (_command, args) => {
@@ -414,10 +438,19 @@ describe('deployment orchestration', () => {
           );
         },
       ),
-    ).rejects.toThrow(/Promotion blocked.*immutable-v1/);
+    ).rejects.toThrow(/candidate readiness failed/);
     expect(commands).toHaveLength(1);
-    expect(smokeCalls).toBe(0);
+    expect(smokeCalls).toBe(1);
     expect(cleaned).toEqual(['/tmp/promotion-failure.json']);
+  });
+
+  it('constructs a Version URL from the selected immutable ID and exact Worker host', () => {
+    expect(versionUrlFor(VERSION_URL_SANDBOX, 'immutable-v1')).toBe(
+      'https://immutabl-rch-rugbychampagne-user-service-sandbox.rch-evolucion.workers.dev',
+    );
+    expect(() =>
+      versionUrlFor({ ...SANDBOX, workerUrl: 'https://api.example.test' }, 'immutable-v1'),
+    ).toThrow(/workers.dev/);
   });
 
   it('builds the administration assets before any remote mutation (ticket #124)', async () => {

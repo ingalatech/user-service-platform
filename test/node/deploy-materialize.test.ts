@@ -149,6 +149,7 @@ describe('wrangler config materialization', () => {
     const promotion = buildPromotionWranglerConfig(SANDBOX_RESOLVED);
     expect(promotion).toEqual({
       name: 'rch-rugbychampagne-user-service-sandbox',
+      preview_urls: true,
     });
     expect(promotion).not.toHaveProperty('define');
     expect(promotion).not.toHaveProperty('vars');

@@ -54,12 +54,14 @@ export type PromotionSmokeSpawn = (
 
 export function runPromotionSmoke(
   resolved: DeploymentTarget,
-  spawnFn: PromotionSmokeSpawn = (command, args, options) => spawn(command, [...args], options),
+  baseUrl: string = resolved.workerUrl,
+  spawnFn: PromotionSmokeSpawn = (command, args, options) =>
+    spawn(process.platform === 'win32' ? `${command}.cmd` : command, [...args], options),
 ): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const [command, commandArgs] = promotionSmokeCommand(resolved.environment);
     const child = spawnFn(command, commandArgs, {
-      env: smokeEnvironment(resolved),
+      env: smokeEnvironment({ ...resolved, workerUrl: baseUrl }),
       stdio: 'inherit',
     });
     child.on('error', reject);
@@ -150,7 +152,7 @@ async function main(): Promise<void> {
             if (preflightFailed(checks)) throw formatPreflightError(checks);
           },
           log: console.log,
-          smoke: () => runPromotionSmoke(resolved),
+          smoke: (_deployment, versionUrl) => runPromotionSmoke(resolved, versionUrl),
         },
         run,
       );

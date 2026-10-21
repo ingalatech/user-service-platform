@@ -64,8 +64,8 @@ describe('promotion CLI version selection', () => {
     process.env.SMOKE_SANDBOX_BASE_URL = 'https://inherited.example.test';
     process.env.SMTP_PASSWORD = 'must-not-enter-smoke';
     try {
-      await runPromotionSmoke(SANDBOX, spawnFn);
-      await runPromotionSmoke(PRODUCTION, spawnFn);
+      await runPromotionSmoke(SANDBOX, SANDBOX.workerUrl, spawnFn);
+      await runPromotionSmoke(PRODUCTION, PRODUCTION.workerUrl, spawnFn);
     } finally {
       delete process.env.SMOKE_SANDBOX_BASE_URL;
       delete process.env.SMTP_PASSWORD;

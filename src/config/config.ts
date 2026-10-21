@@ -8,7 +8,7 @@ import {
 
 declare const __USER_SERVICE_COMPILED_CONFIG__: NonSecretProfile | undefined;
 
-const warnedRuntimeBindings = new WeakMap<NonSecretProfile, Set<string>>();
+const warnedRuntimeBindingSignatures = new Set<string>();
 
 // Resolved operational context. `test` is the isolated automated-test
 // context: it reuses the local non-secret shape but is never a deployment
@@ -62,13 +62,8 @@ function warnIgnoredRuntimeBindings(
   );
   if (bindings.length === 0) return;
   const signature = bindings.join('\u0000');
-  const warned = warnedRuntimeBindings.get(compiledProfile);
-  if (warned?.has(signature)) return;
-  if (warned === undefined) {
-    warnedRuntimeBindings.set(compiledProfile, new Set([signature]));
-  } else {
-    warned.add(signature);
-  }
+  if (warnedRuntimeBindingSignatures.has(signature)) return;
+  warnedRuntimeBindingSignatures.add(signature);
   console.warn(
     JSON.stringify({
       level: 'warn',

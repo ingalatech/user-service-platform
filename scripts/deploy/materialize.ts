@@ -131,12 +131,14 @@ export function buildTargetWranglerConfig(
 export interface PromotionWranglerConfig {
   readonly name: string;
   readonly account_id?: string;
+  readonly preview_urls: true;
 }
 
 export function buildPromotionWranglerConfig(target: DeploymentTarget): PromotionWranglerConfig {
   return {
     name: target.workerName,
     ...(target.accountId === undefined ? {} : { account_id: target.accountId }),
+    preview_urls: true,
   };
 }
 

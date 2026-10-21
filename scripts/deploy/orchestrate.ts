@@ -77,13 +77,7 @@ export interface PromotionIo {
   readonly cleanup: (path: string) => void;
   readonly preflight: (resolved: DeploymentTarget) => Promise<void>;
   readonly log: (message: string) => void;
-  readonly smoke: (resolved: DeploymentTarget) => Promise<void>;
-}
-
-export function promotionVerificationBlocked(versionId: string): Error {
-  return new Error(
-    `Promotion blocked for immutable Worker Version ID "${versionId}": no approved version-bound behavior verification seam is configured. Enable and approve a safe Version URL or equivalent candidate test that exercises this exact Version ID before promotion; no traffic mutation was attempted.`,
-  );
+  readonly smoke: (resolved: DeploymentTarget, versionUrl: string) => Promise<void>;
 }
 
 export function promotionSmokeCommand(
@@ -145,14 +139,43 @@ export async function runPromotion(
     if (!parseWorkerVersions(versions).some((version) => version.id === versionId)) {
       throw new Error('The selected immutable Worker Version ID is not available for this Worker.');
     }
-    // Cloudflare documents Version URLs as a possible pre-traffic seam, but
-    // this repository has no configured, approved endpoint and no way to prove
-    // secret-backed behavior for the selected version without guessing. Keep
-    // the command fail-closed until an evidence provider is implemented.
-    throw promotionVerificationBlocked(versionId);
+    const versionUrl = versionUrlFor(request.resolved, versionId);
+    await io.smoke(request.resolved, versionUrl);
+    const promoted = await runner('npx', [
+      'wrangler',
+      'versions',
+      'deploy',
+      `${versionId}@100%`,
+      '--config',
+      configPath,
+    ]);
+    if (promoted.exitCode !== 0) {
+      throw new Error('promote-worker-version failed.');
+    }
+    io.log(`promoted worker=${request.resolved.workerName} version=${versionId}`);
   } finally {
     io.cleanup(configPath);
   }
+}
+
+// Version URLs use the first eight characters of the immutable Version ID and
+// the exact Worker workers.dev hostname. Reject custom domains rather than
+// silently testing the active deployment or another Worker.
+export function versionUrlFor(target: DeploymentTarget, versionId: string): string {
+  const workerUrl = new URL(target.workerUrl);
+  const expectedPrefix = `${target.workerName}.`;
+  if (!workerUrl.hostname.startsWith(expectedPrefix)) {
+    throw new Error(
+      'Promotion requires the target Worker URL to be its workers.dev hostname for Version URL readiness.',
+    );
+  }
+  const subdomain = workerUrl.hostname.slice(expectedPrefix.length);
+  if (subdomain.length === 0 || !subdomain.endsWith('.workers.dev')) {
+    throw new Error(
+      'Promotion requires the target Worker URL to be its workers.dev hostname for Version URL readiness.',
+    );
+  }
+  return `https://${versionId.slice(0, 8)}-${target.workerName}.${subdomain}`;
 }
 
 export interface DeployIo {

@@ -44,9 +44,17 @@ A Worker code rollback is not a data rollback. D1 Time Travel is the emergency p
 
 Smoke tests are required after sandbox and production deployment.
 
-Promotion remains fail-closed until a safe candidate-version behavior check is
-approved and implemented. The check must be tied to the selected immutable
-Version ID and exercise behavior without reading or listing secret values.
+Promotion selects and validates one immutable Version ID, then uses a
+target-only Wrangler config with `preview_urls: true` to construct that
+version's documented Version URL. Readiness runs health followed by anonymous
+Identity against that URL, exercising secret-backed behavior without reading
+or listing secret values. `wrangler versions deploy <id>@100%` is allowed only
+after both checks pass. Version overrides are not used because Cloudflare
+requires the overridden version to already be in the current deployment. See
+Cloudflare's [Version URLs](https://developers.cloudflare.com/workers/versions-and-deployments/version-urls/),
+[Version overrides](https://developers.cloudflare.com/workers/versions-and-deployments/version-overrides/)
+and [deployment management](https://developers.cloudflare.com/workers/versions-and-deployments/deployment-management/)
+documentation.
 
 ## Consequences
 

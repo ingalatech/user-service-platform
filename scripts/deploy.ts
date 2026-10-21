@@ -47,6 +47,10 @@ import type { ResolvedDeployment } from './deploy/environment-config.js';
 
 const execFileAsync = promisify(execFile);
 
+function executable(name: string): string {
+  return process.platform === 'win32' ? `${name}.cmd` : name;
+}
+
 function repoRoot(): string {
   return dirname(dirname(fileURLToPath(import.meta.url)));
 }
@@ -94,7 +98,7 @@ function runInherited(
   options?: DeployCommandOptions,
 ): Promise<{ exitCode: number }> {
   return new Promise((resolvePromise) => {
-    const child = spawn(command, commandArgs, {
+    const child = spawn(executable(command), commandArgs, {
       env:
         options?.env ??
         (accountId === undefined

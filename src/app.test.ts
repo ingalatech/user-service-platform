@@ -1,7 +1,7 @@
 import { env } from 'cloudflare:test';
 import { describe, expect, it, vi } from 'vitest';
 import { createApp } from './app.js';
-import { LOCAL_PROFILE } from './config/index.js';
+import { COMPILED_CONFIG_DEFINE_NAME, LOCAL_PROFILE } from './config/index.js';
 import type { Env } from './env.js';
 
 // Seam under test: unhandled public API paths through the built Worker. Ticket #9
@@ -29,7 +29,7 @@ describe('unhandled routes', () => {
 describe('compiled configuration boundary', () => {
   it('keeps health and anonymous readiness working with reserved runtime bindings', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    vi.stubGlobal('__USER_SERVICE_COMPILED_CONFIG__', {
+    vi.stubGlobal(COMPILED_CONFIG_DEFINE_NAME, {
       ...LOCAL_PROFILE,
       ENVIRONMENT: 'sandbox',
       AUTH_APP_NAME: 'Compiled User Service',
@@ -67,7 +67,7 @@ describe('compiled configuration boundary', () => {
 
   it('does not warn for an unknown runtime binding', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    vi.stubGlobal('__USER_SERVICE_COMPILED_CONFIG__', {
+    vi.stubGlobal(COMPILED_CONFIG_DEFINE_NAME, {
       ...LOCAL_PROFILE,
       ENVIRONMENT: 'sandbox',
       AUTH_MAIL_TRANSPORT: 'inmemory',

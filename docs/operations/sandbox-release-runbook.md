@@ -23,14 +23,13 @@ secrets remain operator-managed outside the repository.
 
    ```text
    nvm use
-   npm run deploy:dry-run -- --env sandbox
+    npm run deploy -- --env sandbox --dry-run
    ```
 
-   The repository command creates and removes its OS-native temporary config;
-   no shell-specific `mktemp`, quoting or trap is required.
-
-   This validates the local bundle and explicit `keep_vars: false`; it does
-   not prove preservation of remote encrypted secrets.
+   This uses the existing deploy dry-run. It runs the real preflight and
+   read-only deployment plan without migrations, upload, deployment or smoke;
+   it validates target selection and `keep_vars: false`, but not remote
+   encrypted-secret presence or inheritance.
 
 6. Run `npm run deploy -- --env sandbox` and confirm the first deployment.
 7. Configure the runtime secrets in the Cloudflare Dashboard. Release tooling
@@ -59,23 +58,21 @@ promotion commands with the production environment file.
 ## Subsequent releases
 
 Use `npm run deploy -- --env sandbox --dry-run` to inspect the read-only
-release plan; it performs preflight reads but does not bundle or upload. Use
-the explicit materialization dry-run in step 5 to exercise bundling, then run
-the deploy command without `--dry-run`. The candidate contains the compiled
-profile and no plaintext application `vars`; the first deployment migrates,
-deploys and checks only `/v1/health`; later candidate uploads do not run an
-automatic smoke. Candidate upload, migration ordering and first-deploy
-confirmation remain unchanged; immutable promotion is currently fail-closed.
+release plan; it performs preflight reads but does not bundle or upload. The
+normal deploy command then materializes the compiled profile, keeps
+`keep_vars: false`, preserves local `.env` isolation, and never places secrets
+in the bundle. The first deployment migrates, deploys and checks only
+`/v1/health`; later candidate uploads do not run an automatic smoke.
 
-Promotion is an explicit local operator action, and it is currently fail-closed.
-`npm run promote -- --env sandbox` may list
-versions and perform read-only preflight, but it refuses before
-`wrangler versions deploy` because the repository has no approved, safe
-behavior-verification seam tied to the selected Version ID. Cloudflare
-documents Version URLs as a possible seam, but enabling them and defining the
-secret-backed candidate checks requires an operator decision for each target.
-Production confirmation does not bypass this gate. No promotion is allowed
-until that evidence contract is implemented and approved.
+Promotion is an explicit local operator action. After selecting and validating
+the immutable Version ID, the command enables Version URLs in its minimal
+target-only Wrangler config, constructs the documented URL from that exact ID,
+and runs health followed by anonymous Identity (`GET /v1/me`) against it. This
+proves secret-backed request wiring without reading secret values. Only after
+both checks pass does it run `wrangler versions deploy <id>@100%`; production
+still requires the exact Worker-name confirmation. This follows Cloudflare's
+[Version URLs documentation](https://developers.cloudflare.com/workers/versions-and-deployments/version-urls/)
+and [deployment management documentation](https://developers.cloudflare.com/workers/versions-and-deployments/deployment-management/).
 
 All malformed, duplicate, unknown or secret environment-file entries fail
 before a provider command. Empty or placeholder D1 IDs fail before remote
@@ -83,17 +80,9 @@ mutation.
 
 ## Safe Wrangler secret-preservation check
 
-The generated target config contains only infrastructure bindings and the
+The generated deployment config contains only infrastructure bindings and the
 compiled non-secret profile. It declares no secrets and does not invoke secret
-management commands. The commands in step 5 are the safe local provider check:
-they bundle the candidate without uploading it. They therefore prove neither
-remote secret presence nor preservation.
-
-The current repository has no approved candidate-version HTTP smoke seam that
-can verify encrypted-secret behavior before traffic activation. A future
-operator may upload a candidate with the normal deploy flow and inspect only
-version and deployment metadata, but metadata cannot prove secret values. Do
-not claim pre-activation secret preservation from that operation, and do not
-use secret listing/get commands or print values. Promotion is enforced
-fail-closed in the command until an approved Version-ID-bound candidate
-verification seam exists.
+management commands. Cloudflare Version URLs use the uploaded version's
+existing configuration and resources; readiness therefore exercises the
+candidate's secret-backed runtime behavior without exposing or asserting any
+secret value. Do not use secret listing/get commands or print values.

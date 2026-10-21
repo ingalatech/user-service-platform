@@ -7,6 +7,7 @@ import {
 } from './config.js';
 import {
   ENVIRONMENT_PROFILES,
+  COMPILED_CONFIG_DEFINE_NAME,
   LOCAL_PROFILE,
   NON_SECRET_VAR_NAMES,
   parseNonSecretProfile,
@@ -85,7 +86,7 @@ describe('resolveEffectiveConfig', () => {
       ENVIRONMENT: 'production',
       AUTH_APP_NAME: 'Bundled User Service',
     } satisfies NonSecretProfile;
-    vi.stubGlobal('__USER_SERVICE_COMPILED_CONFIG__', compiledProfile);
+    vi.stubGlobal(COMPILED_CONFIG_DEFINE_NAME, compiledProfile);
 
     try {
       const effective = resolveEffectiveConfig({
