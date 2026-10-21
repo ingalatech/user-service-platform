@@ -13,6 +13,7 @@ import {
   CONTRACT_PRODUCTION_DATABASE_ID,
   CONTRACT_SANDBOX_DATABASE_ID,
 } from './deploy-test-utils.js';
+import { CLOUDFLARE_ABSENT_WORKER_10007 } from './fixtures/cloudflare-absent-worker.js';
 
 const SANDBOX: ResolvedDeployment = {
   targetKey: 'rch-rugbychampagne',
@@ -191,6 +192,34 @@ describe('deployment orchestration', () => {
     await runDeployment({ resolved: SANDBOX }, io, runner);
 
     expect(harness.commands.some(({ args }) => args.includes('smoke:health'))).toBe(true);
+  });
+
+  it('confirms and deploys when versions discovery returns the absent-Worker 10007 fixture', async () => {
+    const harness = createHarness();
+    const io: DeployIo = {
+      ...harness.io,
+      confirmFirstDeployment: () => Promise.resolve(true),
+    };
+    const runner: DeployCommandRunner = (command, args) => {
+      harness.commands.push({ command, args: [...args] });
+      if (args.includes('versions') && args.includes('list')) {
+        return Promise.resolve({
+          exitCode: 1,
+          stdout: '',
+          stderr: CLOUDFLARE_ABSENT_WORKER_10007,
+        });
+      }
+      return Promise.resolve({ exitCode: 0, stdout: '' });
+    };
+
+    await runDeployment({ resolved: SANDBOX }, io, runner);
+
+    expect(
+      harness.commands.some(({ command, args }) =>
+        `${command} ${args.join(' ')}`.includes('wrangler deploy'),
+      ),
+    ).toBe(true);
+    expect(harness.logs.join('\n')).not.toContain('script_not_found');
   });
 
   it('requires explicit confirmation before the unavoidable first active deployment', async () => {

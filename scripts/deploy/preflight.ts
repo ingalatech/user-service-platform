@@ -1,5 +1,9 @@
 import { assertWorkerName, parseDeployEnvironment } from './naming.js';
-import { parseWorkerDeploymentsOutput, workerDeploymentsListArgs } from './provision-worker.js';
+import {
+  isAbsentWorkerError,
+  parseWorkerDeploymentsOutput,
+  workerDeploymentsListArgs,
+} from './provision-worker.js';
 import { isProvisionedDatabaseId, type ResolvedDeployment } from './environment-config.js';
 
 // Deployment preflight (ticket #78, ADR-0008).
@@ -21,6 +25,7 @@ export interface PreflightCommand {
 export interface PreflightResult {
   readonly exitCode: number;
   readonly stdout: string;
+  readonly stderr?: string;
 }
 
 export interface PreflightDeps {
@@ -142,6 +147,16 @@ async function checkWorkerPresence(
 ): Promise<{ readonly check: PreflightCheck; readonly exists: boolean | undefined }> {
   const listed = await deps.run('npx', [...workerDeploymentsListArgs(resolved.workerName)]);
   if (listed.exitCode !== 0) {
+    if (isAbsentWorkerError(listed.stderr)) {
+      return {
+        check: {
+          name: 'worker-presence',
+          ok: true,
+          detail: 'Worker absent; first deploy is allowed',
+        },
+        exists: false,
+      };
+    }
     return {
       check: {
         name: 'worker-presence',

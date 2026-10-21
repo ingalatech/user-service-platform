@@ -98,7 +98,9 @@ function runInherited(
         accountId === undefined
           ? process.env
           : { ...process.env, CLOUDFLARE_ACCOUNT_ID: accountId },
-      stdio: 'inherit',
+      // Provider stderr is never operator output. Discovery captures it for
+      // code classification; mutating commands expose only their exit code.
+      stdio: ['inherit', 'inherit', 'ignore'],
     });
     child.on('error', () => {
       resolvePromise({ exitCode: 1 });
@@ -107,6 +109,14 @@ function runInherited(
       resolvePromise({ exitCode: code ?? 1 });
     });
   });
+}
+
+function processStderr(error: unknown): string {
+  if (typeof error === 'object' && error !== null && 'stderr' in error) {
+    const stderr = (error as { readonly stderr?: unknown }).stderr;
+    return typeof stderr === 'string' ? stderr : '';
+  }
+  return '';
 }
 
 async function main(): Promise<void> {
@@ -167,8 +177,8 @@ async function main(): Promise<void> {
                     : { ...process.env, CLOUDFLARE_ACCOUNT_ID: target.accountId },
               });
               return { exitCode: 0, stdout };
-            } catch {
-              return { exitCode: 1, stdout: '' };
+            } catch (error: unknown) {
+              return { exitCode: 1, stdout: '', stderr: processStderr(error) };
             }
           },
         },
@@ -226,8 +236,8 @@ async function main(): Promise<void> {
                 : { ...process.env, CLOUDFLARE_ACCOUNT_ID: resolved.accountId },
           });
           return { exitCode: 0, stdout };
-        } catch {
-          return { exitCode: 1, stdout: '' };
+        } catch (error: unknown) {
+          return { exitCode: 1, stdout: '', stderr: processStderr(error) };
         }
       }
       return runInherited(command, commandArgs, resolved.accountId);

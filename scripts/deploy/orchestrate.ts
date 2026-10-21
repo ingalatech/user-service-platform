@@ -1,5 +1,6 @@
 import type { ResolvedDeployment } from './environment-config.js';
 import { parseWorkerVersions } from './versions.js';
+import { isAbsentWorkerError } from './provision-worker.js';
 import {
   drainSessionFailureTail,
   parseTailLines,
@@ -49,6 +50,7 @@ export interface DeployRequest {
 export interface DeployCommandResult {
   readonly exitCode: number;
   readonly stdout?: string;
+  readonly stderr?: string;
 }
 
 export type DeployCommandRunner = (command: string, args: string[]) => Promise<DeployCommandResult>;
@@ -338,14 +340,16 @@ export async function runDeployment(
       '--config',
       configPath,
     ]);
-    if (versions.exitCode !== 0) {
+    if (versions.exitCode !== 0 && !isAbsentWorkerError(versions.stderr)) {
       throw new Error('list-worker-versions failed.');
     }
-    let existingVersions: unknown;
-    try {
-      existingVersions = JSON.parse(versions.stdout ?? '[]') as unknown;
-    } catch {
-      throw new Error('Unable to determine whether the Worker already exists.');
+    let existingVersions: unknown = [];
+    if (versions.exitCode === 0) {
+      try {
+        existingVersions = JSON.parse(versions.stdout ?? '[]') as unknown;
+      } catch {
+        throw new Error('Unable to determine whether the Worker already exists.');
+      }
     }
     if (!Array.isArray(existingVersions)) {
       throw new Error('Unable to determine whether the Worker already exists.');
