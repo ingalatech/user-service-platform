@@ -12,6 +12,7 @@ import {
   type DeployIo,
 } from '../../scripts/deploy/orchestrate.js';
 import { parseWorkerVersionDetails } from '../../scripts/deploy/versions.js';
+import { buildVersionManifest } from '../../scripts/deploy/manifest.js';
 import type { ResolvedDeployment } from '../../scripts/deploy/environment-config.js';
 import {
   formatPreflightError,
@@ -51,11 +52,16 @@ const VERSION_URL_SANDBOX = {
   ...SANDBOX,
   workerUrl: 'https://rch-rugbychampagne-user-service-sandbox.rch-evolucion.workers.dev',
 };
+const VERSION_MANIFEST = buildVersionManifest(SANDBOX.applicationConfig);
 const VERSION_DETAILS = JSON.stringify({
   id: 'immutable-v1',
   metadata: { created_on: '2026-10-20T12:00:00Z' },
   preview_url:
     'https://authoritative-rch-rugbychampagne-user-service-sandbox.rch-evolucion.workers.dev',
+  annotations: {
+    'workers/message': VERSION_MANIFEST.message,
+    'workers/tag': VERSION_MANIFEST.tag,
+  },
   resources: {
     bindings: [
       { name: 'BETTER_AUTH_SECRET', type: 'secret_text' },
@@ -233,6 +239,9 @@ describe('deployment orchestration', () => {
     expect(text.some((entry) => entry.includes('wrangler versions upload'))).toBe(true);
     expect(text.some((entry) => entry.includes('wrangler deploy --config'))).toBe(false);
     expect(text.some((entry) => entry.includes('smoke:health'))).toBe(false);
+    const upload = harness.commands.find(({ args }) => args.includes('upload'));
+    expect(upload?.args.some((arg) => arg.startsWith(VERSION_MANIFEST.message))).toBe(true);
+    expect(upload?.args).toContain(VERSION_MANIFEST.tag);
     expect(harness.logs).toContain(
       'candidate uploaded; stable-origin smoke is deferred until promotion',
     );
@@ -346,7 +355,7 @@ describe('deployment orchestration', () => {
     ).resolves.toBeUndefined();
     expect(commands).toEqual([
       'wrangler versions list --json --config /tmp/promotion.json',
-      'wrangler versions view --json --version-id immutable-v1 --config /tmp/promotion.json',
+      'wrangler versions view --json immutable-v1 --config /tmp/promotion.json',
       'wrangler versions deploy immutable-v1@100% --config /tmp/promotion.json',
     ]);
     expect(candidateUrl).toBe(
@@ -394,7 +403,7 @@ describe('deployment orchestration', () => {
     ).resolves.toBeUndefined();
     expect(commands).toEqual([
       'wrangler versions list --json --config /tmp/production-promotion.json',
-      'wrangler versions view --json --version-id immutable-v1 --config /tmp/production-promotion.json',
+      'wrangler versions view --json immutable-v1 --config /tmp/production-promotion.json',
       'wrangler versions deploy immutable-v1@100% --config /tmp/production-promotion.json',
     ]);
   });
@@ -482,6 +491,53 @@ describe('deployment orchestration', () => {
     expect(commands[1]).toContain('versions view');
     expect(smokeCalls).toBe(1);
     expect(cleaned).toEqual(['/tmp/promotion-failure.json']);
+  });
+
+  it('fails closed for an existing candidate without a release manifest', async () => {
+    const commands: string[] = [];
+    let smokeCalls = 0;
+    await expect(
+      runPromotion(
+        { resolved: VERSION_URL_SANDBOX, versionId: 'immutable-v1' },
+        {
+          materialize: () => '/tmp/promotion-missing-manifest.json',
+          cleanup: () => undefined,
+          preflight: () => Promise.resolve(),
+          log: () => undefined,
+          smoke: () => {
+            smokeCalls += 1;
+            return Promise.resolve();
+          },
+        },
+        (_command, args) => {
+          commands.push(args.join(' '));
+          return Promise.resolve(
+            args.includes('list')
+              ? { exitCode: 0, stdout: JSON.stringify([{ id: 'immutable-v1' }]) }
+              : args.includes('view')
+                ? {
+                    exitCode: 0,
+                    stdout: JSON.stringify({
+                      id: 'immutable-v1',
+                      metadata: { created_on: '2026-10-20T12:00:00Z' },
+                      resources: {
+                        bindings: [
+                          { name: 'BETTER_AUTH_SECRET', type: 'secret_text' },
+                          { name: 'RESEND_API_KEY', type: 'secret_text' },
+                        ],
+                      },
+                    }),
+                  }
+                : { exitCode: 0 },
+          );
+        },
+      ),
+    ).rejects.toThrow(/release manifest/);
+    expect(commands).toEqual([
+      'wrangler versions list --json --config /tmp/promotion-missing-manifest.json',
+      'wrangler versions view --json immutable-v1 --config /tmp/promotion-missing-manifest.json',
+    ]);
+    expect(smokeCalls).toBe(0);
   });
 
   it('constructs a Version URL only after full-ID metadata verification', () => {

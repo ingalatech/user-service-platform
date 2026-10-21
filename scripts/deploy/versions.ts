@@ -14,11 +14,21 @@ export interface WorkerVersionSummary {
 
 export interface WorkerVersionDetails extends WorkerVersionSummary {
   readonly previewUrl?: string;
+  readonly annotationValues: Readonly<Record<string, string>>;
   readonly secretBindings: ReadonlyMap<string, string>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function stringAnnotations(value: unknown): Readonly<Record<string, string>> {
+  if (!isRecord(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value).flatMap(([name, annotation]) =>
+      typeof annotation === 'string' ? [[name, annotation]] : [],
+    ),
+  );
 }
 
 export function summarizeWorkerVersion(value: unknown): WorkerVersionSummary | undefined {
@@ -59,6 +69,7 @@ export function parseWorkerVersionDetails(value: unknown): WorkerVersionDetails 
   return {
     ...summary,
     ...(typeof record.preview_url === 'string' ? { previewUrl: record.preview_url } : {}),
+    annotationValues: stringAnnotations(record.annotations),
     secretBindings,
   };
 }

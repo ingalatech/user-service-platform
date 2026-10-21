@@ -5,6 +5,11 @@ import {
   parseWorkerVersions,
   type WorkerVersionDetails,
 } from './versions.js';
+import {
+  buildVersionManifest,
+  parseVersionManifest,
+  requiredSecretNamesForTransport,
+} from './manifest.js';
 import { isAbsentWorkerError } from './provision-worker.js';
 import {
   drainSessionFailureTail,
@@ -85,13 +90,6 @@ export interface PromotionIo {
   readonly smoke: (resolved: DeploymentTarget, versionUrl: string) => Promise<void>;
 }
 
-const REQUIRED_PROMOTION_SECRETS = [
-  'BETTER_AUTH_SECRET',
-  'RESEND_API_KEY',
-  'SMTP_USER',
-  'SMTP_PASSWORD',
-] as const;
-
 export function promotionSmokeCommand(
   environment: DeploymentTarget['environment'],
 ): readonly [string, readonly string[]] {
@@ -156,7 +154,6 @@ export async function runPromotion(
       'versions',
       'view',
       '--json',
-      '--version-id',
       versionId,
       '--config',
       configPath,
@@ -172,7 +169,11 @@ export async function runPromotion(
     if (versionDetails?.id !== versionId) {
       throw new Error('Selected Worker Version metadata does not match the full Version ID.');
     }
-    assertRequiredSecretBindings(versionDetails, REQUIRED_PROMOTION_SECRETS);
+    const manifest = parseVersionManifest(versionDetails.annotationValues);
+    assertRequiredSecretBindings(
+      versionDetails,
+      requiredSecretNamesForTransport(manifest.mailTransport),
+    );
     const versionUrl = versionUrlForVerifiedVersion(request.resolved, versionDetails);
     await io.smoke(request.resolved, versionUrl);
     const promoted = await runner('npx', [
@@ -496,7 +497,7 @@ export async function runDeployment(
     } else {
       const source = (await io.sourceMetadata?.()) ?? { commit: 'unknown', branch: 'unknown' };
       const tag = new Date().toISOString();
-      const readableTag = `candidate-${source.commit}-${tag.replace(/[:.]/g, '-')}`;
+      const manifest = buildVersionManifest(request.resolved.applicationConfig);
       await runStep(
         'deploy-worker',
         'npx',
@@ -505,9 +506,9 @@ export async function runDeployment(
           'versions',
           'upload',
           '--message',
-          `commit=${source.commit} branch=${source.branch} uploaded=${tag}`,
+          `${manifest.message} commit=${source.commit} branch=${source.branch} uploaded=${tag}`,
           '--tag',
-          readableTag,
+          manifest.tag,
           '--config',
           configPath,
         ],
