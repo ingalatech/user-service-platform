@@ -2,6 +2,7 @@ import { OpenAPIHono } from '@hono/zod-openapi';
 import type { Context } from 'hono';
 import { requestId } from 'hono/request-id';
 import { routePath } from 'hono/route';
+import { readEffectiveEnvironment } from './config/index.js';
 import type { Env } from './env.js';
 import { createHealthRouter } from './features/health/index.js';
 import {
@@ -25,9 +26,9 @@ export interface AppBindings {
 // Hono types `c.env` as always defined, but requests driven via
 // `app.request()` without an explicit Env leave it undefined at runtime;
 // liveness and error paths must never crash on that.
-function readEnvironment(c: Context<AppBindings>): string {
+function readEnvironment(c: Context<AppBindings>, warningState: Set<string>): string {
   const bindings = c.env as Partial<Env> | undefined;
-  return bindings?.ENVIRONMENT ?? 'local';
+  return readEffectiveEnvironment(bindings, warningState);
 }
 
 // Telemetry-safe request path (ticket #126, ADR-0009): parameterized routes
@@ -106,6 +107,7 @@ async function serveAdminAsset(c: Context<AppBindings>, path: string): Promise<R
 }
 
 export function createApp(identityOptions: IdentityRouterOptions = {}) {
+  const warningState = new Set<string>();
   const app = new OpenAPIHono<AppBindings>({
     // Contract-wide validation failure shape: invalid public API input uses the
     // RFC 9457 Problem Details envelope instead of the framework default.
@@ -144,7 +146,7 @@ export function createApp(identityOptions: IdentityRouterOptions = {}) {
       path: loggedPath(c),
       status: c.res.status,
       durationMs: Date.now() - started,
-      environment: readEnvironment(c),
+      environment: readEnvironment(c, warningState),
     };
     console.log(JSON.stringify(record));
   });
@@ -193,7 +195,7 @@ export function createApp(identityOptions: IdentityRouterOptions = {}) {
         path: loggedPath(c),
         status: 500,
         code: 'internal-error',
-        environment: readEnvironment(c),
+        environment: readEnvironment(c, warningState),
       }),
     );
     return c.json(

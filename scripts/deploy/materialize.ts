@@ -1,16 +1,17 @@
 import { rmSync, writeFileSync } from 'node:fs';
 import { dirname, isAbsolute, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { ResolvedDeployment } from './environment-config.js';
+import type { DeploymentTarget, ResolvedDeployment } from './environment-config.js';
+import { COMPILED_CONFIG_DEFINE_NAME } from '../../src/config/index.js';
 
 // Temporary Wrangler materialization (ticket #78, ADR-0008).
 //
 // The deployer derives one target-specific Wrangler config from the base
-// application config plus the selected deployment target, so Worker name, D1
-// binding and non-secret deployment vars are target/environment-specific
-// while application code keeps using the stable `DB` binding. The generated
-// file is temporary: the orchestrator removes it even when deployment fails,
-// and it is never committed.
+// application config plus the selected deployment target, so Worker name and
+// D1 binding are target-specific while the complete non-secret application
+// profile is compiled into the bundle. The generated file is temporary: the
+// orchestrator removes it even when deployment fails, and it is never
+// committed.
 //
 // Base application values below mirror the top-level `wrangler.jsonc`
 // (`deploy-materialize.test.ts` fails on drift so the two cannot diverge
@@ -19,6 +20,7 @@ import type { ResolvedDeployment } from './environment-config.js';
 export const BASE_WORKER_MAIN = 'src/index.ts';
 export const BASE_COMPATIBILITY_DATE = '2026-08-22';
 export const BASE_COMPATIBILITY_FLAGS: readonly string[] = ['nodejs_compat'];
+export const BASE_KEEP_VARS = false;
 export const BASE_OBSERVABILITY: { readonly enabled: true } = { enabled: true };
 // Administration SPA assets (ticket #124, ADR-0012). The base
 // `wrangler.jsonc` serves the built `admin/dist` directory through the
@@ -79,10 +81,23 @@ export interface TargetWranglerConfig {
   readonly main: string;
   readonly compatibility_date: typeof BASE_COMPATIBILITY_DATE;
   readonly compatibility_flags: readonly string[];
-  readonly vars: Record<string, string>;
+  readonly keep_vars: false;
+  readonly preview_urls: true;
+  readonly define: Readonly<Record<typeof COMPILED_CONFIG_DEFINE_NAME, string>>;
   readonly observability: { readonly enabled: true };
   readonly assets: TargetAssets;
   readonly d1_databases: readonly [TargetD1Binding];
+}
+
+// The esbuild define token must remain a declared identifier in the Worker
+// source, so that token cannot be imported as a runtime value. This guard
+// inspects the actual materialized config instead: it fails if the generated
+// bundle input ever gains a second key or drifts from the one canonical name.
+export function assertCompiledConfigDefineContract(config: TargetWranglerConfig): void {
+  const keys = Object.keys(config.define);
+  if (keys.length !== 1 || keys[0] !== COMPILED_CONFIG_DEFINE_NAME) {
+    throw new Error('Materialized Wrangler define does not match the canonical compiled profile.');
+  }
 }
 
 export function buildTargetWranglerConfig(
@@ -102,7 +117,11 @@ export function buildTargetWranglerConfig(
     main,
     compatibility_date: BASE_COMPATIBILITY_DATE,
     compatibility_flags: [...BASE_COMPATIBILITY_FLAGS],
-    vars: { ENVIRONMENT: resolved.environment, ...resolved.vars },
+    keep_vars: BASE_KEEP_VARS,
+    preview_urls: true,
+    define: {
+      [COMPILED_CONFIG_DEFINE_NAME]: JSON.stringify(resolved.applicationConfig),
+    },
     observability: { ...BASE_OBSERVABILITY },
     assets: {
       directory: adminDistDir,
@@ -119,7 +138,22 @@ export function buildTargetWranglerConfig(
       },
     ],
   };
+  assertCompiledConfigDefineContract(config);
   return config;
+}
+
+export interface PromotionWranglerConfig {
+  readonly name: string;
+  readonly account_id?: string;
+  readonly preview_urls: true;
+}
+
+export function buildPromotionWranglerConfig(target: DeploymentTarget): PromotionWranglerConfig {
+  return {
+    name: target.workerName,
+    ...(target.accountId === undefined ? {} : { account_id: target.accountId }),
+    preview_urls: true,
+  };
 }
 
 // Writes the materialized config into an operator-provided directory (the
@@ -135,6 +169,15 @@ export function writeTempWranglerConfig(
     `${JSON.stringify(buildTargetWranglerConfig(resolved, options), null, 2)}\n`,
     'utf8',
   );
+  return path;
+}
+
+export function writeTempPromotionWranglerConfig(
+  target: DeploymentTarget,
+  directory: string,
+): string {
+  const path = join(directory, `wrangler.${target.workerName}.json`);
+  writeFileSync(path, `${JSON.stringify(buildPromotionWranglerConfig(target), null, 2)}\n`, 'utf8');
   return path;
 }
 

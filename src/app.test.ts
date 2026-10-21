@@ -1,6 +1,7 @@
 import { env } from 'cloudflare:test';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createApp } from './app.js';
+import { COMPILED_CONFIG_DEFINE_NAME, LOCAL_PROFILE } from './config/index.js';
 import type { Env } from './env.js';
 
 // Seam under test: unhandled public API paths through the built Worker. Ticket #9
@@ -22,6 +23,68 @@ describe('unhandled routes', () => {
       code: 'not-found',
       instance: '/v1/does-not-exist',
     });
+  });
+});
+
+describe('compiled configuration boundary', () => {
+  it('keeps health and anonymous readiness working with reserved runtime bindings', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.stubGlobal(COMPILED_CONFIG_DEFINE_NAME, {
+      ...LOCAL_PROFILE,
+      ENVIRONMENT: 'sandbox',
+      AUTH_APP_NAME: 'Compiled User Service',
+      AUTH_MAIL_TRANSPORT: 'inmemory',
+    });
+    const app = createApp();
+    const runtime: Env = {
+      DB: env.DB,
+      ENVIRONMENT: 'dashboard-override',
+      AUTH_APP_NAME: 'Dashboard Override',
+      BETTER_AUTH_SECRET: 'test-runtime-secret',
+    };
+
+    try {
+      const health = await app.request('/v1/health', {}, runtime);
+      const anonymous = await app.request('/v1/me', {}, runtime);
+
+      expect(health.status).toBe(200);
+      expect(anonymous.status).toBe(401);
+      expect(await anonymous.json()).toMatchObject({ code: 'unauthenticated' });
+      expect(warn).toHaveBeenCalledWith(
+        JSON.stringify({
+          level: 'warn',
+          event: 'config.runtime-binding-ignored',
+          bindings: ['ENVIRONMENT', 'AUTH_APP_NAME'],
+        }),
+      );
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn.mock.calls.join(' ')).not.toContain('Dashboard Override');
+    } finally {
+      warn.mockRestore();
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it('does not warn for an unknown runtime binding', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.stubGlobal(COMPILED_CONFIG_DEFINE_NAME, {
+      ...LOCAL_PROFILE,
+      ENVIRONMENT: 'sandbox',
+      AUTH_MAIL_TRANSPORT: 'inmemory',
+    });
+    const app = createApp();
+    const runtime: Env = { DB: env.DB, BETTER_AUTH_SECRET: 'test-runtime-secret' };
+    Object.assign(runtime, { UNKNOWN_DASHBOARD_BINDING: 'ignored-value' });
+
+    try {
+      const anonymous = await app.request('/v1/me', {}, runtime);
+
+      expect(anonymous.status).toBe(401);
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      warn.mockRestore();
+      vi.unstubAllGlobals();
+    }
   });
 });
 

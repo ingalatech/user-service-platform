@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { LOCAL_PROFILE } from '../../src/config/index.js';
 import { runPreflight } from '../../scripts/deploy/preflight.js';
 import {
   CLOUDFLARE_ABSENT_WORKER_10007,
@@ -16,7 +17,7 @@ const resolved: ResolvedDeployment = {
   workerUrl: 'https://sandbox.example.test',
   databaseName: 'rch-rugbychampagne-user-service-sandbox-db',
   databaseId: 'a1b2c3d4-e5f6-4789-a3b5-c6d7e8f90a1b',
-  vars: { AUTH_MAIL_TRANSPORT: 'smtp' },
+  applicationConfig: { ...LOCAL_PROFILE, ENVIRONMENT: 'sandbox', AUTH_MAIL_TRANSPORT: 'smtp' },
 };
 
 function deps(

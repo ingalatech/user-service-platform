@@ -1,5 +1,10 @@
-import type { ResolvedDeployment } from './environment-config.js';
-import { parseWorkerVersions } from './versions.js';
+import type { DeploymentTarget, ResolvedDeployment } from './environment-config.js';
+import {
+  assertRequiredSecretBindings,
+  parseWorkerVersionDetails,
+  parseWorkerVersions,
+  type WorkerVersionDetails,
+} from './versions.js';
 import { isAbsentWorkerError } from './provision-worker.js';
 import {
   drainSessionFailureTail,
@@ -26,6 +31,9 @@ export type { SessionFailureTailHandle } from './diagnostic-tail.js';
 // implicitly. A dry run executes the read-only preflight and then returns
 // without running any mutating deployment command. The
 // temporary config is removed in `finally`, even when deployment fails.
+// Promotion is deliberately narrower: it receives only target identity and
+// uses a minimal Wrangler config, so changing the current environment profile
+// cannot rebuild or alter the immutable version selected for promotion.
 //
 // Secret boundary: the orchestrator passes Cloudflare credentials through by
 // inheritance (child processes keep their own environment) and never reads,
@@ -64,25 +72,33 @@ export type DeployCommandRunner = (
 ) => Promise<DeployCommandResult>;
 
 export interface PromotionRequest {
-  readonly resolved: ResolvedDeployment;
+  readonly resolved: DeploymentTarget;
   readonly versionId: string;
   readonly confirm?: string;
 }
 
-export interface PromotionIo extends Pick<
-  DeployIo,
-  'materialize' | 'cleanup' | 'preflight' | 'log'
-> {
-  readonly smoke: (resolved: ResolvedDeployment) => Promise<void>;
+export interface PromotionIo {
+  readonly materialize: (resolved: DeploymentTarget) => string;
+  readonly cleanup: (path: string) => void;
+  readonly preflight: (resolved: DeploymentTarget) => Promise<void>;
+  readonly log: (message: string) => void;
+  readonly smoke: (resolved: DeploymentTarget, versionUrl: string) => Promise<void>;
 }
 
+const REQUIRED_PROMOTION_SECRETS = [
+  'BETTER_AUTH_SECRET',
+  'RESEND_API_KEY',
+  'SMTP_USER',
+  'SMTP_PASSWORD',
+] as const;
+
 export function promotionSmokeCommand(
-  environment: ResolvedDeployment['environment'],
+  environment: DeploymentTarget['environment'],
 ): readonly [string, readonly string[]] {
   return ['npm', ['run', environment === 'production' ? 'smoke:production' : 'smoke:readiness']];
 }
 
-export function smokeEnvironment(resolved: ResolvedDeployment): NodeJS.ProcessEnv {
+export function smokeEnvironment(resolved: DeploymentTarget): NodeJS.ProcessEnv {
   const workerUrl = resolved.workerUrl.trim();
   if (workerUrl.length === 0) {
     throw new Error('Cannot run smoke without the selected environment Worker URL.');
@@ -135,6 +151,30 @@ export async function runPromotion(
     if (!parseWorkerVersions(versions).some((version) => version.id === versionId)) {
       throw new Error('The selected immutable Worker Version ID is not available for this Worker.');
     }
+    const viewed = await runner('npx', [
+      'wrangler',
+      'versions',
+      'view',
+      '--json',
+      '--version-id',
+      versionId,
+      '--config',
+      configPath,
+    ]);
+    if (viewed.exitCode !== 0) throw new Error('view-worker-version failed.');
+    let versionDetailsValue: unknown;
+    try {
+      versionDetailsValue = JSON.parse(viewed.stdout ?? 'null') as unknown;
+    } catch {
+      throw new Error('Unable to read selected Worker Version metadata.');
+    }
+    const versionDetails = parseWorkerVersionDetails(versionDetailsValue);
+    if (versionDetails?.id !== versionId) {
+      throw new Error('Selected Worker Version metadata does not match the full Version ID.');
+    }
+    assertRequiredSecretBindings(versionDetails, REQUIRED_PROMOTION_SECRETS);
+    const versionUrl = versionUrlForVerifiedVersion(request.resolved, versionDetails);
+    await io.smoke(request.resolved, versionUrl);
     const promoted = await runner('npx', [
       'wrangler',
       'versions',
@@ -146,11 +186,54 @@ export async function runPromotion(
     if (promoted.exitCode !== 0) {
       throw new Error('promote-worker-version failed.');
     }
-    await io.smoke(request.resolved);
     io.log(`promoted worker=${request.resolved.workerName} version=${versionId}`);
   } finally {
     io.cleanup(configPath);
   }
+}
+
+// Version URLs use the first eight characters of the immutable Version ID and
+// the exact Worker workers.dev hostname. Reject custom domains rather than
+// silently testing the active deployment or another Worker.
+export function versionUrlForVerifiedVersion(
+  target: DeploymentTarget,
+  version: WorkerVersionDetails,
+): string {
+  const versionId = version.id;
+  const authoritativeUrl = version.previewUrl;
+  if (authoritativeUrl !== undefined) {
+    const parsed = new URL(authoritativeUrl);
+    const targetWorkerUrl = new URL(target.workerUrl);
+    const expectedSuffix = `-${target.workerName}.${targetWorkerUrl.hostname.slice(`${target.workerName}.`.length)}`;
+    if (
+      parsed.protocol !== 'https:' ||
+      !parsed.hostname.endsWith('.workers.dev') ||
+      !parsed.hostname.endsWith(expectedSuffix)
+    ) {
+      throw new Error(
+        'Cloudflare returned an invalid Version URL for the selected Worker Version.',
+      );
+    }
+    return parsed.toString().replace(/\/$/, '');
+  }
+  const workerUrl = new URL(target.workerUrl);
+  const expectedPrefix = `${target.workerName}.`;
+  if (!workerUrl.hostname.startsWith(expectedPrefix)) {
+    throw new Error(
+      'Promotion requires the target Worker URL to be its workers.dev hostname for Version URL readiness.',
+    );
+  }
+  const subdomain = workerUrl.hostname.slice(expectedPrefix.length);
+  if (subdomain.length === 0 || !subdomain.endsWith('.workers.dev')) {
+    throw new Error(
+      'Promotion requires the target Worker URL to be its workers.dev hostname for Version URL readiness.',
+    );
+  }
+  // Wrangler 4.130 does not expose the preview URL from `versions view`; the
+  // preceding remote view verified the complete UUID. Only then is the
+  // documented Version URL prefix format used as the Cloudflare fallback.
+  const versionPrefix = versionId.substring(0, 8);
+  return `https://${versionPrefix}-${target.workerName}.${subdomain}`;
 }
 
 export interface DeployIo {
@@ -174,7 +257,7 @@ export interface DeployIo {
 
 // The only accepted production confirmation is the target Worker name
 // itself: the operator must name the exact production Worker being mutated.
-export function productionConfirmFor(resolved: ResolvedDeployment): string {
+export function productionConfirmFor(resolved: DeploymentTarget): string {
   return resolved.workerName;
 }
 

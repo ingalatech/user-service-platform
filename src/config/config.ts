@@ -1,9 +1,12 @@
 import {
   LOCAL_PROFILE,
   NON_SECRET_VAR_NAMES,
+  parseNonSecretProfile,
   type CanonicalEnvironment,
   type NonSecretProfile,
 } from './profiles.js';
+
+declare const __USER_SERVICE_COMPILED_CONFIG__: NonSecretProfile | undefined;
 
 // Resolved operational context. `test` is the isolated automated-test
 // context: it reuses the local non-secret shape but is never a deployment
@@ -21,10 +24,51 @@ export interface EffectiveConfig {
 
 export interface ResolveEffectiveConfigInput {
   readonly environment?: string;
-  // Raw runtime values (Worker bindings, `.env` overrides, Wrangler vars).
-  // Only string values under known non-secret names are merged; everything
-  // else (secrets, bindings, unknown keys) is ignored by construction.
+  // Test/release seam for the same profile Wrangler injects through `define`.
+  // Production callers omit this and receive the bundled value automatically.
+  readonly compiledProfile?: NonSecretProfile;
+  // Raw runtime values (Worker bindings or `.env` overrides). They are merged
+  // only when no compiled profile is present; compiled deployments ignore
+  // same-name runtime bindings. Secrets and unknown keys are ignored.
   readonly runtime?: Record<string, unknown>;
+  readonly warningState?: Set<string>;
+}
+
+function readCompiledProfile(): NonSecretProfile | undefined {
+  if (typeof __USER_SERVICE_COMPILED_CONFIG__ === 'undefined') {
+    return undefined;
+  }
+  return parseNonSecretProfile(__USER_SERVICE_COMPILED_CONFIG__);
+}
+
+export function readEffectiveEnvironment(
+  runtime: {
+    readonly ENVIRONMENT?: unknown;
+  } = {},
+  warningState?: Set<string>,
+): string {
+  return resolveEffectiveConfig({ runtime, warningState }).environment;
+}
+
+function warnIgnoredRuntimeBindings(
+  compiledProfile: NonSecretProfile,
+  runtime: Record<string, unknown>,
+  warningState: Set<string>,
+): void {
+  const bindings = NON_SECRET_VAR_NAMES.filter((name) =>
+    Object.prototype.hasOwnProperty.call(runtime, name),
+  );
+  if (bindings.length === 0) return;
+  const signature = bindings.join('\u0000');
+  if (warningState.size > 0 || warningState.has(signature)) return;
+  warningState.add(signature);
+  console.warn(
+    JSON.stringify({
+      level: 'warn',
+      event: 'config.runtime-binding-ignored',
+      bindings,
+    }),
+  );
 }
 
 // Normalizes a raw environment name (`parseDontValidate`: returns the
@@ -153,22 +197,34 @@ function validateAuthActionUrl(name: string, value: string, environment: string)
   }
 }
 
-// Resolves the effective non-secret configuration: the selected
-// environment's complete profile with same-name runtime values overlaid.
-// This is the single parse-and-validate entry point for effective
-// configuration; every failure is a redacted `Error` carrying variable names
-// and expected shapes, never runtime values.
+// Resolves the effective non-secret configuration. Remote bundles use the
+// complete profile substituted by Wrangler; local/test execution uses the
+// local profile with same-name runtime values overlaid. This is the single
+// parse-and-validate entry point; every failure is a redacted `Error` carrying
+// variable names and expected shapes, never runtime values.
 export function resolveEffectiveConfig(input: ResolveEffectiveConfigInput): EffectiveConfig {
-  const environment = normalizeEnvironmentName(input.environment);
-  const merged: NonSecretProfile = {
-    ...LOCAL_PROFILE,
-    ENVIRONMENT: environment === 'test' ? 'local' : environment,
-  };
+  const compiledProfile =
+    input.compiledProfile === undefined
+      ? readCompiledProfile()
+      : parseNonSecretProfile(input.compiledProfile);
+  const environment = normalizeEnvironmentName(compiledProfile?.ENVIRONMENT ?? input.environment);
   const runtime = input.runtime ?? {};
-  for (const name of NON_SECRET_VAR_NAMES) {
-    const value: unknown = runtime[name];
-    if (typeof value === 'string') {
-      merged[name] = value;
+  const merged: NonSecretProfile = compiledProfile
+    ? { ...compiledProfile }
+    : {
+        ...LOCAL_PROFILE,
+        ENVIRONMENT: environment === 'test' ? 'local' : environment,
+      };
+  if (compiledProfile !== undefined) {
+    if (input.warningState !== undefined) {
+      warnIgnoredRuntimeBindings(compiledProfile, runtime, input.warningState);
+    }
+  } else {
+    for (const name of NON_SECRET_VAR_NAMES) {
+      const value: unknown = runtime[name];
+      if (typeof value === 'string') {
+        merged[name] = value;
+      }
     }
   }
   validateProfile(merged);

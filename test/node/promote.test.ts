@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { describe, expect, it } from 'vitest';
+import { LOCAL_PROFILE } from '../../src/config/index.js';
 import {
   preparePromotionVersions,
   runPromotionSmoke,
@@ -18,7 +19,7 @@ const SANDBOX: ResolvedDeployment = {
   workerUrl: 'https://sandbox.example.test',
   databaseName: 'rch-rugbychampagne-user-service-sandbox-db',
   databaseId: CONTRACT_SANDBOX_DATABASE_ID,
-  vars: {},
+  applicationConfig: { ...LOCAL_PROFILE, ENVIRONMENT: 'sandbox' },
 };
 
 const PRODUCTION: ResolvedDeployment = {
@@ -63,8 +64,8 @@ describe('promotion CLI version selection', () => {
     process.env.SMOKE_SANDBOX_BASE_URL = 'https://inherited.example.test';
     process.env.SMTP_PASSWORD = 'must-not-enter-smoke';
     try {
-      await runPromotionSmoke(SANDBOX, spawnFn);
-      await runPromotionSmoke(PRODUCTION, spawnFn);
+      await runPromotionSmoke(SANDBOX, SANDBOX.workerUrl, spawnFn);
+      await runPromotionSmoke(PRODUCTION, PRODUCTION.workerUrl, spawnFn);
     } finally {
       delete process.env.SMOKE_SANDBOX_BASE_URL;
       delete process.env.SMTP_PASSWORD;

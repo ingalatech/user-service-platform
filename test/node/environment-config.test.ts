@@ -4,6 +4,7 @@ import {
   environmentFilePath,
   loadEnvironmentFile,
   parseEnvironmentFile,
+  resolveEnvironmentTarget,
   resolveEnvironmentDeployment,
   stageDatabaseId,
 } from '../../scripts/deploy/environment-config.js';
@@ -18,8 +19,27 @@ describe('release environment files', () => {
     );
     expect(sandbox.workerName).toContain('-sandbox');
     expect(production.workerName).toContain('-production');
-    expect(sandbox.vars.SMTP_HOST).toBe('smtp.gmail.com');
-    expect(production.vars.SMTP_HOST).toBe('smtp.gmail.com');
+    expect(sandbox.applicationConfig.SMTP_HOST).toBe('smtp.gmail.com');
+    expect(production.applicationConfig.SMTP_HOST).toBe('smtp.gmail.com');
+  });
+
+  it('resolves promotion identity without re-validating current application configuration', () => {
+    const file = loadEnvironmentFile(environmentFilePath('.', 'sandbox'));
+    const target = resolveEnvironmentTarget({
+      ...file,
+      AUTH_MAIL_TRANSPORT: 'changed-after-upload',
+      AUTH_MAIL_FROM: '',
+    });
+
+    expect(target.workerName).toContain('-sandbox');
+    expect(target.environment).toBe('sandbox');
+    expect(() =>
+      resolveEnvironmentDeployment({
+        ...file,
+        AUTH_MAIL_TRANSPORT: 'changed-after-upload',
+        AUTH_MAIL_FROM: '',
+      }),
+    ).toThrow();
   });
 
   it.each([
