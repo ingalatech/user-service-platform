@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 interface PackageManifest {
@@ -14,6 +14,18 @@ const opencodeWorkflow = readFileSync('docs/agents/opencode.md', 'utf8');
 const projectState = readFileSync('docs/agents/project-state.md', 'utf8');
 const handoff = readFileSync('docs/agents/workflow-handoff.md', 'utf8');
 
+function listFiles(root: string): string[] {
+  if (!existsSync(root)) {
+    return [];
+  }
+  return readdirSync(root, { withFileTypes: true }).flatMap((entry) => {
+    const path = `${root}/${entry.name}`;
+    return entry.isDirectory()
+      ? listFiles(path).map((file) => `${entry.name}/${file}`)
+      : [entry.name];
+  });
+}
+
 describe('direct pane workflow contract', () => {
   it('does not expose retired automated reviewer or correction commands', () => {
     expect(packageManifest.scripts).not.toHaveProperty('review:cycle');
@@ -24,7 +36,8 @@ describe('direct pane workflow contract', () => {
     expect(existsSync('.opencode/commands/review-standards.md')).toBe(false);
     expect(existsSync('.opencode/commands/review-spec.md')).toBe(false);
     expect(existsSync('.opencode/commands/address-review.md')).toBe(false);
-    expect(existsSync('.agents/skills/code-review/SKILL.md')).toBe(false);
+    expect(existsSync('.agents/skills/code-review')).toBe(false);
+    expect(listFiles('.agents/skills/code-review')).toEqual([]);
     expect(existsSync('test/node/ci-poll-time-control.mjs')).toBe(false);
     expect(skillsLock).not.toContain('"code-review"');
     expect(gitignore).not.toMatch(/\.review-cycle|\.agent-ticket/);
