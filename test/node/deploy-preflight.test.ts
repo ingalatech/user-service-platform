@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { runPreflight } from '../../scripts/deploy/preflight.js';
-import { CLOUDFLARE_ABSENT_WORKER_10007 } from './fixtures/cloudflare-absent-worker.js';
+import {
+  CLOUDFLARE_ABSENT_WORKER_10007,
+  CLOUDFLARE_ABSENT_WORKER_WRANGLER_STDERR,
+} from './fixtures/cloudflare-absent-worker.js';
 import type { ResolvedDeployment } from '../../scripts/deploy/environment-config.js';
 
 const resolved: ResolvedDeployment = {
@@ -63,5 +66,57 @@ describe('deployment preflight secret boundary', () => {
       ok: false,
     });
     expect(checks.map((check) => check.detail).join('\n')).not.toContain('forbidden');
+  });
+
+  it('does not classify 10007 embedded in another Cloudflare error message', async () => {
+    const checks = await runPreflight(
+      { resolved },
+      deps({
+        exitCode: 1,
+        stdout: '',
+        stderr: JSON.stringify({
+          success: false,
+          errors: [{ code: 10006, message: 'upstream code: 10007' }],
+        }),
+      }),
+    );
+    expect(checks.find((check) => check.name === 'worker-presence')).toMatchObject({ ok: false });
+  });
+
+  it('does not classify 10007 nested in metadata as a Cloudflare error', async () => {
+    const checks = await runPreflight(
+      { resolved },
+      deps({
+        exitCode: 1,
+        stdout: '',
+        stderr: JSON.stringify({
+          success: false,
+          errors: [{ code: 10006, message: 'forbidden', metadata: { code: 10007 } }],
+        }),
+      }),
+    );
+    expect(checks.find((check) => check.name === 'worker-presence')).toMatchObject({ ok: false });
+  });
+
+  it('does not classify malformed provider output', async () => {
+    const checks = await runPreflight(
+      { resolved },
+      deps({
+        exitCode: 1,
+        stdout: '',
+        stderr:
+          '{"errors":[{"code":10007,"message":"workers.api.error.script_not_found"}], ' +
+          '"success":false',
+      }),
+    );
+    expect(checks.find((check) => check.name === 'worker-presence')).toMatchObject({ ok: false });
+  });
+
+  it('classifies the ANSI-rendered Wrangler absent-Worker fixture', async () => {
+    const checks = await runPreflight(
+      { resolved },
+      deps({ exitCode: 1, stdout: '', stderr: CLOUDFLARE_ABSENT_WORKER_WRANGLER_STDERR }),
+    );
+    expect(checks.find((check) => check.name === 'worker-presence')).toMatchObject({ ok: true });
   });
 });
