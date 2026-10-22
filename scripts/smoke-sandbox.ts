@@ -251,6 +251,14 @@ function stringField(payload: unknown, field: string): string | undefined {
   return undefined;
 }
 
+function integerField(payload: unknown, field: string): number | undefined {
+  if (typeof payload === 'object' && payload !== null) {
+    const value = (payload as Record<string, unknown>)[field];
+    return typeof value === 'number' && Number.isInteger(value) ? value : undefined;
+  }
+  return undefined;
+}
+
 async function readJson(res: Response): Promise<unknown> {
   try {
     return await res.json();
@@ -333,6 +341,8 @@ export async function runSandboxSmokeWorkflow(
   // `401 invalid-credentials` means the configured stable credential does
   // not own the persisted identity and fails closed. Anything else fails
   // closed.
+  let authenticatedCookie: string | undefined;
+  let alreadyVerified = false;
   const gated = await request('login-unverified', '/v1/auth/login', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -351,17 +361,11 @@ export async function runSandboxSmokeWorkflow(
       if (session === undefined) {
         fail('login-unverified', gated.res.status, 'expected a session cookie when verified');
       }
+      authenticatedCookie = session;
+      alreadyVerified = true;
       const me = await request('me-authenticated', '/v1/me', {}, session);
       if (me.res.status !== 200) {
         fail('me-authenticated', me.res.status, 'expected 200 for the verified session');
-      }
-      const resend = await request('request-verification', '/v1/auth/request-verification', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ email }),
-      });
-      if (resend.res.status !== 202 || stringField(resend.payload, 'status') !== 'ok') {
-        fail('request-verification', resend.res.status, 'expected 202 {status:"ok"}');
       }
       console.log(
         JSON.stringify({
@@ -371,17 +375,9 @@ export async function runSandboxSmokeWorkflow(
           detail: 'skipped-already-verified',
         }),
       );
-      console.log(
-        JSON.stringify({
-          level: 'info',
-          step: 'smoke',
-          status: 200,
-          detail: 'pass-already-verified',
-        }),
-      );
-      return;
+      // Continue through Reader State and public logout below.
     }
-    if (state !== 'unverified') {
+    if (state !== 'unverified' && state !== 'already-verified') {
       fail(
         'login-unverified',
         gated.res.status,
@@ -409,10 +405,14 @@ export async function runSandboxSmokeWorkflow(
   // mismatch fails closed above, so a stale credential cannot create a
   // false PASS.
   let verificationToken = config.verificationToken;
-  if (verificationToken === undefined && options.requestVerificationToken !== undefined) {
+  if (
+    !alreadyVerified &&
+    verificationToken === undefined &&
+    options.requestVerificationToken !== undefined
+  ) {
     verificationToken = await options.requestVerificationToken();
   }
-  if (verificationToken !== undefined) {
+  if (!alreadyVerified && verificationToken !== undefined) {
     const verify = await request('verify-email', '/v1/auth/verify-email', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -433,6 +433,7 @@ export async function runSandboxSmokeWorkflow(
     if (cookie === undefined) {
       fail('login-verified', login.res.status, 'expected a session cookie after verification');
     }
+    authenticatedCookie = cookie;
     const me = await request('me-authenticated', '/v1/me', {}, cookie);
     if (me.res.status !== 200) {
       fail('me-authenticated', me.res.status, 'expected 200 for the verified session');
@@ -446,6 +447,69 @@ export async function runSandboxSmokeWorkflow(
         detail: 'skipped-token-not-provided',
       }),
     );
+  }
+
+  if (authenticatedCookie !== undefined) {
+    const readerState = await request(
+      'reader-state-authenticated',
+      '/v1/auth/reader-state',
+      { method: 'POST', headers: { 'content-type': 'application/json' } },
+      authenticatedCookie,
+    );
+    const compactToken = stringField(readerState.payload, 'readerState');
+    const expiresAt = integerField(readerState.payload, 'expiresAt');
+    const tokenParts = compactToken?.split('.') ?? [];
+    if (
+      readerState.res.status !== 200 ||
+      compactToken === undefined ||
+      tokenParts.length !== 3 ||
+      tokenParts.some((part) => part.length === 0) ||
+      expiresAt === undefined ||
+      expiresAt <= Math.floor(Date.now() / 1000)
+    ) {
+      fail(
+        'reader-state-authenticated',
+        readerState.res.status,
+        'expected 200 with a compact Reader State and a future integer expiresAt',
+      );
+    }
+
+    const me = await request('me-after-reader-state', '/v1/me', {}, authenticatedCookie);
+    if (me.res.status !== 200) {
+      fail('me-after-reader-state', me.res.status, 'expected 200 for the verified session');
+    }
+
+    const signOut = await request(
+      'sign-out',
+      '/v1/auth/sign-out',
+      { method: 'POST', headers: { 'content-type': 'application/json' } },
+      authenticatedCookie,
+    );
+    if (signOut.res.status !== 200 || stringField(signOut.payload, 'status') !== 'ok') {
+      fail('sign-out', signOut.res.status, 'expected 200 {status:"ok"}');
+    }
+
+    const anonymousMe = await request('me-after-sign-out', '/v1/me', {}, authenticatedCookie);
+    if (anonymousMe.res.status !== 401 || problemCode(anonymousMe.payload) !== 'unauthenticated') {
+      fail('me-after-sign-out', anonymousMe.res.status, 'expected 401 unauthenticated');
+    }
+
+    const anonymousReaderState = await request(
+      'reader-state-after-sign-out',
+      '/v1/auth/reader-state',
+      { method: 'POST', headers: { 'content-type': 'application/json' } },
+      authenticatedCookie,
+    );
+    if (
+      anonymousReaderState.res.status !== 401 ||
+      problemCode(anonymousReaderState.payload) !== 'unauthenticated'
+    ) {
+      fail(
+        'reader-state-after-sign-out',
+        anonymousReaderState.res.status,
+        'expected 401 unauthenticated',
+      );
+    }
   }
 
   console.log(JSON.stringify({ level: 'info', step: 'smoke', status: 200, detail: 'pass-fresh' }));

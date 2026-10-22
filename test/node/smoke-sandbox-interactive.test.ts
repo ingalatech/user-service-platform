@@ -64,18 +64,33 @@ function expectCleanPromptStreams(input: PassThrough, output: PassThrough): void
   expect(internalStreamEvents(output)).toEqual([]);
 }
 
-function fullWorkflowFetch(): typeof fetch {
+function fullWorkflowFetch(
+  readerState: unknown = {
+    readerState: 'header.payload.signature',
+    expiresAt: Math.floor(Date.now() / 1000) + 900,
+  },
+  requests: { readonly request: string; readonly cookie: string | null }[] = [],
+): typeof fetch {
   let anonymousMe = true;
   let verifiedLogin = false;
-  return (input) => {
+  let sessionActive = false;
+  return (input, init) => {
     const path = new URL(requestPath(input)).pathname;
+    requests.push({
+      request: `${init?.method ?? 'GET'} ${path}`,
+      cookie: new Headers(init?.headers).get('cookie'),
+    });
     if (path === '/v1/health') return Promise.resolve(jsonResponse(200, { status: 'ok' }));
     if (path === '/v1/me') {
-      if (anonymousMe) {
+      if (anonymousMe && !sessionActive) {
         anonymousMe = false;
         return Promise.resolve(jsonResponse(401, { code: 'unauthenticated' }));
       }
-      return Promise.resolve(jsonResponse(200, { id: 'user' }));
+      return Promise.resolve(
+        sessionActive
+          ? jsonResponse(200, { id: 'user' })
+          : jsonResponse(401, { code: 'unauthenticated' }),
+      );
     }
     if (path === '/v1/auth/register')
       return Promise.resolve(jsonResponse(201, { emailVerified: false }));
@@ -84,6 +99,7 @@ function fullWorkflowFetch(): typeof fetch {
         verifiedLogin = true;
         return Promise.resolve(jsonResponse(403, { code: 'email-verification-required' }));
       }
+      sessionActive = true;
       return Promise.resolve(
         jsonResponse(200, { user: { id: 'user' } }, { 'set-cookie': 'session=opaque' }),
       );
@@ -92,6 +108,16 @@ function fullWorkflowFetch(): typeof fetch {
       return Promise.resolve(jsonResponse(202, { status: 'ok' }));
     if (path === '/v1/auth/verify-email')
       return Promise.resolve(jsonResponse(200, { emailVerified: true }));
+    if (path === '/v1/auth/reader-state')
+      return Promise.resolve(
+        sessionActive
+          ? jsonResponse(200, readerState)
+          : jsonResponse(401, { code: 'unauthenticated' }),
+      );
+    if (path === '/v1/auth/sign-out') {
+      sessionActive = false;
+      return Promise.resolve(jsonResponse(200, { status: 'ok' }));
+    }
     throw new Error(`unexpected request ${path}`);
   };
 }
@@ -106,6 +132,7 @@ describe('interactive sandbox smoke', () => {
     const smokeEmail = environmentFile.AUTH_MAIL_ALLOWLIST.split(',')[0]?.trim() ?? email;
     const prompt = prompts(1, [password, token]);
     const output: string[] = [];
+    const requests: { readonly request: string; readonly cookie: string | null }[] = [];
     vi.spyOn(console, 'log').mockImplementation((message: unknown) => {
       output.push(String(message));
     });
@@ -113,15 +140,194 @@ describe('interactive sandbox smoke', () => {
     await runInteractiveSandboxSmoke({
       environmentFile,
       prompts: prompt,
-      fetchImpl: fullWorkflowFetch(),
+      fetchImpl: fullWorkflowFetch(undefined, requests),
     });
 
     expect(prompt.chooseRecipient).toHaveBeenCalledWith(3);
     expect(prompt.readHidden).toHaveBeenCalledTimes(2);
+    expect(requests.map(({ request }) => request)).toEqual([
+      'GET /v1/health',
+      'GET /v1/me',
+      'POST /v1/auth/register',
+      'POST /v1/auth/login',
+      'POST /v1/auth/request-verification',
+      'POST /v1/auth/verify-email',
+      'POST /v1/auth/login',
+      'GET /v1/me',
+      'POST /v1/auth/reader-state',
+      'GET /v1/me',
+      'POST /v1/auth/sign-out',
+      'GET /v1/me',
+      'POST /v1/auth/reader-state',
+    ]);
+    expect(requests.map(({ cookie }) => cookie)).toEqual([
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      'session=opaque',
+      'session=opaque',
+      'session=opaque',
+      'session=opaque',
+      'session=opaque',
+      'session=opaque',
+    ]);
     expect(output.join('\n')).not.toContain(smokeEmail);
     expect(output.join('\n')).not.toContain(password);
     expect(output.join('\n')).not.toContain(token);
     expect(output.join('\n')).not.toMatch(/cookie|action.?url|response body/i);
+  });
+
+  it('runs the authenticated Reader State and logout lifecycle for an already-verified exact recipient', async () => {
+    const environmentFile = loadEnvironmentFile(environmentFilePath('.', 'sandbox'));
+    const smokeEmail = environmentFile.AUTH_MAIL_ALLOWLIST.split(',')[0]?.trim() ?? email;
+    const prompt = prompts(1, [password]);
+    const requests: { readonly request: string; readonly cookie: string | null }[] = [];
+    const fetchImpl: typeof fetch = (input, init) => {
+      const path = new URL(requestPath(input)).pathname;
+      requests.push({
+        request: `${init?.method ?? 'GET'} ${path}`,
+        cookie: new Headers(init?.headers).get('cookie'),
+      });
+      if (path === '/v1/health') return Promise.resolve(jsonResponse(200, { status: 'ok' }));
+      if (path === '/v1/me') {
+        return Promise.resolve(
+          requests.filter(({ request }) => request.endsWith(' /v1/me')).length === 1
+            ? jsonResponse(401, { code: 'unauthenticated' })
+            : requests.some(({ request }) => request === 'POST /v1/auth/sign-out')
+              ? requests.at(-1)?.cookie === 'session=opaque'
+                ? jsonResponse(401, { code: 'unauthenticated' })
+                : jsonResponse(200, { id: 'user' })
+              : jsonResponse(200, { id: 'user' }),
+        );
+      }
+      if (path === '/v1/auth/register')
+        return Promise.resolve(jsonResponse(201, { emailVerified: false }));
+      if (path === '/v1/auth/login')
+        return Promise.resolve(
+          jsonResponse(200, { user: { id: 'user' } }, { 'set-cookie': 'session=opaque' }),
+        );
+      if (path === '/v1/auth/request-verification')
+        return Promise.resolve(jsonResponse(202, { status: 'ok' }));
+      if (path === '/v1/auth/reader-state')
+        return Promise.resolve(
+          requests.some(({ request }) => request === 'POST /v1/auth/sign-out')
+            ? requests.at(-1)?.cookie === 'session=opaque'
+              ? jsonResponse(401, { code: 'unauthenticated' })
+              : jsonResponse(200, {
+                  readerState: 'header.payload.signature',
+                  expiresAt: Math.floor(Date.now() / 1000) + 900,
+                })
+            : jsonResponse(200, {
+                readerState: 'header.payload.signature',
+                expiresAt: Math.floor(Date.now() / 1000) + 900,
+              }),
+        );
+      if (path === '/v1/auth/sign-out') return Promise.resolve(jsonResponse(200, { status: 'ok' }));
+      throw new Error(`unexpected request ${path}`);
+    };
+
+    await runInteractiveSandboxSmoke({ environmentFile, prompts: prompt, fetchImpl });
+
+    expect(requests.map(({ request }) => request)).toEqual([
+      'GET /v1/health',
+      'GET /v1/me',
+      'POST /v1/auth/register',
+      'POST /v1/auth/login',
+      'GET /v1/me',
+      'POST /v1/auth/request-verification',
+      'POST /v1/auth/reader-state',
+      'GET /v1/me',
+      'POST /v1/auth/sign-out',
+      'GET /v1/me',
+      'POST /v1/auth/reader-state',
+    ]);
+    expect(requests.map(({ cookie }) => cookie)).toEqual([
+      null,
+      null,
+      null,
+      null,
+      'session=opaque',
+      null,
+      'session=opaque',
+      'session=opaque',
+      'session=opaque',
+      'session=opaque',
+      'session=opaque',
+    ]);
+    expect(smokeEmail).toBeTruthy();
+  });
+
+  it('skips a supplied verification token when an exact recipient is already verified', async () => {
+    const config = {
+      ...resolveSmokeConfig({
+        SMOKE_SANDBOX_BASE_URL: baseUrl,
+        SMOKE_SANDBOX_EMAIL: email,
+        SMOKE_PASSWORD: password,
+      }),
+      verificationToken: token,
+    };
+    const paths: string[] = [];
+    let signedOut = false;
+
+    await runSandboxSmokeWorkflow(config, {
+      fetchImpl: (input, init) => {
+        const path = new URL(requestPath(input)).pathname;
+        paths.push(`${init?.method ?? 'GET'} ${path}`);
+        if (path === '/v1/health') return Promise.resolve(jsonResponse(200, { status: 'ok' }));
+        if (path === '/v1/me')
+          return Promise.resolve(
+            paths.filter((request) => request === 'GET /v1/me').length === 1
+              ? jsonResponse(401, { code: 'unauthenticated' })
+              : signedOut
+                ? jsonResponse(401, { code: 'unauthenticated' })
+                : jsonResponse(200, { id: 'user' }),
+          );
+        if (path === '/v1/auth/register')
+          return Promise.resolve(jsonResponse(201, { emailVerified: false }));
+        if (path === '/v1/auth/login')
+          return Promise.resolve(
+            jsonResponse(200, { user: { id: 'user' } }, { 'set-cookie': 'session=opaque' }),
+          );
+        if (path === '/v1/auth/request-verification')
+          return Promise.resolve(jsonResponse(202, { status: 'ok' }));
+        if (path === '/v1/auth/reader-state')
+          return Promise.resolve(
+            signedOut
+              ? jsonResponse(401, { code: 'unauthenticated' })
+              : jsonResponse(200, {
+                  readerState: 'header.payload.signature',
+                  expiresAt: Math.floor(Date.now() / 1000) + 900,
+                }),
+          );
+        if (path === '/v1/auth/sign-out') {
+          signedOut = true;
+          return Promise.resolve(jsonResponse(200, { status: 'ok' }));
+        }
+        if (path === '/v1/auth/verify-email') throw new Error('verification token was replayed');
+        throw new Error(`unexpected request ${path}`);
+      },
+    });
+
+    expect(paths).not.toContain('POST /v1/auth/verify-email');
+  });
+
+  it.each([
+    [{ readerState: 'not-compact', expiresAt: Math.floor(Date.now() / 1000) + 900 }],
+    [{ readerState: 'header.payload.signature', expiresAt: 0 }],
+    [{ readerState: 'header.payload.signature' }],
+  ])('fails closed when Reader State response shape is invalid: %j', async (readerState) => {
+    const environmentFile = loadEnvironmentFile(environmentFilePath('.', 'sandbox'));
+    await expect(
+      runInteractiveSandboxSmoke({
+        environmentFile,
+        prompts: prompts(1, [password, token]),
+        fetchImpl: fullWorkflowFetch(readerState),
+      }),
+    ).rejects.toThrow('reader-state');
   });
 
   it('fails clearly for non-interactive input and cancellation without network IO', async () => {
