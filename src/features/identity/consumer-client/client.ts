@@ -37,15 +37,19 @@ export class ConsumerClientError extends Error {
 type ReaderStateChange = 'replacement' | 'logout';
 
 export interface ReaderStateBroadcast {
-  notify(change: ReaderStateChange, source: string): void;
-  observe(listener: (change: ReaderStateChange, source: string) => void): () => void;
+  notify(change: ReaderStateChange, source: string, authMutationVersion?: number): void;
+  observe(
+    listener: (change: ReaderStateChange, source: string, authMutationVersion?: number) => void,
+  ): () => void;
 }
 
 export function createMemoryReaderStateBroadcast(): ReaderStateBroadcast {
-  const listeners = new Set<(change: ReaderStateChange, source: string) => void>();
+  const listeners = new Set<
+    (change: ReaderStateChange, source: string, authMutationVersion?: number) => void
+  >();
   return {
-    notify: (change, source) => {
-      for (const listener of [...listeners]) listener(change, source);
+    notify: (change, source, authMutationVersion) => {
+      for (const listener of [...listeners]) listener(change, source, authMutationVersion);
     },
     observe: (listener) => {
       listeners.add(listener);
@@ -58,18 +62,39 @@ function broadcastKey(scope: ConsumerStorageScope): string {
   return `usp.reader-state.v1.change.${encodeURIComponent(scope.service ?? '')}.${encodeURIComponent(scope.issuer)}.${encodeURIComponent(scope.audience)}`;
 }
 
+function authMutationLockKey(scope: ConsumerStorageScope): string {
+  return `usp.auth-mutation.v1.${encodeURIComponent(scope.service ?? '')}.${encodeURIComponent(scope.issuer)}.${encodeURIComponent(scope.audience)}`;
+}
+
+function authMutationVersionKey(scope: ConsumerStorageScope): string {
+  return `${authMutationLockKey(scope)}.version`;
+}
+
 export function createBrowserReaderStateBroadcast(
   scope: ConsumerStorageScope,
 ): ReaderStateBroadcast {
   const key = broadcastKey(scope);
+  const versionKey = authMutationVersionKey(scope);
   const globalRecord = globalThis as Record<string, unknown>;
   const storage = globalRecord.localStorage as KeyValueStorage | undefined;
   const windowCandidate = globalRecord.window as
     { addEventListener?: unknown; removeEventListener?: unknown } | undefined;
   return {
-    notify: (change, source) => {
+    notify: (change, source, authMutationVersion) => {
       try {
-        storage?.setItem(key, JSON.stringify({ change, source, at: Date.now() }));
+        const storedVersion = Number(storage?.getItem(versionKey));
+        const effectiveAuthMutationVersion =
+          authMutationVersion ??
+          (Number.isSafeInteger(storedVersion) && storedVersion > 0 ? storedVersion : undefined);
+        storage?.setItem(
+          key,
+          JSON.stringify({
+            change,
+            source,
+            authMutationVersion: effectiveAuthMutationVersion,
+            at: Date.now(),
+          }),
+        );
       } catch {
         // Cross-tab notification is best effort; shared state is already updated.
       }
@@ -84,7 +109,15 @@ export function createBrowserReaderStateBroadcast(
             (record.change === 'replacement' || record.change === 'logout') &&
             typeof record.source === 'string'
           ) {
-            listener(record.change, record.source);
+            listener(
+              record.change,
+              record.source,
+              typeof record.authMutationVersion === 'number' &&
+                Number.isSafeInteger(record.authMutationVersion) &&
+                record.authMutationVersion > 0
+                ? record.authMutationVersion
+                : undefined,
+            );
           }
         } catch {
           // Malformed credential-free markers are ignored.
@@ -198,6 +231,26 @@ export function createConsumerClient(options: ConsumerClientOptions): ConsumerCl
         : null;
   const nowSeconds = options.nowSeconds ?? (() => Math.floor(Date.now() / 1000));
   const retryDelayMs = options.renewalRetryDelayMs ?? 250;
+  const globalRecord = globalThis as Record<string, unknown>;
+  const navigatorCandidate = globalRecord.navigator as
+    | {
+        locks?: {
+          request<T>(
+            name: string,
+            options: { mode: 'exclusive' },
+            callback: () => Promise<T>,
+          ): Promise<T>;
+        };
+      }
+    | undefined;
+  const authMutationLock = authMutationLockKey(scope);
+  const authMutationVersionStorage = isStorage(globalRecord.localStorage)
+    ? globalRecord.localStorage
+    : undefined;
+  const authMutationVersionStorageKey = authMutationVersionKey(scope);
+  const storedAuthMutationVersion = Number(
+    authMutationVersionStorage?.getItem(authMutationVersionStorageKey),
+  );
   const clientOptions: ClientOptions = { baseUrl: options.baseUrl };
   if (options.fetchImpl !== undefined) clientOptions.fetch = options.fetchImpl;
   const api = createClient<paths>(clientOptions);
@@ -224,6 +277,10 @@ export function createConsumerClient(options: ConsumerClientOptions): ConsumerCl
   });
 
   let generation = 0;
+  let latestAuthMutationVersion =
+    Number.isSafeInteger(storedAuthMutationVersion) && storedAuthMutationVersion > 0
+      ? storedAuthMutationVersion
+      : 0;
   let sessionStatus: AuthoritativeSessionStatus = 'unknown';
   let renewal: Promise<ConsumerReaderState | null> | null = null;
   const observers = new Set<(state: ConsumerReaderState | null) => void>();
@@ -250,6 +307,33 @@ export function createConsumerClient(options: ConsumerClientOptions): ConsumerCl
       `The service is unreachable while ${action}.`,
     );
   }
+
+  const coordinateAuthMutation = <T>(
+    operation: (authMutationVersion?: number) => Promise<T>,
+  ): Promise<T> => {
+    if (navigatorCandidate?.locks !== undefined && authMutationVersionStorage !== undefined) {
+      return navigatorCandidate.locks.request(authMutationLock, { mode: 'exclusive' }, () => {
+        const storedVersion = Number(
+          authMutationVersionStorage.getItem(authMutationVersionStorageKey),
+        );
+        const authMutationVersion =
+          (Number.isSafeInteger(storedVersion) && storedVersion > 0 ? storedVersion : 0) + 1;
+        authMutationVersionStorage.setItem(
+          authMutationVersionStorageKey,
+          String(authMutationVersion),
+        );
+        latestAuthMutationVersion = authMutationVersion;
+        return operation(authMutationVersion);
+      });
+    }
+    if (globalRecord.window !== undefined) {
+      throw new ConsumerClientError(
+        'unsupported-browser',
+        'Consumer Identity requires browser auth-mutation coordination.',
+      );
+    }
+    return operation();
+  };
 
   const clear = (status: AuthoritativeSessionStatus): void => {
     generation += 1;
@@ -284,7 +368,7 @@ export function createConsumerClient(options: ConsumerClientOptions): ConsumerCl
     }
   };
 
-  const issue = async (): Promise<ConsumerReaderState | null> => {
+  const issue = async (authMutationVersion?: number): Promise<ConsumerReaderState | null> => {
     const attemptGeneration = generation;
     const request = async () =>
       api.POST('/v1/auth/reader-state', { credentials: 'include' } as Record<string, unknown>);
@@ -323,7 +407,7 @@ export function createConsumerClient(options: ConsumerClientOptions): ConsumerCl
       expiresAt: verified.expiresAt,
     });
     sessionStatus = 'authenticated';
-    broadcast?.notify('replacement', source);
+    broadcast?.notify('replacement', source, authMutationVersion);
     const state = { ...verified, sessionStatus } as const;
     for (const observer of observers) observer(state);
     return state;
@@ -350,8 +434,11 @@ export function createConsumerClient(options: ConsumerClientOptions): ConsumerCl
     return { ...verified, sessionStatus };
   };
 
-  broadcast?.observe((change, sender) => {
+  broadcast?.observe((change, sender, authMutationVersion) => {
     if (sender === source) return;
+    if (authMutationVersion !== undefined && authMutationVersion <= latestAuthMutationVersion)
+      return;
+    if (authMutationVersion !== undefined) latestAuthMutationVersion = authMutationVersion;
     generation += 1;
     sessionStatus = 'unknown';
     if (change === 'logout') clearStoredReaderState(store, scope);
@@ -365,32 +452,33 @@ export function createConsumerClient(options: ConsumerClientOptions): ConsumerCl
   });
 
   return {
-    login: async (input) => {
-      clear('unknown');
-      const attemptGeneration = generation;
-      let response;
-      try {
-        response = await api.POST('/v1/auth/login', {
-          body: input,
-          credentials: 'include',
-        });
-      } catch {
-        throw new ConsumerClientError('network-unavailable', 'Identity service is unreachable.');
-      }
-      if (response.data === undefined) {
-        throw toClientError(response.error, response.response.status, 'signing in');
-      }
-      if (attemptGeneration !== generation) {
-        throw new ConsumerClientError(
-          'unauthenticated',
-          'Authentication changed while signing in.',
-        );
-      }
-      const state = await coalescedIssue();
-      if (state === null || attemptGeneration !== generation)
-        throw new ConsumerClientError('unauthenticated', 'Session was not active.');
-      return state;
-    },
+    login: (input) =>
+      coordinateAuthMutation(async (authMutationVersion) => {
+        clear('unknown');
+        const attemptGeneration = generation;
+        let response;
+        try {
+          response = await api.POST('/v1/auth/login', {
+            body: input,
+            credentials: 'include',
+          });
+        } catch {
+          throw new ConsumerClientError('network-unavailable', 'Identity service is unreachable.');
+        }
+        if (response.data === undefined) {
+          throw toClientError(response.error, response.response.status, 'signing in');
+        }
+        if (attemptGeneration !== generation) {
+          throw new ConsumerClientError(
+            'unauthenticated',
+            'Authentication changed while signing in.',
+          );
+        }
+        const state = await issue(authMutationVersion);
+        if (state === null || attemptGeneration !== generation)
+          throw new ConsumerClientError('unauthenticated', 'Session was not active.');
+        return state;
+      }),
     getSnapshot: read,
     refreshReaderState: async () => {
       const state = await coalescedIssue();
@@ -401,23 +489,25 @@ export function createConsumerClient(options: ConsumerClientOptions): ConsumerCl
     getSessionStatus: () => sessionStatus,
     logout: async () => {
       clear('anonymous');
-      broadcast?.notify('logout', source);
       for (const observer of observers) observer(null);
-      try {
-        const response = await api.POST('/v1/auth/sign-out', {
-          credentials: 'include',
-        } as Record<string, unknown>);
-        if (!response.response.ok) {
-          throw new ConsumerClientError(
-            'logout-failed',
-            'Server sign-out failed.',
-            response.response.status,
-          );
+      await coordinateAuthMutation(async (authMutationVersion) => {
+        broadcast?.notify('logout', source, authMutationVersion);
+        try {
+          const response = await api.POST('/v1/auth/sign-out', {
+            credentials: 'include',
+          } as Record<string, unknown>);
+          if (!response.response.ok) {
+            throw new ConsumerClientError(
+              'logout-failed',
+              'Server sign-out failed.',
+              response.response.status,
+            );
+          }
+        } catch (error) {
+          if (error instanceof ConsumerClientError) throw error;
+          throw new ConsumerClientError('logout-failed', 'Server sign-out failed.');
         }
-      } catch (error) {
-        if (error instanceof ConsumerClientError) throw error;
-        throw new ConsumerClientError('logout-failed', 'Server sign-out failed.');
-      }
+      });
     },
     register: async (input) => {
       try {

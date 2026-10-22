@@ -483,6 +483,87 @@ export default {
       'live replacement performs no credentialed Identity calls in the second tab',
     );
 
+    phase = 'newer replacement wins over a delayed login response';
+    let releaseDelayedReplacementLogin: () => void = () => undefined;
+    let delayedReplacementLoginReady: () => void = () => undefined;
+    const delayedReplacementLoginBlocked = new Promise<void>((resolve) => {
+      releaseDelayedReplacementLogin = resolve;
+    });
+    const delayedReplacementLoginResponse = new Promise<void>((resolve) => {
+      delayedReplacementLoginReady = resolve;
+    });
+    await page.route('**/v1/auth/login', async (route) => {
+      const response = await route.fetch();
+      delayedReplacementLoginReady();
+      await delayedReplacementLoginBlocked;
+      await route.fulfill({ response });
+    });
+    const delayedReplacementLogin = browserJson(
+      page,
+      outcomeOf(`client.login({ email: '${email}', password: '${password}' })`),
+    );
+    await delayedReplacementLoginResponse;
+    const newerLogin = browserJson(
+      second,
+      outcomeOf(`client.login({ email: '${otherEmail}', password: '${password}' })`),
+    );
+    await pause(100);
+    releaseDelayedReplacementLogin();
+    await delayedReplacementLogin;
+    const newerLoginOutcome = await newerLogin;
+    assert(asRecord(newerLoginOutcome)?.ok === true, 'newer replacement login succeeds');
+    await page.unroute('**/v1/auth/login');
+    const replacementAfterDelayedLogin = await browserJson(
+      second,
+      outcomeOf('client.refreshReaderState()'),
+    );
+    assert(
+      asRecord(asRecord(replacementAfterDelayedLogin)?.value)?.subject === replacementSubject,
+      'Reader State refresh retains the newer replacement session',
+    );
+
+    phase = 'logout wins over a delayed login response';
+    let releaseDelayedLogoutLogin: () => void = () => undefined;
+    let delayedLogoutLoginReady: () => void = () => undefined;
+    const delayedLogoutLoginBlocked = new Promise<void>((resolve) => {
+      releaseDelayedLogoutLogin = resolve;
+    });
+    const delayedLogoutLoginResponse = new Promise<void>((resolve) => {
+      delayedLogoutLoginReady = resolve;
+    });
+    await page.route('**/v1/auth/login', async (route) => {
+      const response = await route.fetch();
+      delayedLogoutLoginReady();
+      await delayedLogoutLoginBlocked;
+      await route.fulfill({ response });
+    });
+    const delayedLogoutLogin = browserJson(
+      page,
+      outcomeOf(`client.login({ email: '${email}', password: '${password}' })`),
+    );
+    await delayedLogoutLoginResponse;
+    const laterLogout = browserJson(second, outcomeOf('client.logout()'));
+    await pause(100);
+    releaseDelayedLogoutLogin();
+    await delayedLogoutLogin;
+    const laterLogoutOutcome = await laterLogout;
+    assert(asRecord(laterLogoutOutcome)?.ok === true, 'later logout succeeds');
+    await page.unroute('**/v1/auth/login');
+    const refreshAfterDelayedLogin = await browserJson(
+      second,
+      outcomeOf('client.refreshReaderState()'),
+    );
+    assert(
+      asRecord(refreshAfterDelayedLogin)?.ok === false &&
+        asRecord(refreshAfterDelayedLogin)?.code === 'unauthenticated',
+      'Reader State refresh cannot resurrect the delayed login after logout',
+    );
+    const restoreReplacement = await browserJson(
+      second,
+      outcomeOf(`client.login({ email: '${otherEmail}', password: '${password}' })`),
+    );
+    assert(asRecord(restoreReplacement)?.ok === true, 'restore replacement after ordering tests');
+
     phase = 'unavailable JWKS refresh recovers without credentialed renewal';
     await browserJson(
       page,

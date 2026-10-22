@@ -93,10 +93,12 @@ status remains unknown.
 The client verifies the fixed algorithm, signature, issuer, exact Reader State
 audience, integer times, expiration and exact claims contract before exposing
 presentation state. Replacement and logout synchronize across tabs without
-transmitting credentials, and generation checks prevent stale asynchronous
-results from restoring prior state. Manual refresh supports known benefit
-changes. Automatic refresh is lazy and single-flight only when expired state
-is requested; inactive and anonymous pages never poll or probe Identity.
+transmitting credentials. Deployment-scoped browser locking orders login and
+server logout cookie effects across tabs, while generation checks prevent stale
+asynchronous Reader State results from restoring prior state. Manual refresh
+supports known benefit changes. Automatic refresh is lazy and single-flight
+only when expired state is requested; inactive and anonymous pages never poll
+or probe Identity.
 
 Key rollover retains old public keys through outstanding JWT expiry plus the
 documented clock tolerance. A bounded unknown-key refresh is distinct from
