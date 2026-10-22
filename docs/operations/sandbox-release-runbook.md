@@ -62,10 +62,18 @@ choices without printing their addresses, validates the selected allowlisted
 recipient, and reads the password and mailbox token with terminal echo
 disabled. It runs registration, the verification gate, and the verification
 request, pauses once for the operator to retrieve the token, then continues
-verification, verified login, and `/v1/me` in the same process. It requires a
+verification, verified login, `/v1/me`, Reader State issuance, public sign-out,
+and post-sign-out authorization checks in the same process. It requires a
 TTY and fails clearly on cancellation. It never writes credentials or tokens
 to environment variables, arguments, files, or logs. The existing environment
 variable mode remains available for headless or automated use.
+
+After either a fresh verification or an already-verified exact-recipient login,
+the smoke POSTs `/v1/auth/reader-state` with the session cookie and checks only
+its response shape, future integer expiry, and compact token structure. It then
+confirms `/v1/me` is authenticated, POSTs public `/v1/auth/sign-out`, and
+confirms both `/v1/me` and Reader State issuance return `401 unauthenticated`.
+The Reader State and cookie are never logged.
 
 Provisioning supports sandbox D1 only. It discovers or creates the exact
 database named by `D1_NAME`, then stages the discovered UUID into `.env.sandbox`

@@ -64,18 +64,28 @@ function expectCleanPromptStreams(input: PassThrough, output: PassThrough): void
   expect(internalStreamEvents(output)).toEqual([]);
 }
 
-function fullWorkflowFetch(): typeof fetch {
+function fullWorkflowFetch(
+  readerState: unknown = {
+    readerState: 'header.payload.signature',
+    expiresAt: Math.floor(Date.now() / 1000) + 900,
+  },
+): typeof fetch {
   let anonymousMe = true;
   let verifiedLogin = false;
+  let sessionActive = false;
   return (input) => {
     const path = new URL(requestPath(input)).pathname;
     if (path === '/v1/health') return Promise.resolve(jsonResponse(200, { status: 'ok' }));
     if (path === '/v1/me') {
-      if (anonymousMe) {
+      if (anonymousMe && !sessionActive) {
         anonymousMe = false;
         return Promise.resolve(jsonResponse(401, { code: 'unauthenticated' }));
       }
-      return Promise.resolve(jsonResponse(200, { id: 'user' }));
+      return Promise.resolve(
+        sessionActive
+          ? jsonResponse(200, { id: 'user' })
+          : jsonResponse(401, { code: 'unauthenticated' }),
+      );
     }
     if (path === '/v1/auth/register')
       return Promise.resolve(jsonResponse(201, { emailVerified: false }));
@@ -84,6 +94,7 @@ function fullWorkflowFetch(): typeof fetch {
         verifiedLogin = true;
         return Promise.resolve(jsonResponse(403, { code: 'email-verification-required' }));
       }
+      sessionActive = true;
       return Promise.resolve(
         jsonResponse(200, { user: { id: 'user' } }, { 'set-cookie': 'session=opaque' }),
       );
@@ -92,6 +103,16 @@ function fullWorkflowFetch(): typeof fetch {
       return Promise.resolve(jsonResponse(202, { status: 'ok' }));
     if (path === '/v1/auth/verify-email')
       return Promise.resolve(jsonResponse(200, { emailVerified: true }));
+    if (path === '/v1/auth/reader-state')
+      return Promise.resolve(
+        sessionActive
+          ? jsonResponse(200, readerState)
+          : jsonResponse(401, { code: 'unauthenticated' }),
+      );
+    if (path === '/v1/auth/sign-out') {
+      sessionActive = false;
+      return Promise.resolve(jsonResponse(200, { status: 'ok' }));
+    }
     throw new Error(`unexpected request ${path}`);
   };
 }
@@ -122,6 +143,78 @@ describe('interactive sandbox smoke', () => {
     expect(output.join('\n')).not.toContain(password);
     expect(output.join('\n')).not.toContain(token);
     expect(output.join('\n')).not.toMatch(/cookie|action.?url|response body/i);
+  });
+
+  it('runs the authenticated Reader State and logout lifecycle for an already-verified exact recipient', async () => {
+    const environmentFile = loadEnvironmentFile(environmentFilePath('.', 'sandbox'));
+    const smokeEmail = environmentFile.AUTH_MAIL_ALLOWLIST.split(',')[0]?.trim() ?? email;
+    const prompt = prompts(1, [password]);
+    const requests: string[] = [];
+    const fetchImpl: typeof fetch = (input, init) => {
+      const path = new URL(requestPath(input)).pathname;
+      requests.push(`${init?.method ?? 'GET'} ${path}`);
+      if (path === '/v1/health') return Promise.resolve(jsonResponse(200, { status: 'ok' }));
+      if (path === '/v1/me') {
+        return Promise.resolve(
+          requests.filter((request) => request.endsWith(' /v1/me')).length === 1
+            ? jsonResponse(401, { code: 'unauthenticated' })
+            : requests.some((request) => request === 'POST /v1/auth/sign-out')
+              ? jsonResponse(401, { code: 'unauthenticated' })
+              : jsonResponse(200, { id: 'user' }),
+        );
+      }
+      if (path === '/v1/auth/register')
+        return Promise.resolve(jsonResponse(201, { emailVerified: false }));
+      if (path === '/v1/auth/login')
+        return Promise.resolve(
+          jsonResponse(200, { user: { id: 'user' } }, { 'set-cookie': 'session=opaque' }),
+        );
+      if (path === '/v1/auth/request-verification')
+        return Promise.resolve(jsonResponse(202, { status: 'ok' }));
+      if (path === '/v1/auth/reader-state')
+        return Promise.resolve(
+          requests.some((request) => request === 'POST /v1/auth/sign-out')
+            ? jsonResponse(401, { code: 'unauthenticated' })
+            : jsonResponse(200, {
+                readerState: 'header.payload.signature',
+                expiresAt: Math.floor(Date.now() / 1000) + 900,
+              }),
+        );
+      if (path === '/v1/auth/sign-out') return Promise.resolve(jsonResponse(200, { status: 'ok' }));
+      throw new Error(`unexpected request ${path}`);
+    };
+
+    await runInteractiveSandboxSmoke({ environmentFile, prompts: prompt, fetchImpl });
+
+    expect(requests).toEqual([
+      'GET /v1/health',
+      'GET /v1/me',
+      'POST /v1/auth/register',
+      'POST /v1/auth/login',
+      'GET /v1/me',
+      'POST /v1/auth/request-verification',
+      'POST /v1/auth/reader-state',
+      'GET /v1/me',
+      'POST /v1/auth/sign-out',
+      'GET /v1/me',
+      'POST /v1/auth/reader-state',
+    ]);
+    expect(smokeEmail).toBeTruthy();
+  });
+
+  it.each([
+    [{ readerState: 'not-compact', expiresAt: Math.floor(Date.now() / 1000) + 900 }],
+    [{ readerState: 'header.payload.signature', expiresAt: 0 }],
+    [{ readerState: 'header.payload.signature' }],
+  ])('fails closed when Reader State response shape is invalid: %j', async (readerState) => {
+    const environmentFile = loadEnvironmentFile(environmentFilePath('.', 'sandbox'));
+    await expect(
+      runInteractiveSandboxSmoke({
+        environmentFile,
+        prompts: prompts(1, [password, token]),
+        fetchImpl: fullWorkflowFetch(readerState),
+      }),
+    ).rejects.toThrow('reader-state');
   });
 
   it('fails clearly for non-interactive input and cancellation without network IO', async () => {
