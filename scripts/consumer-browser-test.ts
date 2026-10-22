@@ -435,6 +435,33 @@ export default {
     secondTracker.watch(second);
     await second.goto(`${base}${DOC_A}`);
     await installClient(second, bundle);
+    await second.evaluate(
+      `
+        (() => {
+          const scope = { service: window.location.origin, issuer: window.__cfg.issuer, audience: window.__cfg.audience };
+          const key = 'usp.reader-state.v1.change.' + encodeURIComponent(scope.service) + '.' + encodeURIComponent(scope.issuer) + '.' + encodeURIComponent(scope.audience);
+          let blocked = false;
+          const queued = [];
+          window.__blockReaderStateEvents = () => { blocked = true; };
+          window.__releaseReaderStateEvents = () => {
+            blocked = false;
+            for (const event of queued.splice(0)) window.dispatchEvent(event);
+          };
+          window.addEventListener('storage', (event) => {
+            if (!blocked || event.key !== key) return;
+            event.stopImmediatePropagation();
+            queued.push(new StorageEvent('storage', {
+              key: event.key,
+              newValue: event.newValue,
+              oldValue: event.oldValue,
+              storageArea: event.storageArea,
+              url: event.url,
+            }));
+          }, true);
+          return true;
+        })()
+      `,
+    );
     const restoredSecondTab = await browserJson(second, outcomeOf('client.getSnapshot()'));
     assert(asRecord(restoredSecondTab)?.ok === true, 'open second tab restores Reader State');
     assert(
@@ -500,6 +527,49 @@ export default {
       (await browserJson(second, 'return window.__manualRefreshIssuedAt;')) ===
         manualRefreshIssuedAt,
       'manual refresh replacement propagates to the already-current tab',
+    );
+
+    phase = 'newer cross-tab login wins over an older delayed refresh';
+    let releaseDelayedRefresh: () => void = () => undefined;
+    let delayedRefreshReady: () => void = () => undefined;
+    const delayedRefreshBlocked = new Promise<void>((resolve) => {
+      releaseDelayedRefresh = resolve;
+    });
+    const delayedRefreshResponse = new Promise<void>((resolve) => {
+      delayedRefreshReady = resolve;
+    });
+    await second.route('**/v1/auth/reader-state', async (route) => {
+      const response = await route.fetch();
+      delayedRefreshReady();
+      await delayedRefreshBlocked;
+      await route.fulfill({ response });
+    });
+    await browserJson(second, 'window.__blockReaderStateEvents(); return null;');
+    const delayedRefresh = browserJson(second, outcomeOf('client.refreshReaderState()'));
+    await delayedRefreshResponse;
+    const newerCrossTabLogin = await browserJson(
+      page,
+      outcomeOf(`client.login({ email: '${email}', password: '${password}' })`),
+    );
+    assert(asRecord(newerCrossTabLogin)?.ok === true, 'newer cross-tab login succeeds');
+    const newerCrossTabSubject = asRecord(asRecord(newerCrossTabLogin)?.value)?.subject;
+    assert(typeof newerCrossTabSubject === 'string', 'newer cross-tab subject is available');
+    releaseDelayedRefresh();
+    const delayedRefreshOutcome = await delayedRefresh;
+    assert(
+      asRecord(delayedRefreshOutcome)?.ok === false &&
+        asRecord(delayedRefreshOutcome)?.code === 'unauthenticated',
+      'older refresh is rejected after the persisted mutation revision advances',
+    );
+    await browserJson(second, 'window.__releaseReaderStateEvents(); return null;');
+    await second.waitForFunction(
+      `window.__replacementSubject === ${JSON.stringify(newerCrossTabSubject)}`,
+    );
+    await second.unroute('**/v1/auth/reader-state');
+    const crossTabRefresh = await browserJson(second, outcomeOf('client.getSnapshot()'));
+    assert(
+      asRecord(asRecord(crossTabRefresh)?.value)?.subject === newerCrossTabSubject,
+      'newer cross-tab login remains the shared Reader State',
     );
 
     phase = 'newer replacement wins over a delayed login response';
@@ -887,10 +957,41 @@ export default {
           unavailableStorage: await run(originalLocks, undefined),
           failingStorage: await run(originalLocks, failingStorage),
         };
+        let runtimeStorageFailure = false;
+        const runtimeScope = { service: window.location.origin, issuer: window.__cfg.issuer, audience: window.__cfg.audience };
+        const stateKey = ConsumerClient.readerStateStorageKey(runtimeScope);
+        const runtimeStorage = new Proxy(originalStorage, {
+          get(target, property, receiver) {
+            if (property === 'getItem' || property === 'setItem' || property === 'removeItem') {
+              return (key, value) => {
+                if (
+                  runtimeStorageFailure &&
+                  key === stateKey &&
+                  (property === 'setItem' || property === 'removeItem')
+                )
+                  throw new Error('storage denied');
+                return target[property].call(target, key, value);
+              };
+            }
+            return Reflect.get(target, property, receiver);
+          },
+        });
+        Object.defineProperty(window, 'localStorage', { configurable: true, value: runtimeStorage });
+        const runtimeClient = ConsumerClient.createConsumerClient({
+          baseUrl: window.location.origin,
+          issuer: window.__cfg.issuer,
+          audience: window.__cfg.audience,
+          readerStateStore: runtimeStorage,
+          broadcast: null,
+        });
+        const runtimeInitialRefresh = await (async () => { ${outcomeOf('runtimeClient.refreshReaderState()')} })();
+        runtimeStorageFailure = true;
+        const runtimeRefresh = await (async () => { ${outcomeOf('runtimeClient.refreshReaderState()')} })();
+        const runtimeLogout = await (async () => { ${outcomeOf('runtimeClient.logout()')} })();
         Object.defineProperty(navigator, 'locks', { configurable: true, value: originalLocks });
         Object.defineProperty(window, 'localStorage', { configurable: true, value: originalStorage });
         window.fetch = originalFetch;
-        return { outcomes, requests };
+        return { outcomes, requests, runtimeInitialRefresh, runtimeRefresh, runtimeLogout };
       `,
     );
     const unsupportedRecord = asRecord(asRecord(unsupportedOutcomes)?.outcomes);
@@ -919,6 +1020,19 @@ export default {
       Array.isArray(asRecord(unsupportedOutcomes)?.requests) &&
         (asRecord(unsupportedOutcomes)?.requests as unknown[]).length === 0,
       'unsupported browser performs no login or server sign-out mutation',
+    );
+    assert(
+      asRecord(unsupportedOutcomes)?.runtimeInitialRefresh !== undefined &&
+        asRecord(asRecord(unsupportedOutcomes)?.runtimeInitialRefresh)?.ok === true,
+      'runtime storage scenario constructs and refreshes successfully before failure',
+    );
+    assert(
+      asRecord(asRecord(unsupportedOutcomes)?.runtimeRefresh)?.code === 'unsupported-browser',
+      'runtime localStorage save failure has stable unsupported-browser code',
+    );
+    assert(
+      asRecord(asRecord(unsupportedOutcomes)?.runtimeLogout)?.code === 'unsupported-browser',
+      'runtime localStorage clear failure has stable unsupported-browser code',
     );
     await unsupported.close();
 

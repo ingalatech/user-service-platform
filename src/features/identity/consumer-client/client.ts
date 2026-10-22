@@ -312,6 +312,18 @@ export function createConsumerClient(options: ConsumerClientOptions): ConsumerCl
   let renewal: Promise<ConsumerReaderState | null> | null = null;
   const observers = new Set<(state: ConsumerReaderState | null) => void>();
 
+  const readAuthMutationVersion = (): number => {
+    if (authMutationVersionStorage === undefined) return 0;
+    try {
+      const storedVersion = Number(
+        authMutationVersionStorage.getItem(authMutationVersionStorageKey),
+      );
+      return Number.isSafeInteger(storedVersion) && storedVersion > 0 ? storedVersion : 0;
+    } catch {
+      throw unsupportedBrowser();
+    }
+  };
+
   function toClientError(error: unknown, status: number, action: string): ConsumerClientError {
     if (status >= 500) {
       return new ConsumerClientError(
@@ -395,7 +407,11 @@ export function createConsumerClient(options: ConsumerClientOptions): ConsumerCl
   const clear = (status: AuthoritativeSessionStatus): void => {
     generation += 1;
     sessionStatus = status;
-    clearStoredReaderState(store, scope);
+    try {
+      clearStoredReaderState(store, scope);
+    } catch {
+      throw unsupportedBrowser();
+    }
   };
 
   const verify = async (
@@ -427,6 +443,7 @@ export function createConsumerClient(options: ConsumerClientOptions): ConsumerCl
 
   const issue = async (authMutationVersion?: number): Promise<ConsumerReaderState | null> => {
     const attemptGeneration = generation;
+    const attemptAuthMutationVersion = authMutationVersion ?? readAuthMutationVersion();
     const request = async () =>
       api.POST('/v1/auth/reader-state', { credentials: 'include' } as Record<string, unknown>);
     let response;
@@ -459,10 +476,15 @@ export function createConsumerClient(options: ConsumerClientOptions): ConsumerCl
         'Issued Reader State failed verification.',
       );
     }
-    saveStoredReaderState(store, scope, {
-      readerState: response.data.readerState,
-      expiresAt: verified.expiresAt,
-    });
+    if (attemptAuthMutationVersion !== readAuthMutationVersion()) return null;
+    try {
+      saveStoredReaderState(store, scope, {
+        readerState: response.data.readerState,
+        expiresAt: verified.expiresAt,
+      });
+    } catch {
+      throw unsupportedBrowser();
+    }
     sessionStatus = 'authenticated';
     broadcast?.notify('replacement', source, authMutationVersion);
     const state = { ...verified, sessionStatus } as const;

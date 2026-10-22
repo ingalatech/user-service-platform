@@ -306,6 +306,43 @@ describe('Reader State consumer client', () => {
     }
   });
 
+  it('maps storage failures after construction to unsupported-browser', async () => {
+    const network = transport();
+    let failSave = false;
+    let failClear = false;
+    const values = new Map<string, string>();
+    const localStore: KeyValueStorage = {
+      getItem: (key) => values.get(key) ?? null,
+      setItem: (key, value) => {
+        if (failSave) throw new Error('storage denied');
+        values.set(key, value);
+      },
+      removeItem: (key) => {
+        if (failClear) throw new Error('storage denied');
+        values.delete(key);
+      },
+    };
+    const client = createConsumerClient({
+      baseUrl: scope.service,
+      issuer: scope.issuer,
+      audience: scope.audience,
+      readerStateStore: localStore,
+      broadcast: null,
+      fetchImpl: network.fetchImpl,
+    });
+    await client.register({ name: 'Ada', email: 'ada@example.com', password: 'correct-horse-41' });
+    await client.verifyEmail(verificationToken());
+    await client.login({ email: 'ada@example.com', password: 'correct-horse-41' });
+
+    failSave = true;
+    await expect(client.refreshReaderState()).rejects.toMatchObject({
+      code: 'unsupported-browser',
+    });
+    failSave = false;
+    failClear = true;
+    await expect(client.logout()).rejects.toMatchObject({ code: 'unsupported-browser' });
+  });
+
   it('lets a newer cross-tab replacement supersede delayed login and refresh work', async () => {
     const network = transport();
     const localStore = memoryStorage();

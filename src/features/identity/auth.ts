@@ -14,9 +14,9 @@ import type { AuthMailer } from './mailer.js';
 import type { AuthPolicy } from './policy.js';
 import { identitySchema } from './schema.js';
 
-// Application-owned consumer-token options (spec #150, ADR-0013). Issuer,
+// Application-owned Reader State options (spec #195, ADR-0013). Issuer,
 // audience and lifetime arrive validated from the effective non-secret
-// configuration via `resolveConsumerTokenConfig`; this layer only translates
+// configuration; this layer only translates
 // them into the pinned engine JWT capability.
 export interface ReaderStateOptions {
   readonly issuer: string;
@@ -51,7 +51,7 @@ export interface IdentityAuthInput {
 }
 
 export interface ReaderStateAuthInput extends IdentityAuthInput {
-  // Validated consumer-token options (issuer/audience/TTL). Required here so
+  // Validated Reader State options (issuer/audience/TTL). Required here so
   // the JWT capability is always configured explicitly; deployments without
   // stable values fail closed before this builder runs.
   readonly readerState: ReaderStateOptions;
