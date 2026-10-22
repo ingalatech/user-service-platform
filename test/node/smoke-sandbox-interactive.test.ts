@@ -149,17 +149,22 @@ describe('interactive sandbox smoke', () => {
     const environmentFile = loadEnvironmentFile(environmentFilePath('.', 'sandbox'));
     const smokeEmail = environmentFile.AUTH_MAIL_ALLOWLIST.split(',')[0]?.trim() ?? email;
     const prompt = prompts(1, [password]);
-    const requests: string[] = [];
+    const requests: { readonly request: string; readonly cookie: string | null }[] = [];
     const fetchImpl: typeof fetch = (input, init) => {
       const path = new URL(requestPath(input)).pathname;
-      requests.push(`${init?.method ?? 'GET'} ${path}`);
+      requests.push({
+        request: `${init?.method ?? 'GET'} ${path}`,
+        cookie: new Headers(init?.headers).get('cookie'),
+      });
       if (path === '/v1/health') return Promise.resolve(jsonResponse(200, { status: 'ok' }));
       if (path === '/v1/me') {
         return Promise.resolve(
-          requests.filter((request) => request.endsWith(' /v1/me')).length === 1
+          requests.filter(({ request }) => request.endsWith(' /v1/me')).length === 1
             ? jsonResponse(401, { code: 'unauthenticated' })
-            : requests.some((request) => request === 'POST /v1/auth/sign-out')
-              ? jsonResponse(401, { code: 'unauthenticated' })
+            : requests.some(({ request }) => request === 'POST /v1/auth/sign-out')
+              ? requests.at(-1)?.cookie === 'session=opaque'
+                ? jsonResponse(401, { code: 'unauthenticated' })
+                : jsonResponse(200, { id: 'user' })
               : jsonResponse(200, { id: 'user' }),
         );
       }
@@ -173,8 +178,13 @@ describe('interactive sandbox smoke', () => {
         return Promise.resolve(jsonResponse(202, { status: 'ok' }));
       if (path === '/v1/auth/reader-state')
         return Promise.resolve(
-          requests.some((request) => request === 'POST /v1/auth/sign-out')
-            ? jsonResponse(401, { code: 'unauthenticated' })
+          requests.some(({ request }) => request === 'POST /v1/auth/sign-out')
+            ? requests.at(-1)?.cookie === 'session=opaque'
+              ? jsonResponse(401, { code: 'unauthenticated' })
+              : jsonResponse(200, {
+                  readerState: 'header.payload.signature',
+                  expiresAt: Math.floor(Date.now() / 1000) + 900,
+                })
             : jsonResponse(200, {
                 readerState: 'header.payload.signature',
                 expiresAt: Math.floor(Date.now() / 1000) + 900,
@@ -186,7 +196,7 @@ describe('interactive sandbox smoke', () => {
 
     await runInteractiveSandboxSmoke({ environmentFile, prompts: prompt, fetchImpl });
 
-    expect(requests).toEqual([
+    expect(requests.map(({ request }) => request)).toEqual([
       'GET /v1/health',
       'GET /v1/me',
       'POST /v1/auth/register',
@@ -199,7 +209,74 @@ describe('interactive sandbox smoke', () => {
       'GET /v1/me',
       'POST /v1/auth/reader-state',
     ]);
+    expect(requests.map(({ cookie }) => cookie)).toEqual([
+      null,
+      null,
+      null,
+      null,
+      'session=opaque',
+      null,
+      'session=opaque',
+      'session=opaque',
+      'session=opaque',
+      'session=opaque',
+      'session=opaque',
+    ]);
     expect(smokeEmail).toBeTruthy();
+  });
+
+  it('skips a supplied verification token when an exact recipient is already verified', async () => {
+    const config = {
+      ...resolveSmokeConfig({
+        SMOKE_SANDBOX_BASE_URL: baseUrl,
+        SMOKE_SANDBOX_EMAIL: email,
+        SMOKE_PASSWORD: password,
+      }),
+      verificationToken: token,
+    };
+    const paths: string[] = [];
+    let signedOut = false;
+
+    await runSandboxSmokeWorkflow(config, {
+      fetchImpl: (input, init) => {
+        const path = new URL(requestPath(input)).pathname;
+        paths.push(`${init?.method ?? 'GET'} ${path}`);
+        if (path === '/v1/health') return Promise.resolve(jsonResponse(200, { status: 'ok' }));
+        if (path === '/v1/me')
+          return Promise.resolve(
+            paths.filter((request) => request === 'GET /v1/me').length === 1
+              ? jsonResponse(401, { code: 'unauthenticated' })
+              : signedOut
+                ? jsonResponse(401, { code: 'unauthenticated' })
+                : jsonResponse(200, { id: 'user' }),
+          );
+        if (path === '/v1/auth/register')
+          return Promise.resolve(jsonResponse(201, { emailVerified: false }));
+        if (path === '/v1/auth/login')
+          return Promise.resolve(
+            jsonResponse(200, { user: { id: 'user' } }, { 'set-cookie': 'session=opaque' }),
+          );
+        if (path === '/v1/auth/request-verification')
+          return Promise.resolve(jsonResponse(202, { status: 'ok' }));
+        if (path === '/v1/auth/reader-state')
+          return Promise.resolve(
+            signedOut
+              ? jsonResponse(401, { code: 'unauthenticated' })
+              : jsonResponse(200, {
+                  readerState: 'header.payload.signature',
+                  expiresAt: Math.floor(Date.now() / 1000) + 900,
+                }),
+          );
+        if (path === '/v1/auth/sign-out') {
+          signedOut = true;
+          return Promise.resolve(jsonResponse(200, { status: 'ok' }));
+        }
+        if (path === '/v1/auth/verify-email') throw new Error('verification token was replayed');
+        throw new Error(`unexpected request ${path}`);
+      },
+    });
+
+    expect(paths).not.toContain('POST /v1/auth/verify-email');
   });
 
   it.each([

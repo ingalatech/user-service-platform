@@ -412,7 +412,7 @@ export async function runSandboxSmokeWorkflow(
   ) {
     verificationToken = await options.requestVerificationToken();
   }
-  if (verificationToken !== undefined) {
+  if (!alreadyVerified && verificationToken !== undefined) {
     const verify = await request('verify-email', '/v1/auth/verify-email', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -489,7 +489,7 @@ export async function runSandboxSmokeWorkflow(
       fail('sign-out', signOut.res.status, 'expected 200 {status:"ok"}');
     }
 
-    const anonymousMe = await request('me-after-sign-out', '/v1/me');
+    const anonymousMe = await request('me-after-sign-out', '/v1/me', {}, authenticatedCookie);
     if (anonymousMe.res.status !== 401 || problemCode(anonymousMe.payload) !== 'unauthenticated') {
       fail('me-after-sign-out', anonymousMe.res.status, 'expected 401 unauthenticated');
     }
@@ -498,6 +498,7 @@ export async function runSandboxSmokeWorkflow(
       'reader-state-after-sign-out',
       '/v1/auth/reader-state',
       { method: 'POST', headers: { 'content-type': 'application/json' } },
+      authenticatedCookie,
     );
     if (
       anonymousReaderState.res.status !== 401 ||
