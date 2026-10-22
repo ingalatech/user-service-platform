@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events';
 import { emitKeypressEvents } from 'node:readline';
 
 interface PromptKey {
@@ -12,7 +13,9 @@ export interface PromptInput {
   setRawMode(mode: boolean): unknown;
   resume(): unknown;
   pause(): unknown;
+  on(event: 'data', listener: (chunk: unknown) => void): unknown;
   on(event: 'keypress', listener: KeypressListener): unknown;
+  off(event: 'data', listener: (chunk: unknown) => void): unknown;
   off(event: 'keypress', listener: KeypressListener): unknown;
 }
 
@@ -33,6 +36,10 @@ export async function selectWithKeys(
 
   let selectedIndex = defaultIndex;
   const wasRaw = input.isRaw === true;
+  const keypressInput = new EventEmitter();
+  const onData = (chunk: unknown): void => {
+    keypressInput.emit('data', chunk);
+  };
   const renderChoices = (redraw = false): void => {
     if (redraw) output.write(`\u001b[${String(choices.length)}A`);
     choices.forEach((choice, index) => {
@@ -44,15 +51,18 @@ export async function selectWithKeys(
   };
 
   output.write(`\n? ${question}\n`);
-  // Node's runtime only needs the event methods above, despite its broader stream type declaration.
-  emitKeypressEvents(input as unknown as NodeJS.ReadableStream);
+  // Keep Node's readline decoder on a disposable proxy, not on the caller's stream.
+  emitKeypressEvents(keypressInput as unknown as NodeJS.ReadableStream);
+  input.on('data', onData);
   input.setRawMode(true);
   input.resume();
   renderChoices();
 
   return new Promise<number>((resolve, reject) => {
     const cleanup = (): void => {
-      input.off('keypress', onKeypress);
+      keypressInput.off('keypress', onKeypress);
+      keypressInput.removeAllListeners();
+      input.off('data', onData);
       input.setRawMode(wasRaw);
       input.pause();
     };
@@ -79,6 +89,6 @@ export async function selectWithKeys(
       if (selectedIndex !== previousIndex) renderChoices(true);
     };
 
-    input.on('keypress', onKeypress);
+    keypressInput.on('keypress', onKeypress);
   });
 }
