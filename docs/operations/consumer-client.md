@@ -16,9 +16,9 @@ or frontend repository change is part of this slice.
 - `refreshReaderState()` is the explicit "refresh benefits" operation.
 - `getSessionStatus()` distinguishes `unknown`, `authenticated` and
   `anonymous`. Restored Reader State always starts `unknown`.
-- `logout()` clears local state first, propagates credential-free logout and
-  then requests server sign-out. Server failure remains visible as
-  `logout-failed`.
+- `logout()` clears local state first and again after acquiring the deployment
+  mutation lock, then propagates credential-free logout and requests server
+  sign-out. Server failure remains visible as `logout-failed`.
 - `observeReaderState()` lets scripts/islands react to verified replacement or
   logout without polling.
 
@@ -43,8 +43,20 @@ Identity/session resolution.
 
 Valid state restores across full navigation, reload and another tab with zero
 Identity calls. Cross-tab replacement/logout messages contain only change type,
-source id and timestamp. Generation guards ensure an older in-flight result
-cannot overwrite a newer replacement or resurrect state after logout.
+source id, deployment mutation revision (`authMutationVersion`) and timestamp.
+Revisions order markers from serialized login/logout mutations; generation
+guards ensure an older in-flight result cannot overwrite a newer replacement or
+resurrect state after logout.
+
+## Browser support
+
+Browser `login()` and `logout()` require a secure context, Web Locks and usable
+`localStorage`. Missing or rejected Web Locks and unavailable or failing
+`localStorage` reject with the stable `unsupported-browser` code before any
+server auth mutation. Login therefore fails closed. Logout still clears the
+client's local Reader State first, then rejects visibly because server session
+revocation did not run; consumers must not present that failure as a completed
+server sign-out.
 
 ## Request behavior
 

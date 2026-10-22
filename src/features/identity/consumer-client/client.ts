@@ -34,6 +34,12 @@ export class ConsumerClientError extends Error {
   }
 }
 
+class AuthMutationOperationFailure extends Error {
+  constructor(readonly operationError: Error) {
+    super('Auth mutation operation failed.');
+  }
+}
+
 type ReaderStateChange = 'replacement' | 'logout';
 
 export interface ReaderStateBroadcast {
@@ -76,7 +82,7 @@ export function createBrowserReaderStateBroadcast(
   const key = broadcastKey(scope);
   const versionKey = authMutationVersionKey(scope);
   const globalRecord = globalThis as Record<string, unknown>;
-  const storage = globalRecord.localStorage as KeyValueStorage | undefined;
+  const storage = browserStorage(globalRecord);
   const windowCandidate = globalRecord.window as
     { addEventListener?: unknown; removeEventListener?: unknown } | undefined;
   return {
@@ -197,9 +203,29 @@ function memoryStorage(): KeyValueStorage {
   };
 }
 
-function defaultReaderStateStore(): KeyValueStorage {
-  const candidate = (globalThis as Record<string, unknown>).localStorage;
-  return isStorage(candidate) ? candidate : memoryStorage();
+function browserStorage(globalRecord: Record<string, unknown>): KeyValueStorage | undefined {
+  try {
+    const candidate = globalRecord.localStorage;
+    return isStorage(candidate) ? candidate : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function supportsBrowserStorage(storage: KeyValueStorage | undefined, probeKey: string): boolean {
+  if (storage === undefined) return false;
+  try {
+    storage.setItem(probeKey, '1');
+    storage.removeItem(probeKey);
+    return true;
+  } catch {
+    try {
+      storage.removeItem(probeKey);
+    } catch {
+      // Storage remains unavailable; auth mutations will fail closed.
+    }
+    return false;
+  }
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -221,8 +247,14 @@ export function createConsumerClient(options: ConsumerClientOptions): ConsumerCl
     issuer: options.issuer,
     audience: options.audience,
   };
-  const store = options.readerStateStore ?? defaultReaderStateStore();
   const source = crypto.randomUUID();
+  const globalRecord = globalThis as Record<string, unknown>;
+  const storageCandidate = browserStorage(globalRecord);
+  const storageProbeKey = `${authMutationLockKey(scope)}.probe.${source}`;
+  const authMutationVersionStorage = supportsBrowserStorage(storageCandidate, storageProbeKey)
+    ? storageCandidate
+    : undefined;
+  const store = options.readerStateStore ?? authMutationVersionStorage ?? memoryStorage();
   const broadcast =
     options.broadcast !== undefined
       ? options.broadcast
@@ -231,7 +263,6 @@ export function createConsumerClient(options: ConsumerClientOptions): ConsumerCl
         : null;
   const nowSeconds = options.nowSeconds ?? (() => Math.floor(Date.now() / 1000));
   const retryDelayMs = options.renewalRetryDelayMs ?? 250;
-  const globalRecord = globalThis as Record<string, unknown>;
   const navigatorCandidate = globalRecord.navigator as
     | {
         locks?: {
@@ -244,13 +275,14 @@ export function createConsumerClient(options: ConsumerClientOptions): ConsumerCl
       }
     | undefined;
   const authMutationLock = authMutationLockKey(scope);
-  const authMutationVersionStorage = isStorage(globalRecord.localStorage)
-    ? globalRecord.localStorage
-    : undefined;
   const authMutationVersionStorageKey = authMutationVersionKey(scope);
-  const storedAuthMutationVersion = Number(
-    authMutationVersionStorage?.getItem(authMutationVersionStorageKey),
-  );
+  const storedAuthMutationVersion = (() => {
+    try {
+      return Number(authMutationVersionStorage?.getItem(authMutationVersionStorageKey));
+    } catch {
+      return 0;
+    }
+  })();
   const clientOptions: ClientOptions = { baseUrl: options.baseUrl };
   if (options.fetchImpl !== undefined) clientOptions.fetch = options.fetchImpl;
   const api = createClient<paths>(clientOptions);
@@ -308,29 +340,59 @@ export function createConsumerClient(options: ConsumerClientOptions): ConsumerCl
     );
   }
 
-  const coordinateAuthMutation = <T>(
+  const unsupportedBrowser = (): ConsumerClientError =>
+    new ConsumerClientError(
+      'unsupported-browser',
+      'Consumer Identity requires Web Locks and usable localStorage.',
+    );
+
+  const coordinateAuthMutation = async <T>(
     operation: (authMutationVersion?: number) => Promise<T>,
   ): Promise<T> => {
     if (navigatorCandidate?.locks !== undefined && authMutationVersionStorage !== undefined) {
-      return navigatorCandidate.locks.request(authMutationLock, { mode: 'exclusive' }, () => {
-        const storedVersion = Number(
-          authMutationVersionStorage.getItem(authMutationVersionStorageKey),
+      try {
+        return await navigatorCandidate.locks.request(
+          authMutationLock,
+          { mode: 'exclusive' },
+          async () => {
+            if (!supportsBrowserStorage(authMutationVersionStorage, storageProbeKey)) {
+              throw unsupportedBrowser();
+            }
+            let storedVersion: number;
+            try {
+              storedVersion = Number(
+                authMutationVersionStorage.getItem(authMutationVersionStorageKey),
+              );
+            } catch {
+              throw unsupportedBrowser();
+            }
+            const authMutationVersion =
+              (Number.isSafeInteger(storedVersion) && storedVersion > 0 ? storedVersion : 0) + 1;
+            try {
+              authMutationVersionStorage.setItem(
+                authMutationVersionStorageKey,
+                String(authMutationVersion),
+              );
+            } catch {
+              throw unsupportedBrowser();
+            }
+            latestAuthMutationVersion = authMutationVersion;
+            try {
+              return await operation(authMutationVersion);
+            } catch (error) {
+              throw new AuthMutationOperationFailure(
+                error instanceof Error ? error : new Error('Auth mutation failed.'),
+              );
+            }
+          },
         );
-        const authMutationVersion =
-          (Number.isSafeInteger(storedVersion) && storedVersion > 0 ? storedVersion : 0) + 1;
-        authMutationVersionStorage.setItem(
-          authMutationVersionStorageKey,
-          String(authMutationVersion),
-        );
-        latestAuthMutationVersion = authMutationVersion;
-        return operation(authMutationVersion);
-      });
+      } catch (error) {
+        if (error instanceof AuthMutationOperationFailure) throw error.operationError;
+        throw unsupportedBrowser();
+      }
     }
     if (globalRecord.window !== undefined) {
-      throw new ConsumerClientError(
-        'unsupported-browser',
-        'Consumer Identity requires browser auth-mutation coordination.',
-      );
+      throw unsupportedBrowser();
     }
     return operation();
   };
@@ -491,6 +553,7 @@ export function createConsumerClient(options: ConsumerClientOptions): ConsumerCl
       clear('anonymous');
       for (const observer of observers) observer(null);
       await coordinateAuthMutation(async (authMutationVersion) => {
+        clear('anonymous');
         broadcast?.notify('logout', source, authMutationVersion);
         try {
           const response = await api.POST('/v1/auth/sign-out', {

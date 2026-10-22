@@ -549,6 +549,24 @@ export default {
     const laterLogoutOutcome = await laterLogout;
     assert(asRecord(laterLogoutOutcome)?.ok === true, 'later logout succeeds');
     await page.unroute('**/v1/auth/login');
+    const localStateAfterDelayedLoginLogout = await browserJson(
+      second,
+      outcomeOf(`
+        (async () => {
+          const scope = { service: window.location.origin, issuer: window.__cfg.issuer, audience: window.__cfg.audience };
+          const key = ConsumerClient.readerStateStorageKey(scope);
+          return {
+            snapshot: await client.getSnapshot(),
+            stored: window.localStorage.getItem(key),
+          };
+        })()
+      `),
+    );
+    assert(
+      asRecord(asRecord(localStateAfterDelayedLoginLogout)?.value)?.snapshot === null &&
+        asRecord(asRecord(localStateAfterDelayedLoginLogout)?.value)?.stored === null,
+      'serialized logout owns final local Reader State cleanup',
+    );
     const refreshAfterDelayedLogin = await browserJson(
       second,
       outcomeOf('client.refreshReaderState()'),
@@ -725,6 +743,97 @@ export default {
     assert(asRecord(failedLogout)?.ok === false, 'failed logout surfaces');
     assert(asRecord(failedLogout)?.code === 'logout-failed', 'stable logout-failed code');
     await page.unroute('**/v1/auth/sign-out');
+
+    phase = 'unsupported browser auth mutations fail closed after local logout';
+    const unsupported = await context.newPage();
+    await unsupported.goto(`${base}${DOC_A}`);
+    await installClient(unsupported, bundle);
+    const unsupportedOutcomes = await browserJson(
+      unsupported,
+      `
+        const originalLocks = navigator.locks;
+        const originalStorage = window.localStorage;
+        const requests = [];
+        const originalFetch = window.fetch;
+        window.fetch = async (input, init) => {
+          const path = new URL(input instanceof Request ? input.url : input, window.location.href).pathname;
+          if (path === '/v1/auth/login' || path === '/v1/auth/sign-out') requests.push(path);
+          return originalFetch(input, init);
+        };
+        const makeStore = () => {
+          const values = new Map();
+          return {
+            values,
+            getItem: (key) => values.get(key) ?? null,
+            setItem: (key, value) => values.set(key, value),
+            removeItem: (key) => values.delete(key),
+          };
+        };
+        const run = async (locks, storage) => {
+          Object.defineProperty(navigator, 'locks', { configurable: true, value: locks });
+          Object.defineProperty(window, 'localStorage', { configurable: true, value: storage });
+          const store = makeStore();
+          const client = ConsumerClient.createConsumerClient({
+            baseUrl: window.location.origin,
+            issuer: window.__cfg.issuer,
+            audience: window.__cfg.audience,
+            readerStateStore: store,
+            broadcast: null,
+          });
+          const scope = { service: window.location.origin, issuer: window.__cfg.issuer, audience: window.__cfg.audience };
+          const stateKey = ConsumerClient.readerStateStorageKey(scope);
+          store.setItem(stateKey, 'locally-retained-state');
+          const login = await (async () => { ${outcomeOf(`client.login({ email: '${otherEmail}', password: '${password}' })`)} })();
+          const retainedBeforeLogout = store.getItem(stateKey);
+          const logout = await (async () => { ${outcomeOf('client.logout()')} })();
+          return { login, logout, retainedBeforeLogout, storedAfterLogout: store.getItem(stateKey) };
+        };
+        const rejectedLocks = { request: () => Promise.reject(new Error('lock denied')) };
+        const failingStorage = {
+          getItem: () => { throw new Error('storage denied'); },
+          setItem: () => { throw new Error('storage denied'); },
+          removeItem: () => { throw new Error('storage denied'); },
+        };
+        const outcomes = {
+          absentLocks: await run(undefined, originalStorage),
+          rejectedLocks: await run(rejectedLocks, originalStorage),
+          unavailableStorage: await run(originalLocks, undefined),
+          failingStorage: await run(originalLocks, failingStorage),
+        };
+        Object.defineProperty(navigator, 'locks', { configurable: true, value: originalLocks });
+        Object.defineProperty(window, 'localStorage', { configurable: true, value: originalStorage });
+        window.fetch = originalFetch;
+        return { outcomes, requests };
+      `,
+    );
+    const unsupportedRecord = asRecord(asRecord(unsupportedOutcomes)?.outcomes);
+    for (const scenario of [
+      'absentLocks',
+      'rejectedLocks',
+      'unavailableStorage',
+      'failingStorage',
+    ]) {
+      const result = asRecord(unsupportedRecord?.[scenario]);
+      assert(
+        asRecord(result?.login)?.code === 'unsupported-browser',
+        `${scenario} login has stable unsupported-browser code`,
+      );
+      assert(
+        result?.retainedBeforeLogout === 'locally-retained-state',
+        `${scenario} login fails closed before changing local state`,
+      );
+      assert(
+        asRecord(result.logout)?.code === 'unsupported-browser',
+        `${scenario} logout reports server revocation did not run`,
+      );
+      assert(result.storedAfterLogout === null, `${scenario} logout clears local state first`);
+    }
+    assert(
+      Array.isArray(asRecord(unsupportedOutcomes)?.requests) &&
+        (asRecord(unsupportedOutcomes)?.requests as unknown[]).length === 0,
+      'unsupported browser performs no login or server sign-out mutation',
+    );
+    await unsupported.close();
 
     await second.close();
     await context.close();
