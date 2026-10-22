@@ -28,6 +28,7 @@ export interface Env {
   AUTH_REGISTRATION_ENABLED?: string;
   AUTH_EMAIL_PASSWORD_ENABLED?: string;
   AUTH_REQUIRE_EMAIL_VERIFICATION?: string;
+  AUTH_EMAIL_VERIFICATION_TTL_SECONDS?: string;
   // Better Auth signing secret. Required in sandbox/production; local/test
   // environments fall back to an explicit dev-only value (never a production
   // credential) so tests need no secrets.

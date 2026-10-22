@@ -28,6 +28,13 @@ function testEnv(overrides: Partial<Env> = {}): Env {
 const mailer = new InMemoryAuthMailer();
 const app = createApp({ authMailer: mailer });
 
+async function waitForVerificationMessages(count: number): Promise<void> {
+  for (let attempt = 0; attempt < 20 && mailer.sent.length < count; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  expect(mailer.sent.length).toBeGreaterThanOrEqual(count);
+}
+
 async function post(path: string, body: unknown, overrides: Partial<Env> = {}): Promise<Response> {
   return app.request(
     path,
@@ -54,6 +61,7 @@ beforeEach(async () => {
     db.prepare('DELETE FROM "session"'),
     db.prepare('DELETE FROM "account"'),
     db.prepare('DELETE FROM "verification"'),
+    db.prepare('DELETE FROM "email_verification_token"'),
     db.prepare('DELETE FROM "user"'),
   ]);
   mailer.clear();
@@ -67,6 +75,7 @@ describe('application-owned mail action URLs', () => {
       password: 'correct-horse-41',
     });
     expect(res.status).toBe(201);
+    await waitForVerificationMessages(1);
     expect(mailer.sent).toHaveLength(1);
 
     const message = mailer.sent[0];
@@ -85,6 +94,7 @@ describe('application-owned mail action URLs', () => {
       email: 'reset-page@example.com',
       password: 'correct-horse-41',
     });
+    await waitForVerificationMessages(1);
     const token = new URL(mailer.sent[mailer.sent.length - 1]?.url ?? '').searchParams.get('token');
     expect(token).not.toBeNull();
     await post('/v1/auth/verify-email', { token });
@@ -116,6 +126,7 @@ describe('application-owned mail action URLs', () => {
       { name: 'Custom Page', email: 'custom-page@example.com', password: 'correct-horse-41' },
       overrides,
     );
+    await waitForVerificationMessages(1);
     expect(mailer.sent).toHaveLength(1);
     const verification = new URL(mailer.sent[0]?.url ?? '');
     expect(mailer.sent[0]?.url).not.toContain('/api/auth');
@@ -147,6 +158,7 @@ describe('service-owned fallback browser pages', () => {
       email: 'browser-verify@example.com',
       password: 'correct-horse-41',
     });
+    await waitForVerificationMessages(1);
     const token = new URL(mailer.sent[mailer.sent.length - 1]?.url ?? '').searchParams.get('token');
     expect(token).not.toBeNull();
 
@@ -169,6 +181,7 @@ describe('service-owned fallback browser pages', () => {
       email: 'browser-reset@example.com',
       password: 'correct-horse-41',
     });
+    await waitForVerificationMessages(1);
     const verifyToken = new URL(mailer.sent[mailer.sent.length - 1]?.url ?? '').searchParams.get(
       'token',
     );

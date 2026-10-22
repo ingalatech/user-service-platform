@@ -35,6 +35,7 @@ import {
 } from './route.js';
 import { resolveAuthSecret } from './secret.js';
 import { resolveSessionContext, toAuthenticatedUser } from './session.js';
+import { consumeLatestVerificationToken } from './verification-token.js';
 
 export interface IdentityRouterOptions {
   // Test seam: an explicitly provided mailer (in-memory in tests) takes
@@ -382,8 +383,26 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
   });
 
   router.openapi(verifyEmailRoute, async (c) => {
-    const { auth } = scopedAuth(c, override);
     const input = c.req.valid('json');
+    // This conditional update is the linearization point. It runs before
+    // Better Auth can take any verification branch, including its already-
+    // verified fast path; later engine failure is intentionally fail-closed.
+    let consumed: boolean;
+    try {
+      consumed = await consumeLatestVerificationToken({ db: c.env.DB, token: input.token });
+    } catch {
+      consumed = false;
+    }
+    if (!consumed) {
+      return problem(
+        c,
+        400,
+        'verification-invalid',
+        'Invalid or expired verification',
+        'The verification action is invalid or has expired.',
+      );
+    }
+    const { auth } = scopedAuth(c, override);
     const outcome = await callEngine(() =>
       auth.api.verifyEmail({
         query: { token: input.token },

@@ -88,7 +88,10 @@ function sessionCookieFrom(res: Response): string | null {
   return pair === undefined || pair.length === 0 ? null : pair.trim();
 }
 
-function verificationToken(): string {
+async function verificationToken(): Promise<string> {
+  for (let attempt = 0; attempt < 20 && mailer.sent.length === 0; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
   const last = mailer.sent[mailer.sent.length - 1];
   if (last === undefined) {
     throw new Error('Expected a captured verification message.');
@@ -114,7 +117,7 @@ async function registerVerifyLogin(email: string): Promise<string> {
   // consumer-origin verification and its CORS grant, not a headerless call.
   const verified = await post(
     '/v1/auth/verify-email',
-    { token: verificationToken() },
+    { token: await verificationToken() },
     { headers: originHeaders, overrides },
   );
   expect(verified.status).toBe(200);
@@ -144,6 +147,7 @@ beforeEach(async () => {
     db.prepare('DELETE FROM "session"'),
     db.prepare('DELETE FROM "account"'),
     db.prepare('DELETE FROM "verification"'),
+    db.prepare('DELETE FROM "email_verification_token"'),
     db.prepare('DELETE FROM "jwks"'),
     db.prepare('DELETE FROM "user"'),
   ]);

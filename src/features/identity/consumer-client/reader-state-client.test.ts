@@ -14,6 +14,7 @@ import { readerStateStorageKey, type KeyValueStorage } from './storage.js';
 const workerEnv = env;
 const migrations = env.TEST_MIGRATIONS as D1Migration[];
 const mailer = new InMemoryAuthMailer();
+let verificationMessageCount = 0;
 const app = createApp({ authMailer: mailer });
 const scope = {
   service: 'http://localhost',
@@ -40,7 +41,12 @@ function memoryStorage(): KeyValueStorage {
   };
 }
 
-function verificationToken(): string {
+async function verificationToken(): Promise<string> {
+  const expectedCount = verificationMessageCount + 1;
+  for (let attempt = 0; attempt < 20 && mailer.sent.length < expectedCount; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  verificationMessageCount = expectedCount;
   const message = mailer.sent.at(-1);
   if (message === undefined) throw new Error('Expected a verification message.');
   const token = new URL(message.url).searchParams.get('token');
@@ -97,10 +103,12 @@ beforeEach(async () => {
     workerEnv.DB.prepare('DELETE FROM "session"'),
     workerEnv.DB.prepare('DELETE FROM "account"'),
     workerEnv.DB.prepare('DELETE FROM "verification"'),
+    workerEnv.DB.prepare('DELETE FROM "email_verification_token"'),
     workerEnv.DB.prepare('DELETE FROM "jwks"'),
     workerEnv.DB.prepare('DELETE FROM "user"'),
   ]);
   mailer.clear();
+  verificationMessageCount = 0;
 });
 
 describe('Reader State consumer client', () => {
@@ -171,7 +179,7 @@ describe('Reader State consumer client', () => {
     });
 
     await first.register({ name: 'Ada', email: 'ada@example.com', password: 'correct-horse-41' });
-    await first.verifyEmail(verificationToken());
+    await first.verifyEmail(await verificationToken());
     const authenticated = await first.login({
       email: 'ada@example.com',
       password: 'correct-horse-41',
@@ -230,7 +238,7 @@ describe('Reader State consumer client', () => {
       nowSeconds: () => nowSeconds,
     });
     await client.register({ name: 'Ada', email: 'ada@example.com', password: 'correct-horse-41' });
-    await client.verifyEmail(verificationToken());
+    await client.verifyEmail(await verificationToken());
     await client.login({ email: 'ada@example.com', password: 'correct-horse-41' });
 
     network.reset();
@@ -264,7 +272,7 @@ describe('Reader State consumer client', () => {
       fetchImpl: network.fetchImpl,
     });
     await client.register({ name: 'Ada', email: 'ada@example.com', password: 'correct-horse-41' });
-    await client.verifyEmail(verificationToken());
+    await client.verifyEmail(await verificationToken());
     await client.login({ email: 'ada@example.com', password: 'correct-horse-41' });
 
     const key = readerStateStorageKey(scope);
@@ -331,7 +339,7 @@ describe('Reader State consumer client', () => {
       fetchImpl: network.fetchImpl,
     });
     await client.register({ name: 'Ada', email: 'ada@example.com', password: 'correct-horse-41' });
-    await client.verifyEmail(verificationToken());
+    await client.verifyEmail(await verificationToken());
     await client.login({ email: 'ada@example.com', password: 'correct-horse-41' });
 
     failSave = true;
@@ -503,7 +511,7 @@ describe('Reader State consumer client', () => {
         fetchImpl: network.fetchImpl,
       });
       await setup.register({ name: 'Ada', email: 'ada@example.com', password: 'correct-horse-41' });
-      await setup.verifyEmail(verificationToken());
+      await setup.verifyEmail(await verificationToken());
       const authenticated = await setup.login({
         email: 'ada@example.com',
         password: 'correct-horse-41',
@@ -562,13 +570,13 @@ describe('Reader State consumer client', () => {
       fetchImpl: network.fetchImpl,
     });
     await setup.register({ name: 'Ada', email: 'ada@example.com', password: 'correct-horse-41' });
-    await setup.verifyEmail(verificationToken());
+    await setup.verifyEmail(await verificationToken());
     await setup.register({
       name: 'Grace',
       email: 'grace@example.com',
       password: 'correct-horse-42',
     });
-    await setup.verifyEmail(verificationToken());
+    await setup.verifyEmail(await verificationToken());
 
     let releaseLogin: () => void = () => undefined;
     let loginReady: () => void = () => undefined;
@@ -678,7 +686,7 @@ describe('Reader State consumer client', () => {
       fetchImpl: network.fetchImpl,
     });
     await first.register({ name: 'Ada', email: 'ada@example.com', password: 'correct-horse-41' });
-    await first.verifyEmail(verificationToken());
+    await first.verifyEmail(await verificationToken());
     await first.login({ email: 'ada@example.com', password: 'correct-horse-41' });
 
     const observed: (string | null)[] = [];
@@ -763,7 +771,7 @@ describe('Reader State consumer client', () => {
       fetchImpl: network.fetchImpl,
     });
     await first.register({ name: 'Ada', email: 'ada@example.com', password: 'correct-horse-41' });
-    await first.verifyEmail(verificationToken());
+    await first.verifyEmail(await verificationToken());
     await first.login({ email: 'ada@example.com', password: 'correct-horse-41' });
 
     let logoutMarkerObserved: () => void = () => undefined;

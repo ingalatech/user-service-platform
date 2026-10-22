@@ -1,9 +1,11 @@
 import { drizzleAdapter } from '@better-auth/drizzle-adapter';
 import type { D1Database } from '@cloudflare/workers-types';
 import { betterAuth } from 'better-auth';
+import { createEmailVerificationToken } from 'better-auth/api';
 import { admin } from 'better-auth/plugins/admin';
 import { jwt } from 'better-auth/plugins/jwt';
 import { drizzle } from 'drizzle-orm/d1';
+import { jwtVerify } from 'jose';
 import {
   RESET_PASSWORD_ACTION_PATH,
   VERIFY_EMAIL_ACTION_PATH,
@@ -13,6 +15,10 @@ import { capReaderStateExpirySeconds } from './reader-state.js';
 import type { AuthMailer } from './mailer.js';
 import type { AuthPolicy } from './policy.js';
 import { identitySchema } from './schema.js';
+import {
+  normalizeVerificationTarget,
+  reserveLatestVerificationToken,
+} from './verification-token.js';
 
 // Application-owned Reader State options (spec #195, ADR-0013). Issuer,
 // audience and lifetime arrive validated from the effective non-secret
@@ -159,18 +165,13 @@ function sharedOptions(input: IdentityAuthInput) {
     secret,
     logger: createRedactingLogger(),
     database: drizzleAdapter(database, { provider: 'sqlite', schema: identitySchema }),
+    // Service-only session cookie (spec #164, ADR-0013): pinned HttpOnly and
+    // SameSite=Lax with no `domain`, so the renewal credential is host-only
+    // to the service Worker and is never shared with the parent editorial
+    // hostname. `secure` stays engine-derived from the request HTTPS base
+    // URL (on in sandbox/production); `crossSubDomainCookies` stays
+    // disabled, so no `Domain` attribute is ever emitted.
     advanced: {
-      backgroundTasks: {
-        handler: (task: Promise<unknown>) => {
-          background(task);
-        },
-      },
-      // Service-only session cookie (spec #164, ADR-0013): pinned HttpOnly and
-      // SameSite=Lax with no `domain`, so the renewal credential is host-only
-      // to the service Worker and is never shared with the parent editorial
-      // hostname. `secure` stays engine-derived from the request HTTPS base
-      // URL (on in sandbox/production); `crossSubDomainCookies` stays
-      // disabled, so no `Domain` attribute is ever emitted.
       defaultCookieAttributes: { httpOnly: true, sameSite: 'lax' as const },
     },
     emailAndPassword: {
@@ -188,7 +189,7 @@ function sharedOptions(input: IdentityAuthInput) {
       // the configured consumer page (or the service-owned fallback route on
       // the request origin) plus the engine token.
       revokeSessionsOnPasswordReset: true,
-      sendResetPassword: async ({ user, token }: { user: { email: string }; token: string }) => {
+      sendResetPassword: ({ user, token }: { user: { email: string }; token: string }) => {
         const url = buildAuthActionUrl({
           varName: 'AUTH_RESET_PASSWORD_ACTION_URL',
           configured: resetPasswordActionURL ?? '',
@@ -196,12 +197,14 @@ function sharedOptions(input: IdentityAuthInput) {
           fallbackPath: RESET_PASSWORD_ACTION_PATH,
           token,
         });
-        await mailer.sendPasswordResetEmail({ to: user.email, url, token });
+        background(mailer.sendPasswordResetEmail({ to: user.email, url, token }));
+        return Promise.resolve();
       },
     },
     emailVerification: {
       sendOnSignUp: true,
       autoSignInAfterVerification: false,
+      expiresIn: policy.emailVerificationTTLSeconds,
       // The engine verification callback URL never becomes public contract
       // (ticket #77): the user-facing action targets the configured consumer
       // page or the service-owned fallback route with the engine token as the
@@ -209,18 +212,47 @@ function sharedOptions(input: IdentityAuthInput) {
       sendVerificationEmail: async ({
         user,
         token,
+        newEmail,
       }: {
         user: { email: string };
         token: string;
+        newEmail?: string;
       }) => {
+        const verifiedClaims = await jwtVerify(token, new TextEncoder().encode(secret), {
+          algorithms: ['HS256'],
+        });
+        const requestType = verifiedClaims.payload.requestType;
+        const signedToken = await createEmailVerificationToken(
+          secret,
+          user.email,
+          newEmail,
+          policy.emailVerificationTTLSeconds,
+          {
+            ...(typeof requestType === 'string' ? { requestType } : {}),
+            jti: crypto.randomUUID(),
+          },
+        );
+        const targetEmail = normalizeVerificationTarget(newEmail ?? user.email);
+        await reserveLatestVerificationToken({
+          db,
+          targetEmail,
+          token: signedToken,
+          expiresAt: new Date(Date.now() + policy.emailVerificationTTLSeconds * 1000),
+        });
         const url = buildAuthActionUrl({
           varName: 'AUTH_VERIFY_EMAIL_ACTION_URL',
           configured: verifyEmailActionURL ?? '',
           requestOrigin: baseURL,
           fallbackPath: VERIFY_EMAIL_ACTION_PATH,
-          token,
+          token: signedToken,
         });
-        await mailer.sendVerificationEmail({ to: user.email, url, token });
+        background(
+          mailer.sendVerificationEmail({
+            to: newEmail ?? user.email,
+            url,
+            token: signedToken,
+          }),
+        );
       },
     },
   };

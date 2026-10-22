@@ -22,6 +22,12 @@ Tests use an in-memory mail transport. Local and staging must not silently inher
 
 Verification/reset URLs and tokens are secrets. They may appear only in the outbound message or isolated test sink, never in logs, analytics, generic events, or error payloads.
 
+Email verification keeps an application-owned latest-token guard keyed by the
+normalized target email. It stores only the SHA-256 token digest, expiry and
+consumption metadata in D1. Better Auth remains the token signer/verifier;
+the guard rejects superseded or reused tokens before/after the engine call and
+never persists the plaintext token.
+
 The recommended first production transport is Resend because it has a documented Workers integration and is a mature transactional provider. Cloudflare Email Service is an attractive native alternative but Email Sending remains Beta as of September 2026; provider substitution must not require changing auth/domain contracts.
 
 ## Consequences
