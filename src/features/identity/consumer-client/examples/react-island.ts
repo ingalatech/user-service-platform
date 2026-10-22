@@ -1,7 +1,8 @@
 import {
   createConsumerClient,
+  type AuthoritativeSessionStatus,
   type ConsumerClient,
-  type ConsumerIdentitySnapshot,
+  type ConsumerReaderState,
 } from '../index.js';
 
 // Shared consumption pattern for React islands on cached editorial pages
@@ -12,8 +13,9 @@ import {
 // with the host's subscription primitive (wire `current`/`observe` to the
 // host primitive, such as `useSyncExternalStore` in the consumer app).
 export interface IslandConsumerState {
-  readonly status: 'anonymous' | 'authenticated' | 'unavailable';
-  readonly snapshot: ConsumerIdentitySnapshot | null;
+  readonly presentationStatus: 'absent' | 'available' | 'unavailable';
+  readonly sessionStatus: AuthoritativeSessionStatus;
+  readonly snapshot: ConsumerReaderState | null;
 }
 
 export interface IslandController {
@@ -25,14 +27,17 @@ export interface IslandController {
   dispose(): void;
 }
 
-function toState(snapshot: ConsumerIdentitySnapshot | null): IslandConsumerState {
+function toState(
+  snapshot: ConsumerReaderState | null,
+  sessionStatus: AuthoritativeSessionStatus,
+): IslandConsumerState {
   return snapshot === null
-    ? { status: 'anonymous', snapshot: null }
-    : { status: 'authenticated', snapshot };
+    ? { presentationStatus: 'absent', sessionStatus, snapshot: null }
+    : { presentationStatus: 'available', sessionStatus: snapshot.sessionStatus, snapshot };
 }
 
-function unavailable(): IslandConsumerState {
-  return { status: 'unavailable', snapshot: null };
+function unavailable(sessionStatus: AuthoritativeSessionStatus): IslandConsumerState {
+  return { presentationStatus: 'unavailable', sessionStatus, snapshot: null };
 }
 
 // Builds an island controller around one shared client instance. Pass the tab
@@ -46,33 +51,33 @@ export function createIslandController(client: ConsumerClient): IslandController
   };
   // Cross-tab logout clears the shared client state internally; re-emit so
   // islands on this tab re-render without polling Identity.
-  const stopBroadcast = client.observeLogout(() => {
+  const stopBroadcast = client.observeReaderState(() => {
     emit();
   });
   return {
     client,
     current: async () => {
       try {
-        return toState(await client.getSnapshot());
+        return toState(await client.getSnapshot(), client.getSessionStatus());
       } catch {
-        return unavailable();
+        return unavailable(client.getSessionStatus());
       }
     },
     refresh: async () => {
       try {
-        return toState(await client.recoverSession());
+        return toState(await client.refreshReaderState(), client.getSessionStatus());
       } catch {
-        return unavailable();
+        return unavailable(client.getSessionStatus());
       }
     },
     signOut: async () => {
       try {
         await client.logout();
       } catch {
-        return unavailable();
+        return unavailable(client.getSessionStatus());
       }
       emit();
-      return toState(null);
+      return toState(null, client.getSessionStatus());
     },
     observe: (listener: () => void) => {
       listeners.add(listener);

@@ -169,9 +169,40 @@ The stable application-facing identity exposed to feature slices after authentic
 
 The stable application-facing session data available to authenticated feature slices. It is an application contract, not a Better Auth internal type.
 
+### Authoritative Session
+
+The live, store-backed Better Auth session carried only by the service-hosted,
+host-only HttpOnly cookie. It is the credential for account and administration
+operations and for issuing Reader State or future Access Tokens. JavaScript
+cannot read it, and locally restored presentation state never proves it is
+active.
+
+### Reader State
+
+A signed, short-lived, locally verifiable presentation snapshot for cached
+editorial sites (spec #195, ADR-0013, ticket #196). It contains only an opaque
+subject, stable issuer, Reader-State-specific audience, integer issue/expiry
+times and server-derived presentation Entitlements. Verified Reader State may
+be stored in versioned deployment-scoped `localStorage` and shared across tabs,
+but it never authenticates or authorizes a User Service or receiving API
+endpoint.
+
+### Access Token
+
+A future short-lived API credential for one deployment-configured receiving
+resource (spec #195). It has a resource-specific audience and is stored at
+most in memory or versioned tab-scoped `sessionStorage`. It is distinct from
+Reader State and is not implemented by ticket #196.
+
 ### Consumer Identity client
 
-The framework-independent browser client for reusable JWT sessions on cached editorial sites (spec #150, ADR-0013, ticket #152). It uses generated OpenAPI contracts, keeps the access token and public-key cache in versioned tab-scoped storage namespaced by service/issuer/audience, shares one controller with lazy coalesced renewal, and exposes a locally verified identity snapshot for UI only. Receiving APIs verify independently.
+The framework-independent browser client for cached editorial sites. Under
+spec #195 and ticket #196 it uses generated OpenAPI contracts, keeps only
+verified Reader State and public keys in versioned deployment-scoped storage,
+shares one controller with lazy single-flight refresh, synchronizes replacement
+and logout across tabs, and exposes presentation state separately from unknown
+or confirmed authoritative-session status. It never uses Reader State to call
+an authenticated API.
 
 ### Same-origin gateway
 

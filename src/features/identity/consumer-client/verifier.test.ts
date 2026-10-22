@@ -1,8 +1,8 @@
 import { beforeAll, describe, expect, it } from 'vitest';
-import { verifyConsumerToken, type ConsumerJsonWebKey } from './verifier.js';
+import { verifyReaderState, type ConsumerJsonWebKey } from './verifier.js';
 
 // Seam under test (spec #150, ADR-0013, ticket #152): the application-owned
-// consumer JWT verifier. These tests prove signature, algorithm, issuer,
+// Reader State verifier. These tests prove signature, algorithm, issuer,
 // audience, integer time bounds and the explicit claims allowlist against
 // real Ed25519 cryptography — the same checks the shipped browser client and
 // the documented backend verifier apply before accepting persisted
@@ -92,11 +92,11 @@ beforeAll(async () => {
   other = await generateKey('other-key');
 });
 
-describe('verifyConsumerToken', () => {
+describe('verifyReaderState', () => {
   it('accepts a correctly signed token with the expected claims', async () => {
     const token = await mintToken({ key: primary, payload: validPayload() });
 
-    const snapshot = await verifyConsumerToken(token, [primary.publicJwk], {
+    const snapshot = await verifyReaderState(token, [primary.publicJwk], {
       issuer: ISSUER,
       audience: AUDIENCE,
       nowSeconds: NOW,
@@ -116,7 +116,7 @@ describe('verifyConsumerToken', () => {
     const token = await mintToken({ key: other, payload: validPayload() });
 
     await expect(
-      verifyConsumerToken(token, [primary.publicJwk], {
+      verifyReaderState(token, [primary.publicJwk], {
         issuer: ISSUER,
         audience: AUDIENCE,
         nowSeconds: NOW,
@@ -137,7 +137,7 @@ describe('verifyConsumerToken', () => {
     const tampered = `${header}.${payload}.${flipped}`;
 
     await expect(
-      verifyConsumerToken(tampered, [primary.publicJwk], {
+      verifyReaderState(tampered, [primary.publicJwk], {
         issuer: ISSUER,
         audience: AUDIENCE,
         nowSeconds: NOW,
@@ -153,7 +153,7 @@ describe('verifyConsumerToken', () => {
     });
 
     await expect(
-      verifyConsumerToken(token, [primary.publicJwk], {
+      verifyReaderState(token, [primary.publicJwk], {
         issuer: ISSUER,
         audience: AUDIENCE,
         nowSeconds: NOW,
@@ -165,14 +165,14 @@ describe('verifyConsumerToken', () => {
     const token = await mintToken({ key: primary, payload: validPayload() });
 
     await expect(
-      verifyConsumerToken(token, [primary.publicJwk], {
+      verifyReaderState(token, [primary.publicJwk], {
         issuer: 'https://wrong.example',
         audience: AUDIENCE,
         nowSeconds: NOW,
       }),
     ).rejects.toMatchObject({ code: 'invalid-issuer' });
     await expect(
-      verifyConsumerToken(token, [primary.publicJwk], {
+      verifyReaderState(token, [primary.publicJwk], {
         issuer: ISSUER,
         audience: 'wrong-audience',
         nowSeconds: NOW,
@@ -186,19 +186,19 @@ describe('verifyConsumerToken', () => {
       payload: validPayload({ exp: NOW - 61 }),
     });
     await expect(
-      verifyConsumerToken(expired, [primary.publicJwk], {
+      verifyReaderState(expired, [primary.publicJwk], {
         issuer: ISSUER,
         audience: AUDIENCE,
         nowSeconds: NOW,
       }),
-    ).rejects.toMatchObject({ code: 'token-expired' });
+    ).rejects.toMatchObject({ code: 'reader-state-expired' });
 
     const futureIat = await mintToken({
       key: primary,
       payload: validPayload({ iat: NOW + 500 }),
     });
     await expect(
-      verifyConsumerToken(futureIat, [primary.publicJwk], {
+      verifyReaderState(futureIat, [primary.publicJwk], {
         issuer: ISSUER,
         audience: AUDIENCE,
         nowSeconds: NOW,
@@ -212,12 +212,12 @@ describe('verifyConsumerToken', () => {
       payload: validPayload({ exp: NOW + 12.5 }),
     });
     await expect(
-      verifyConsumerToken(fractional, [primary.publicJwk], {
+      verifyReaderState(fractional, [primary.publicJwk], {
         issuer: ISSUER,
         audience: AUDIENCE,
         nowSeconds: NOW,
       }),
-    ).rejects.toMatchObject({ code: 'token-expired' });
+    ).rejects.toMatchObject({ code: 'reader-state-expired' });
   });
 
   it('rejects forbidden claims and nonempty entitlements without faking rights', async () => {
@@ -226,7 +226,7 @@ describe('verifyConsumerToken', () => {
       payload: validPayload({ email: 'ada@example.com' }),
     });
     await expect(
-      verifyConsumerToken(withEmail, [primary.publicJwk], {
+      verifyReaderState(withEmail, [primary.publicJwk], {
         issuer: ISSUER,
         audience: AUDIENCE,
         nowSeconds: NOW,
@@ -238,7 +238,7 @@ describe('verifyConsumerToken', () => {
       payload: validPayload({ entitlements: [{ kind: 'premium' }] }),
     });
     await expect(
-      verifyConsumerToken(withRights, [primary.publicJwk], {
+      verifyReaderState(withRights, [primary.publicJwk], {
         issuer: ISSUER,
         audience: AUDIENCE,
         nowSeconds: NOW,
@@ -248,17 +248,17 @@ describe('verifyConsumerToken', () => {
 
   it('rejects malformed tokens without reaching verification', async () => {
     await expect(
-      verifyConsumerToken('not-a-token', [primary.publicJwk], {
+      verifyReaderState('not-a-token', [primary.publicJwk], {
         issuer: ISSUER,
         audience: AUDIENCE,
         nowSeconds: NOW,
       }),
-    ).rejects.toMatchObject({ code: 'malformed-token' });
+    ).rejects.toMatchObject({ code: 'malformed-reader-state' });
   });
 
   it('never exposes the raw token in the rejection', async () => {
     const token = await mintToken({ key: other, payload: validPayload() });
-    const failure = await verifyConsumerToken(token, [primary.publicJwk], {
+    const failure = await verifyReaderState(token, [primary.publicJwk], {
       issuer: ISSUER,
       audience: AUDIENCE,
       nowSeconds: NOW,

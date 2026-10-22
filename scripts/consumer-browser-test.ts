@@ -17,7 +17,7 @@ const pause = (ms: number): Promise<void> => new Promise((done) => setTimeout(do
 // lifetime is unchanged; the fixture uses a short TTL plus stored-expiry
 // manipulation instead of long real waits.
 const FIXTURE_ISSUER = 'https://consumer-fixture.example';
-const FIXTURE_AUDIENCE = 'consumer-fixture-web';
+const FIXTURE_AUDIENCE = 'consumer-fixture-reader-state';
 const FIXTURE_TTL_SECONDS = '120';
 // Two separate real document URLs on the Worker origin. These service-owned
 // fallback pages need no frontend build and make no requests without a query
@@ -84,7 +84,7 @@ async function stopWorker(child: ChildProcess): Promise<void> {
 
 interface TrackedRequests {
   readonly me: number;
-  readonly token: number;
+  readonly readerState: number;
   readonly jwks: number;
 }
 
@@ -93,24 +93,24 @@ interface TrackedRequests {
 // narrowing; every counted call is a genuine client request, never a mock.
 function createTracker() {
   let me = 0;
-  let token = 0;
+  let readerState = 0;
   let jwks = 0;
   return {
     watch(page: Page): void {
       page.on('request', (request) => {
         const pathname = new URL(request.url()).pathname;
         if (pathname === '/v1/me') me += 1;
-        else if (pathname === '/v1/auth/token') token += 1;
+        else if (pathname === '/v1/auth/reader-state') readerState += 1;
         else if (pathname === '/v1/auth/jwks') jwks += 1;
       });
     },
     reset(): void {
       me = 0;
-      token = 0;
+      readerState = 0;
       jwks = 0;
     },
     snapshot(): TrackedRequests {
-      return { me, token, jwks };
+      return { me, readerState, jwks };
     },
   };
 }
@@ -134,7 +134,7 @@ const ENSURE_CLIENT = `
     nowSeconds: () => Math.floor(Date.now() / 1000) + (window.__clockOffset ?? 0),
     fetchImpl: async (request, init) => {
       const response = await fetch(request, init);
-      if (new URL(request.url).pathname === '/v1/auth/token' && response.ok) window.__clockOffset = 0;
+       if (new URL(request.url).pathname === '/v1/auth/reader-state' && response.ok) window.__clockOffset = 0;
       return response;
     },
   });
@@ -168,8 +168,8 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 }
 
 // Real shipped-client + real built Worker/D1 browser fixture. Two document
-// URLs exercise actual sessionStorage across full navigations and reloads;
-// every identity/token/renewal call is observed, never mocked. Fixture-only
+// URLs exercise actual localStorage across full navigations, reloads and tabs;
+// every Identity and Reader State renewal call is observed, never mocked. Fixture-only
 // mail capture uses the public AuthMailer injection seam in a temporary
 // Worker entrypoint. Registration, verification and login use the real API;
 // the mailbox route exists only in this disposable loopback fixture.
@@ -218,7 +218,7 @@ export default {
         )
         .replace(
           '"ENVIRONMENT": "local",',
-          `"ENVIRONMENT": "local",\n    "AUTH_JWT_ISSUER": ${JSON.stringify(FIXTURE_ISSUER)},\n    "AUTH_JWT_AUDIENCE": ${JSON.stringify(FIXTURE_AUDIENCE)},\n    "AUTH_JWT_TTL_SECONDS": ${JSON.stringify(FIXTURE_TTL_SECONDS)},`,
+          `"ENVIRONMENT": "local",\n    "AUTH_JWT_ISSUER": ${JSON.stringify(FIXTURE_ISSUER)},\n    "AUTH_READER_STATE_AUDIENCE": ${JSON.stringify(FIXTURE_AUDIENCE)},\n    "AUTH_READER_STATE_TTL_SECONDS": ${JSON.stringify(FIXTURE_TTL_SECONDS)},`,
         ),
     );
     const cli = join(root, 'node_modules/wrangler/bin/wrangler.js');
@@ -337,23 +337,24 @@ export default {
       outcomeOf(`client.login({ email: '${email}', password: '${password}' })`),
     );
     const loginRecord = asRecord(asRecord(loggedIn)?.value);
-    assert(asRecord(loggedIn)?.ok === true, 'login obtains the JWT snapshot');
-    assert(loginRecord !== null, 'login returns an identity snapshot');
-    assert(loginRecord.email === email, 'shared identity snapshot');
-    assert(typeof loginRecord.expiresAt === 'number', 'snapshot carries token expiry');
+    assert(asRecord(loggedIn)?.ok === true, 'login obtains Reader State');
+    assert(loginRecord !== null, 'login returns presentation state');
+    assert(typeof loginRecord.subject === 'string', 'Reader State carries an opaque subject');
+    assert(loginRecord.sessionStatus === 'authenticated', 'login confirms the live session');
+    assert(typeof loginRecord.expiresAt === 'number', 'Reader State carries expiry');
 
-    phase = 'valid-token navigation performs zero identity calls';
+    phase = 'valid Reader State navigation performs zero identity calls';
     tracker.reset();
     await page.goto(`${base}${DOC_B}`);
     await installClient(page, bundle);
     const navigated = await browserJson(page, outcomeOf('client.getSnapshot()'));
     assert(asRecord(navigated)?.ok === true, 'snapshot resolves after navigation');
     assert(
-      (asRecord(asRecord(navigated)?.value)?.email as string) === email,
-      'same user after navigation',
+      (asRecord(asRecord(navigated)?.value)?.subject as string) === loginRecord.subject,
+      'same presentation subject after navigation',
     );
     assert(
-      tracker.snapshot().me === 0 && tracker.snapshot().token === 0,
+      tracker.snapshot().me === 0 && tracker.snapshot().readerState === 0,
       'zero /me/token calls on navigation',
     );
     assert(tracker.snapshot().jwks <= 1, 'bounded initial JWKS behavior');
@@ -363,7 +364,7 @@ export default {
     const reloaded = await browserJson(page, outcomeOf('client.getSnapshot()'));
     assert(asRecord(reloaded)?.ok === true, 'snapshot resolves after reload');
     assert(
-      tracker.snapshot().me === 0 && tracker.snapshot().token === 0,
+      tracker.snapshot().me === 0 && tracker.snapshot().readerState === 0,
       'zero /me/token calls on reload',
     );
     assert(tracker.snapshot().jwks === 0, 'cached keys verify without refetch');
@@ -373,7 +374,7 @@ export default {
     const backAgain = await browserJson(page, outcomeOf('client.getSnapshot()'));
     assert(asRecord(backAgain)?.ok === true, 'snapshot resolves after second navigation');
     assert(
-      tracker.snapshot().me === 0 && tracker.snapshot().token === 0,
+      tracker.snapshot().me === 0 && tracker.snapshot().readerState === 0,
       'zero /me/token calls across documents',
     );
     assert(tracker.snapshot().jwks === 0, 'cached keys shared across documents');
@@ -383,8 +384,8 @@ export default {
       page,
       outcomeOf(`
         (() => {
-          const key = ConsumerClient.tokenStorageKey({ service: window.location.origin, issuer: window.__cfg.issuer, audience: window.__cfg.audience });
-          const stored = JSON.parse(window.sessionStorage.getItem(key));
+           const key = ConsumerClient.readerStateStorageKey({ service: window.location.origin, issuer: window.__cfg.issuer, audience: window.__cfg.audience });
+           const stored = JSON.parse(window.localStorage.getItem(key));
           window.__clockOffset = stored.expiresAt - Math.floor(Date.now() / 1000) + 1;
           return stored.expiresAt;
         })()
@@ -398,7 +399,7 @@ export default {
       ),
     );
     assert(asRecord(renewed)?.ok === true, 'concurrent renewal resolves');
-    assert(tracker.snapshot().token === 1, 'exactly one renewal for concurrent consumers');
+    assert(tracker.snapshot().readerState === 1, 'exactly one renewal for concurrent consumers');
     assert(tracker.snapshot().me === 0, 'renewal performs no /me call');
 
     phase = 'invalid signature is discarded without renewal';
@@ -407,22 +408,71 @@ export default {
       page,
       outcomeOf(`
         (() => {
-          const key = ConsumerClient.tokenStorageKey({ service: window.location.origin, issuer: window.__cfg.issuer, audience: window.__cfg.audience });
-          const stored = JSON.parse(window.sessionStorage.getItem(key));
-          stored.accessToken = stored.accessToken.slice(0, -4) + 'AAAA';
-          window.sessionStorage.setItem(key, JSON.stringify(stored));
-          return stored.accessToken.length;
+           const key = ConsumerClient.readerStateStorageKey({ service: window.location.origin, issuer: window.__cfg.issuer, audience: window.__cfg.audience });
+           const stored = JSON.parse(window.localStorage.getItem(key));
+           stored.readerState = stored.readerState.slice(0, -4) + 'AAAA';
+           window.localStorage.setItem(key, JSON.stringify(stored));
+           return stored.readerState.length;
         })()
       `),
     );
     const tampered = await browserJson(page, outcomeOf('client.getSnapshot()'));
     assert(
       asRecord(tampered)?.ok === true && asRecord(tampered)?.value === null,
-      'tampered token resolves anonymous',
+      'tampered Reader State is discarded',
     );
-    assert(tracker.snapshot().token === 0, 'no renewal for invalid credentials');
+    assert(tracker.snapshot().readerState === 0, 'no renewal for invalid Reader State');
 
-    phase = 'second user replaces previous state';
+    phase = 'second user replaces previous state live in an open tab';
+    const restoredBeforeReplacement = await browserJson(
+      page,
+      outcomeOf('client.refreshReaderState()'),
+    );
+    assert(asRecord(restoredBeforeReplacement)?.ok === true, 'restore state before replacement');
+    const previousSubject = asRecord(asRecord(restoredBeforeReplacement)?.value)?.subject;
+    const second = await context.newPage();
+    const secondTracker = createTracker();
+    secondTracker.watch(second);
+    await second.goto(`${base}${DOC_A}`);
+    await installClient(second, bundle);
+    await second.evaluate(
+      `
+        (() => {
+          const scope = { service: window.location.origin, issuer: window.__cfg.issuer, audience: window.__cfg.audience };
+          const key = 'usp.reader-state.v1.change.' + encodeURIComponent(scope.service) + '.' + encodeURIComponent(scope.issuer) + '.' + encodeURIComponent(scope.audience);
+          let blocked = false;
+          const queued = [];
+          window.__blockReaderStateEvents = () => { blocked = true; };
+          window.__releaseReaderStateEvents = () => {
+            blocked = false;
+            for (const event of queued.splice(0)) window.dispatchEvent(event);
+          };
+          window.addEventListener('storage', (event) => {
+            if (!blocked || event.key !== key) return;
+            event.stopImmediatePropagation();
+            queued.push(new StorageEvent('storage', {
+              key: event.key,
+              newValue: event.newValue,
+              oldValue: event.oldValue,
+              storageArea: event.storageArea,
+              url: event.url,
+            }));
+          }, true);
+          return true;
+        })()
+      `,
+    );
+    const restoredSecondTab = await browserJson(second, outcomeOf('client.getSnapshot()'));
+    assert(asRecord(restoredSecondTab)?.ok === true, 'open second tab restores Reader State');
+    assert(
+      asRecord(asRecord(restoredSecondTab)?.value)?.subject === previousSubject,
+      'open second tab starts with the previous presentation subject',
+    );
+    await browserJson(
+      second,
+      'client.observeReaderState((state) => { if (state !== null) window.__replacementSubject = state.subject; }); return null;',
+    );
+    secondTracker.reset();
     const otherEmail = 'fixture-second@example.com';
     const otherRegistered = await browserJson(
       page,
@@ -436,10 +486,286 @@ export default {
       page,
       outcomeOf(`client.login({ email: '${otherEmail}', password: '${password}' })`),
     );
+    assert(asRecord(otherLogin)?.ok === true, 'later login replaces Reader State');
     assert(
-      (asRecord(asRecord(otherLogin)?.value)?.email as string) === otherEmail,
-      'later login replaces state',
+      asRecord(asRecord(otherLogin)?.value)?.subject !== loginRecord.subject,
+      'replacement carries the new opaque subject',
     );
+    const replacementSubject = asRecord(asRecord(otherLogin)?.value)?.subject;
+    assert(typeof replacementSubject === 'string', 'replacement subject is available');
+    await second.waitForFunction(
+      `window.__replacementSubject === ${JSON.stringify(replacementSubject)}`,
+    );
+    const liveReplacement = await browserJson(second, outcomeOf('client.getSnapshot()'));
+    assert(
+      asRecord(asRecord(liveReplacement)?.value)?.subject === replacementSubject,
+      'replacement propagates to the already-open second tab',
+    );
+    assert(
+      asRecord(asRecord(liveReplacement)?.value)?.sessionStatus === 'unknown',
+      'cross-tab replacement does not claim a live session',
+    );
+    assert(
+      secondTracker.snapshot().me === 0 && secondTracker.snapshot().readerState === 0,
+      'live replacement performs no credentialed Identity calls in the second tab',
+    );
+
+    phase = 'manual refresh propagates live to an already-current tab';
+    await browserJson(
+      second,
+      'window.__manualRefreshIssuedAt = undefined; client.observeReaderState((state) => { if (state !== null) window.__manualRefreshIssuedAt = state.issuedAt; }); return null;',
+    );
+    await pause(1100);
+    const manualRefresh = await browserJson(page, outcomeOf('client.refreshReaderState()'));
+    assert(asRecord(manualRefresh)?.ok === true, 'manual Reader State refresh succeeds');
+    const manualRefreshIssuedAt = asRecord(asRecord(manualRefresh)?.value)?.issuedAt;
+    assert(typeof manualRefreshIssuedAt === 'number', 'manual refresh has a new issue time');
+    await second.waitForFunction(
+      `window.__manualRefreshIssuedAt === ${String(manualRefreshIssuedAt)}`,
+    );
+    assert(
+      (await browserJson(second, 'return window.__manualRefreshIssuedAt;')) ===
+        manualRefreshIssuedAt,
+      'manual refresh replacement propagates to the already-current tab',
+    );
+
+    phase = 'newer cross-tab login wins over an older delayed refresh';
+    let releaseDelayedRefresh: () => void = () => undefined;
+    let delayedRefreshReady: () => void = () => undefined;
+    const delayedRefreshBlocked = new Promise<void>((resolve) => {
+      releaseDelayedRefresh = resolve;
+    });
+    const delayedRefreshResponse = new Promise<void>((resolve) => {
+      delayedRefreshReady = resolve;
+    });
+    await second.route('**/v1/auth/reader-state', async (route) => {
+      const response = await route.fetch();
+      delayedRefreshReady();
+      await delayedRefreshBlocked;
+      await route.fulfill({ response });
+    });
+    await browserJson(second, 'window.__blockReaderStateEvents(); return null;');
+    const delayedRefresh = browserJson(second, outcomeOf('client.refreshReaderState()'));
+    await delayedRefreshResponse;
+    const newerCrossTabLogin = await browserJson(
+      page,
+      outcomeOf(`client.login({ email: '${email}', password: '${password}' })`),
+    );
+    assert(asRecord(newerCrossTabLogin)?.ok === true, 'newer cross-tab login succeeds');
+    const newerCrossTabSubject = asRecord(asRecord(newerCrossTabLogin)?.value)?.subject;
+    assert(typeof newerCrossTabSubject === 'string', 'newer cross-tab subject is available');
+    releaseDelayedRefresh();
+    const delayedRefreshOutcome = await delayedRefresh;
+    assert(
+      asRecord(delayedRefreshOutcome)?.ok === false &&
+        asRecord(delayedRefreshOutcome)?.code === 'unauthenticated',
+      'older refresh is rejected after the persisted mutation revision advances',
+    );
+    await browserJson(second, 'window.__releaseReaderStateEvents(); return null;');
+    await second.waitForFunction(
+      `window.__replacementSubject === ${JSON.stringify(newerCrossTabSubject)}`,
+    );
+    await second.unroute('**/v1/auth/reader-state');
+    const crossTabRefresh = await browserJson(second, outcomeOf('client.getSnapshot()'));
+    assert(
+      asRecord(asRecord(crossTabRefresh)?.value)?.subject === newerCrossTabSubject,
+      'newer cross-tab login remains the shared Reader State',
+    );
+
+    phase = 'newer replacement wins over a delayed login response';
+    let releaseDelayedReplacementLogin: () => void = () => undefined;
+    let delayedReplacementLoginReady: () => void = () => undefined;
+    const delayedReplacementLoginBlocked = new Promise<void>((resolve) => {
+      releaseDelayedReplacementLogin = resolve;
+    });
+    const delayedReplacementLoginResponse = new Promise<void>((resolve) => {
+      delayedReplacementLoginReady = resolve;
+    });
+    await page.route('**/v1/auth/login', async (route) => {
+      const response = await route.fetch();
+      delayedReplacementLoginReady();
+      await delayedReplacementLoginBlocked;
+      await route.fulfill({ response });
+    });
+    const delayedReplacementLogin = browserJson(
+      page,
+      outcomeOf(`client.login({ email: '${email}', password: '${password}' })`),
+    );
+    await delayedReplacementLoginResponse;
+    const newerLogin = browserJson(
+      second,
+      outcomeOf(`client.login({ email: '${otherEmail}', password: '${password}' })`),
+    );
+    await pause(100);
+    releaseDelayedReplacementLogin();
+    await delayedReplacementLogin;
+    const newerLoginOutcome = await newerLogin;
+    assert(asRecord(newerLoginOutcome)?.ok === true, 'newer replacement login succeeds');
+    await page.unroute('**/v1/auth/login');
+    const replacementAfterDelayedLogin = await browserJson(
+      second,
+      outcomeOf('client.refreshReaderState()'),
+    );
+    assert(
+      asRecord(asRecord(replacementAfterDelayedLogin)?.value)?.subject === replacementSubject,
+      'Reader State refresh retains the newer replacement session',
+    );
+
+    phase = 'logout wins over a delayed login response';
+    let releaseDelayedLogoutLogin: () => void = () => undefined;
+    let delayedLogoutLoginReady: () => void = () => undefined;
+    const delayedLogoutLoginBlocked = new Promise<void>((resolve) => {
+      releaseDelayedLogoutLogin = resolve;
+    });
+    const delayedLogoutLoginResponse = new Promise<void>((resolve) => {
+      delayedLogoutLoginReady = resolve;
+    });
+    await page.route('**/v1/auth/login', async (route) => {
+      const response = await route.fetch();
+      delayedLogoutLoginReady();
+      await delayedLogoutLoginBlocked;
+      await route.fulfill({ response });
+    });
+    const delayedLogoutLogin = browserJson(
+      page,
+      outcomeOf(`client.login({ email: '${email}', password: '${password}' })`),
+    );
+    await delayedLogoutLoginResponse;
+    const laterLogout = browserJson(second, outcomeOf('client.logout()'));
+    await pause(100);
+    releaseDelayedLogoutLogin();
+    await delayedLogoutLogin;
+    const laterLogoutOutcome = await laterLogout;
+    assert(asRecord(laterLogoutOutcome)?.ok === true, 'later logout succeeds');
+    await page.unroute('**/v1/auth/login');
+    const localStateAfterDelayedLoginLogout = await browserJson(
+      second,
+      outcomeOf(`
+        (async () => {
+          const scope = { service: window.location.origin, issuer: window.__cfg.issuer, audience: window.__cfg.audience };
+          const key = ConsumerClient.readerStateStorageKey(scope);
+          return {
+            snapshot: await client.getSnapshot(),
+            stored: window.localStorage.getItem(key),
+          };
+        })()
+      `),
+    );
+    assert(
+      asRecord(asRecord(localStateAfterDelayedLoginLogout)?.value)?.snapshot === null &&
+        asRecord(asRecord(localStateAfterDelayedLoginLogout)?.value)?.stored === null,
+      'serialized logout owns final local Reader State cleanup',
+    );
+    const refreshAfterDelayedLogin = await browserJson(
+      second,
+      outcomeOf('client.refreshReaderState()'),
+    );
+    assert(
+      asRecord(refreshAfterDelayedLogin)?.ok === false &&
+        asRecord(refreshAfterDelayedLogin)?.code === 'unauthenticated',
+      'Reader State refresh cannot resurrect the delayed login after logout',
+    );
+    const restoreReplacement = await browserJson(
+      second,
+      outcomeOf(`client.login({ email: '${otherEmail}', password: '${password}' })`),
+    );
+    assert(asRecord(restoreReplacement)?.ok === true, 'restore replacement after ordering tests');
+
+    phase = 'refresh after logout marker cannot survive delayed server sign-out';
+    await browserJson(
+      second,
+      'window.__logoutRaceStates = []; client.observeReaderState((state) => { window.__logoutRaceStates.push(state?.subject ?? null); }); return null;',
+    );
+    let releaseDelayedSignOut: () => void = () => undefined;
+    let delayedSignOutReady: () => void = () => undefined;
+    const delayedSignOutBlocked = new Promise<void>((resolve) => {
+      releaseDelayedSignOut = resolve;
+    });
+    const delayedSignOutRequest = new Promise<void>((resolve) => {
+      delayedSignOutReady = resolve;
+    });
+    await page.route('**/v1/auth/sign-out', async (route) => {
+      delayedSignOutReady();
+      await delayedSignOutBlocked;
+      await route.continue();
+    });
+    const delayedSignOut = browserJson(page, outcomeOf('client.logout()'));
+    await delayedSignOutRequest;
+    await second.waitForFunction('window.__logoutRaceStates.includes(null)');
+    const refreshBetweenMarkerAndSignOut = await browserJson(
+      second,
+      outcomeOf('client.refreshReaderState()'),
+    );
+    assert(
+      asRecord(refreshBetweenMarkerAndSignOut)?.ok === true,
+      'refresh starts after logout marker while the authoritative session is still live',
+    );
+    releaseDelayedSignOut();
+    const delayedSignOutOutcome = await delayedSignOut;
+    assert(asRecord(delayedSignOutOutcome)?.ok === true, 'delayed server sign-out succeeds');
+    await page.unroute('**/v1/auth/sign-out');
+    await second.waitForFunction('window.__logoutRaceStates.at(-1) === null');
+    const stateAfterDelayedSignOut = await browserJson(
+      second,
+      outcomeOf(`
+        (async () => {
+          const scope = { service: window.location.origin, issuer: window.__cfg.issuer, audience: window.__cfg.audience };
+          return {
+            snapshot: await client.getSnapshot(),
+            stored: window.localStorage.getItem(ConsumerClient.readerStateStorageKey(scope)),
+          };
+        })()
+      `),
+    );
+    assert(
+      asRecord(asRecord(stateAfterDelayedSignOut)?.value)?.snapshot === null &&
+        asRecord(asRecord(stateAfterDelayedSignOut)?.value)?.stored === null,
+      'logout completion owns final local clear after an intervening refresh',
+    );
+
+    const restoreAfterLogoutRace = await browserJson(
+      second,
+      outcomeOf(`client.login({ email: '${otherEmail}', password: '${password}' })`),
+    );
+    assert(
+      asRecord(restoreAfterLogoutRace)?.ok === true,
+      'login after completed logout remains valid',
+    );
+
+    phase = 'unavailable JWKS refresh recovers without credentialed renewal';
+    await browserJson(
+      page,
+      outcomeOf(`
+        (() => {
+          const scope = { service: window.location.origin, issuer: window.__cfg.issuer, audience: window.__cfg.audience };
+          window.localStorage.removeItem(ConsumerClient.jwksStorageKey(scope));
+          window.__consumer = undefined;
+          return true;
+        })()
+      `),
+    );
+    await page.route('**/v1/auth/jwks', (route) => route.abort());
+    tracker.reset();
+    const keysUnavailable = await browserJson(page, outcomeOf('client.getSnapshot()'));
+    assert(asRecord(keysUnavailable)?.ok === false, 'unavailable verification keys surface');
+    assert(
+      asRecord(keysUnavailable)?.code === 'service-unavailable',
+      'unavailable verification keys keep a stable code',
+    );
+    assert(tracker.snapshot().readerState === 0, 'JWKS outage never triggers credentialed renewal');
+    await page.unroute('**/v1/auth/jwks');
+    await browserJson(
+      page,
+      outcomeOf('(() => { window.__clockOffset = 61; return window.__clockOffset; })()'),
+    );
+    const keysRestored = await browserJson(page, outcomeOf('client.getSnapshot()'));
+    assert(asRecord(keysRestored)?.ok === true, 'verification recovers after JWKS returns');
+    assert(
+      asRecord(asRecord(keysRestored)?.value)?.subject === replacementSubject,
+      'restored key refresh verifies the retained Reader State',
+    );
+    assert(tracker.snapshot().readerState === 0, 'key-refresh restoration performs no renewal');
+    await browserJson(page, outcomeOf('(() => { window.__clockOffset = 0; return true; })()'));
 
     phase = 'lost renewal session clears expired authentication';
     await context.clearCookies();
@@ -447,8 +773,8 @@ export default {
       page,
       outcomeOf(`
         (() => {
-          const key = ConsumerClient.tokenStorageKey({ service: window.location.origin, issuer: window.__cfg.issuer, audience: window.__cfg.audience });
-          const stored = JSON.parse(window.sessionStorage.getItem(key));
+           const key = ConsumerClient.readerStateStorageKey({ service: window.location.origin, issuer: window.__cfg.issuer, audience: window.__cfg.audience });
+           const stored = JSON.parse(window.localStorage.getItem(key));
           window.__clockOffset = stored.expiresAt - Math.floor(Date.now() / 1000) + 1;
           return true;
         })()
@@ -460,13 +786,13 @@ export default {
       asRecord(revoked)?.ok === true && asRecord(revoked)?.value === null,
       'denied renewal resolves anonymous',
     );
-    assert(tracker.snapshot().token === 1, 'one denied renewal attempt');
+    assert(tracker.snapshot().readerState === 1, 'one denied renewal attempt');
     const cleared = await browserJson(
       page,
       outcomeOf(`
         (() => {
-          const key = ConsumerClient.tokenStorageKey({ service: window.location.origin, issuer: window.__cfg.issuer, audience: window.__cfg.audience });
-          return window.sessionStorage.getItem(key);
+           const key = ConsumerClient.readerStateStorageKey({ service: window.location.origin, issuer: window.__cfg.issuer, audience: window.__cfg.audience });
+           return window.localStorage.getItem(key);
         })()
       `),
     );
@@ -487,14 +813,14 @@ export default {
       page,
       outcomeOf(`
         (() => {
-          const key = ConsumerClient.tokenStorageKey({ service: window.location.origin, issuer: window.__cfg.issuer, audience: window.__cfg.audience });
-          const stored = JSON.parse(window.sessionStorage.getItem(key));
+           const key = ConsumerClient.readerStateStorageKey({ service: window.location.origin, issuer: window.__cfg.issuer, audience: window.__cfg.audience });
+           const stored = JSON.parse(window.localStorage.getItem(key));
           window.__clockOffset = stored.expiresAt - Math.floor(Date.now() / 1000) + 1;
           return true;
         })()
       `),
     );
-    await page.route('**/v1/auth/token', (route) =>
+    await page.route('**/v1/auth/reader-state', (route) =>
       route.fulfill({
         status: 500,
         contentType: 'application/problem+json',
@@ -504,12 +830,12 @@ export default {
     const outage = await browserJson(page, outcomeOf('client.getSnapshot()'));
     assert(asRecord(outage)?.ok === false, 'service failure surfaces');
     assert(asRecord(outage)?.code === 'service-unavailable', 'stable unavailable code');
-    await page.unroute('**/v1/auth/token');
-    await page.route('**/v1/auth/token', (route) => route.abort());
+    await page.unroute('**/v1/auth/reader-state');
+    await page.route('**/v1/auth/reader-state', (route) => route.abort());
     const offline = await browserJson(page, outcomeOf('client.getSnapshot()'));
     assert(asRecord(offline)?.ok === false, 'network failure surfaces');
     assert(asRecord(offline)?.code === 'network-unavailable', 'stable network code');
-    await page.unroute('**/v1/auth/token');
+    await page.unroute('**/v1/auth/reader-state');
 
     phase = 'separate deployment stays isolated';
     tracker.reset();
@@ -528,25 +854,15 @@ export default {
       'unrelated deployment has no credentials',
     );
     assert(
-      tracker.snapshot().me === 0 && tracker.snapshot().token === 0,
+      tracker.snapshot().me === 0 && tracker.snapshot().readerState === 0,
       'no probing for unrelated deployments',
     );
 
-    phase = 'logout propagates credential-free to the second tab';
-    const second = await context.newPage();
-    const secondTracker = createTracker();
-    secondTracker.watch(second);
-    await second.goto(`${base}${DOC_A}`);
-    await installClient(second, bundle);
-    const secondLogin = await browserJson(
-      second,
-      outcomeOf(`client.login({ email: '${otherEmail}', password: '${password}' })`),
-    );
-    assert(asRecord(secondLogin)?.ok === true, 'second tab holds its own credentials');
+    phase = 'logout propagates credential-free to the open second tab';
     secondTracker.reset();
     await browserJson(
       second,
-      'client.observeLogout(() => { window.__consumerLoggedOut = true; }); return null;',
+      'client.observeReaderState((state) => { if (state === null) window.__consumerLoggedOut = true; }); return null;',
     );
     await browserJson(page, outcomeOf('client.logout()'));
     await second.waitForFunction('window.__consumerLoggedOut === true');
@@ -556,7 +872,7 @@ export default {
       'logout notification clears the second tab',
     );
     assert(
-      secondTracker.snapshot().me === 0 && secondTracker.snapshot().token === 0,
+      secondTracker.snapshot().me === 0 && secondTracker.snapshot().readerState === 0,
       'propagated logout performs no identity calls',
     );
 
@@ -576,7 +892,218 @@ export default {
     const failedLogout = await browserJson(page, outcomeOf('client.logout()'));
     assert(asRecord(failedLogout)?.ok === false, 'failed logout surfaces');
     assert(asRecord(failedLogout)?.code === 'logout-failed', 'stable logout-failed code');
+    await second.waitForFunction('window.__logoutRaceStates.at(-1) === null');
+    const stateAfterFailedLogout = await browserJson(second, outcomeOf('client.getSnapshot()'));
+    assert(
+      asRecord(stateAfterFailedLogout)?.ok === true &&
+        asRecord(stateAfterFailedLogout)?.value === null,
+      'failed server logout still owns final cross-tab local clear',
+    );
     await page.unroute('**/v1/auth/sign-out');
+
+    phase = 'unsupported browser auth mutations fail closed after local logout';
+    const unsupported = await context.newPage();
+    await unsupported.goto(`${base}${DOC_A}`);
+    await installClient(unsupported, bundle);
+    const unsupportedOutcomes = await browserJson(
+      unsupported,
+      `
+        const originalLocks = navigator.locks;
+        const originalStorage = window.localStorage;
+        const requests = [];
+        const originalFetch = window.fetch;
+        window.fetch = async (input, init) => {
+          const path = new URL(input instanceof Request ? input.url : input, window.location.href).pathname;
+          if (path === '/v1/auth/login' || path === '/v1/auth/sign-out') requests.push(path);
+          return originalFetch(input, init);
+        };
+        const makeStore = () => {
+          const values = new Map();
+          return {
+            values,
+            getItem: (key) => values.get(key) ?? null,
+            setItem: (key, value) => values.set(key, value),
+            removeItem: (key) => values.delete(key),
+          };
+        };
+        const run = async (locks, storage) => {
+          Object.defineProperty(navigator, 'locks', { configurable: true, value: locks });
+          Object.defineProperty(window, 'localStorage', { configurable: true, value: storage });
+          const store = makeStore();
+          const client = ConsumerClient.createConsumerClient({
+            baseUrl: window.location.origin,
+            issuer: window.__cfg.issuer,
+            audience: window.__cfg.audience,
+            readerStateStore: store,
+            broadcast: null,
+          });
+          const scope = { service: window.location.origin, issuer: window.__cfg.issuer, audience: window.__cfg.audience };
+          const stateKey = ConsumerClient.readerStateStorageKey(scope);
+          store.setItem(stateKey, 'locally-retained-state');
+          const login = await (async () => { ${outcomeOf(`client.login({ email: '${otherEmail}', password: '${password}' })`)} })();
+          const retainedBeforeLogout = store.getItem(stateKey);
+          const logout = await (async () => { ${outcomeOf('client.logout()')} })();
+          return { login, logout, retainedBeforeLogout, storedAfterLogout: store.getItem(stateKey) };
+        };
+        const rejectedLocks = { request: () => Promise.reject(new Error('lock denied')) };
+        const failingStorage = {
+          getItem: () => { throw new Error('storage denied'); },
+          setItem: () => { throw new Error('storage denied'); },
+          removeItem: () => { throw new Error('storage denied'); },
+        };
+        const outcomes = {
+          absentLocks: await run(undefined, originalStorage),
+          rejectedLocks: await run(rejectedLocks, originalStorage),
+          unavailableStorage: await run(originalLocks, undefined),
+          failingStorage: await run(originalLocks, failingStorage),
+        };
+        let runtimeStorageFailure = false;
+        const runtimeScope = { service: window.location.origin, issuer: window.__cfg.issuer, audience: window.__cfg.audience };
+        const stateKey = ConsumerClient.readerStateStorageKey(runtimeScope);
+        const runtimeStorage = new Proxy(originalStorage, {
+          get(target, property, receiver) {
+            if (property === 'getItem' || property === 'setItem' || property === 'removeItem') {
+              return (key, value) => {
+                if (
+                  runtimeStorageFailure &&
+                  key === stateKey &&
+                  (property === 'setItem' || property === 'removeItem')
+                )
+                  throw new Error('storage denied');
+                return target[property].call(target, key, value);
+              };
+            }
+            return Reflect.get(target, property, receiver);
+          },
+        });
+        Object.defineProperty(window, 'localStorage', { configurable: true, value: runtimeStorage });
+        const runtimeClient = ConsumerClient.createConsumerClient({
+          baseUrl: window.location.origin,
+          issuer: window.__cfg.issuer,
+          audience: window.__cfg.audience,
+          readerStateStore: runtimeStorage,
+          broadcast: null,
+        });
+        const runtimeInitialRefresh = await (async () => { ${outcomeOf('runtimeClient.refreshReaderState()')} })();
+        runtimeStorageFailure = true;
+        const runtimeRefresh = await (async () => { ${outcomeOf('runtimeClient.refreshReaderState()')} })();
+        const runtimeLogout = await (async () => { ${outcomeOf('runtimeClient.logout()')} })();
+        Object.defineProperty(navigator, 'locks', { configurable: true, value: originalLocks });
+        Object.defineProperty(window, 'localStorage', { configurable: true, value: originalStorage });
+        window.fetch = originalFetch;
+        return { outcomes, requests, runtimeInitialRefresh, runtimeRefresh, runtimeLogout };
+      `,
+    );
+    const unsupportedRecord = asRecord(asRecord(unsupportedOutcomes)?.outcomes);
+    for (const scenario of [
+      'absentLocks',
+      'rejectedLocks',
+      'unavailableStorage',
+      'failingStorage',
+    ]) {
+      const result = asRecord(unsupportedRecord?.[scenario]);
+      assert(
+        asRecord(result?.login)?.code === 'unsupported-browser',
+        `${scenario} login has stable unsupported-browser code`,
+      );
+      assert(
+        result?.retainedBeforeLogout === 'locally-retained-state',
+        `${scenario} login fails closed before changing local state`,
+      );
+      assert(
+        asRecord(result.logout)?.code === 'unsupported-browser',
+        `${scenario} logout reports server revocation did not run`,
+      );
+      assert(result.storedAfterLogout === null, `${scenario} logout clears local state first`);
+    }
+    assert(
+      Array.isArray(asRecord(unsupportedOutcomes)?.requests) &&
+        (asRecord(unsupportedOutcomes)?.requests as unknown[]).length === 0,
+      'unsupported browser performs no login or server sign-out mutation',
+    );
+    assert(
+      asRecord(unsupportedOutcomes)?.runtimeInitialRefresh !== undefined &&
+        asRecord(asRecord(unsupportedOutcomes)?.runtimeInitialRefresh)?.ok === true,
+      'runtime storage scenario constructs and refreshes successfully before failure',
+    );
+    assert(
+      asRecord(asRecord(unsupportedOutcomes)?.runtimeRefresh)?.code === 'unsupported-browser',
+      'runtime localStorage save failure has stable unsupported-browser code',
+    );
+    assert(
+      asRecord(asRecord(unsupportedOutcomes)?.runtimeLogout)?.code === 'unsupported-browser',
+      'runtime localStorage clear failure has stable unsupported-browser code',
+    );
+
+    phase = 'cross-tab logout storage failure stays contained';
+    await browserJson(
+      page,
+      outcomeOf(`client.login({ email: '${otherEmail}', password: '${password}' })`),
+    );
+    await browserJson(
+      unsupported,
+      `
+        window.__crossTabErrors = [];
+        window.addEventListener('error', (event) => window.__crossTabErrors.push(event.message));
+         window.addEventListener('unhandledrejection', (event) => window.__crossTabErrors.push(String(event.reason)));
+         const stateKey = ConsumerClient.readerStateStorageKey({ service: window.location.origin, issuer: window.__cfg.issuer, audience: window.__cfg.audience });
+         const persistedBeforeLogout = window.localStorage.getItem(stateKey);
+         if (persistedBeforeLogout === null) throw new Error('expected valid persisted Reader State');
+         const failingStore = {
+           getItem: (key) => window.localStorage.getItem(key),
+           setItem: (key, value) => window.localStorage.setItem(key, value),
+           removeItem: (key) => {
+             if (key === stateKey) throw new Error('storage denied');
+             window.localStorage.removeItem(key);
+           },
+         };
+        window.__crossTabStates = [];
+        window.__crossTabClient = ConsumerClient.createConsumerClient({
+          baseUrl: window.location.origin,
+          issuer: window.__cfg.issuer,
+          audience: window.__cfg.audience,
+           readerStateStore: failingStore,
+         });
+         window.__crossTabBefore = await window.__crossTabClient.getSnapshot();
+         window.__crossTabClient.observeReaderState((state) => window.__crossTabStates.push(state));
+        return null;
+      `,
+    );
+    await browserJson(page, outcomeOf('client.logout()'));
+    await unsupported.waitForFunction('window.__crossTabStates.length > 0');
+    const crossTabFailure = await browserJson(
+      unsupported,
+      'return { state: window.__crossTabStates.at(-1) ?? null, before: window.__crossTabBefore, errors: window.__crossTabErrors };',
+    );
+    assert(
+      typeof asRecord(asRecord(crossTabFailure)?.before)?.subject === 'string' &&
+        asRecord(crossTabFailure)?.state === null &&
+        Array.isArray(asRecord(crossTabFailure)?.errors) &&
+        (asRecord(crossTabFailure)?.errors as unknown[]).length === 0,
+      'cross-tab storage failure is handled as unsupported-browser without an event error',
+    );
+    const reloadedAfterFailedRemoval = await browserJson(
+      unsupported,
+      `
+        const next = ConsumerClient.createConsumerClient({
+          baseUrl: window.location.origin,
+          issuer: window.__cfg.issuer,
+          audience: window.__cfg.audience,
+          readerStateStore: window.__crossTabClient ? {
+            getItem: (key) => window.localStorage.getItem(key),
+            setItem: (key, value) => window.localStorage.setItem(key, value),
+            removeItem: (key) => window.localStorage.removeItem(key),
+          } : undefined,
+          broadcast: null,
+        });
+        return await next.getSnapshot();
+      `,
+    );
+    assert(
+      reloadedAfterFailedRemoval === null,
+      'new controller cannot restore state after failed cross-tab removal',
+    );
+    await unsupported.close();
 
     await second.close();
     await context.close();

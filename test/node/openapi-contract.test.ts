@@ -135,23 +135,20 @@ describe('generated OpenAPI artifact', () => {
       >;
     };
 
-    expect(document.paths['/v1/auth/token']?.post?.operationId).toBe('issueConsumerToken');
+    expect(document.paths['/v1/auth/reader-state']?.post?.operationId).toBe('issueReaderState');
     expect(document.paths['/v1/auth/jwks']?.get?.operationId).toBe('getConsumerJwks');
     expect(
-      document.paths['/v1/auth/token']?.post?.responses?.['200']?.content?.['application/json']
-        ?.schema?.$ref,
-    ).toBe('#/components/schemas/ConsumerToken');
+      document.paths['/v1/auth/reader-state']?.post?.responses?.['200']?.content?.[
+        'application/json'
+      ]?.schema?.$ref,
+    ).toBe('#/components/schemas/ReaderState');
     expect(
       document.paths['/v1/auth/jwks']?.get?.responses?.['200']?.content?.['application/json']
         ?.schema?.$ref,
     ).toBe('#/components/schemas/ConsumerJwks');
 
-    // The token response carries only the access token, its type and expiry.
-    expect(document.components.schemas.ConsumerToken?.required).toEqual([
-      'accessToken',
-      'tokenType',
-      'expiresAt',
-    ]);
+    // Reader State is explicitly not a Bearer-shaped response.
+    expect(document.components.schemas.ReaderState?.required).toEqual(['readerState', 'expiresAt']);
     const serialized = JSON.stringify(document.components.schemas);
     expect(serialized).not.toContain('privateKey');
   });

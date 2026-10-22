@@ -21,7 +21,7 @@ describe('same-origin gateway helpers', () => {
   });
 
   it('forwards cookies and the original origin while dropping forwarded-host headers', async () => {
-    const browser = new Request('https://shop.example/v1/auth/token', {
+    const browser = new Request('https://shop.example/v1/auth/reader-state', {
       method: 'POST',
       headers: {
         cookie: 'session=abc',
@@ -31,11 +31,11 @@ describe('same-origin gateway helpers', () => {
       },
       body: '{}',
     });
-    const forwarded = buildServiceRequest(browser, '/v1/auth/token', {
+    const forwarded = buildServiceRequest(browser, '/v1/auth/reader-state', {
       serviceBaseUrl: 'https://users.example.com',
       allowedOrigins: [],
     });
-    expect(forwarded?.url).toBe('https://users.example.com/v1/auth/token');
+    expect(forwarded?.url).toBe('https://users.example.com/v1/auth/reader-state');
     expect(forwarded?.headers.get('cookie')).toBe('session=abc');
     expect(forwarded?.headers.get('origin')).toBe('https://shop.example');
     expect(forwarded?.headers.get('x-forwarded-host')).toBeNull();

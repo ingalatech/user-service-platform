@@ -64,15 +64,15 @@ export interface Env {
   // token; the engine callback URL never becomes public contract.
   AUTH_VERIFY_EMAIL_ACTION_URL?: string;
   AUTH_RESET_PASSWORD_ACTION_URL?: string;
-  // Consumer JWT configuration (spec #150, ADR-0013). Deployment-owned
-  // non-secret values: stable issuer/audience identifiers, token lifetime in
+  // Reader State configuration (spec #195, ADR-0013). Deployment-owned
+  // non-secret values: stable issuer, presentation audience, lifetime in
   // seconds (1..900, default 900) and exact gateway origins for the Origin
   // guard. Local/test fall back to deterministic local-only defaults for
   // issuer/audience/TTL; sandbox/production fail closed without explicit
   // issuer/audience. Never derived from request or forwarded hosts.
   AUTH_JWT_ISSUER?: string;
-  AUTH_JWT_AUDIENCE?: string;
-  AUTH_JWT_TTL_SECONDS?: string;
+  AUTH_READER_STATE_AUDIENCE?: string;
+  AUTH_READER_STATE_TTL_SECONDS?: string;
   // Comma-separated exact http(s) gateway origins accepted for cookie-auth
   // mutations in addition to the request origin. Empty means same-origin
   // only; wildcards are rejected.

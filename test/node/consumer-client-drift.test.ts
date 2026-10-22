@@ -53,7 +53,7 @@ describe('generated consumer contracts', () => {
       'loginIdentity',
       'getCurrentUser',
       'signOutIdentity',
-      'issueConsumerToken',
+      'issueReaderState',
       'getConsumerJwks',
     ]) {
       expect(generated).toContain(operation);

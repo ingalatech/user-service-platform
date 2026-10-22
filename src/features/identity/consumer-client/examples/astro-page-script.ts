@@ -12,7 +12,9 @@ import { createConsumerClient, type ConsumerClient } from '../index.js';
 // <script>
 //   import { consumerClient, snapshotText } from './astro-page-script.js';
 //   const client = consumerClient({ baseUrl: location.origin, issuer, audience });
-//   const text = await snapshotText(client, { anonymousText: '', unavailableText: '' });
+//   const text = await snapshotText(client, {
+//     anonymousText: '', readerText: 'Reader', unavailableText: ''
+//   });
 // </script>
 // ```
 const SINGLETON_KEY = '__userServiceConsumerClient';
@@ -24,8 +26,8 @@ export interface AstroConsumerConfig {
 }
 
 // Returns the tab-shared client, creating it once. Module state survives
-// across Astro scripts on the same document; sessionStorage carries the token
-// across full document navigations and reloads within the tab.
+// across Astro scripts on the same document; deployment-scoped localStorage
+// carries verified Reader State across documents and tabs.
 export function consumerClient(config: AstroConsumerConfig): ConsumerClient {
   const globals = globalThis as Record<string, unknown>;
   const key = `${SINGLETON_KEY}:${config.baseUrl}:${config.issuer}:${config.audience}`;
@@ -47,14 +49,14 @@ export function consumerClient(config: AstroConsumerConfig): ConsumerClient {
 // render instead of user data.
 export async function snapshotText(
   client: ConsumerClient,
-  input: { anonymousText: string; unavailableText: string },
+  input: { anonymousText: string; readerText: string; unavailableText: string },
 ): Promise<string> {
   try {
     const snapshot = await client.getSnapshot();
     if (snapshot === null) {
       return input.anonymousText;
     }
-    return snapshot.email;
+    return input.readerText;
   } catch {
     return input.unavailableText;
   }

@@ -18,9 +18,10 @@ export const CONSUMER_CORS_PREFLIGHT_MAX_AGE_SECONDS = 600;
 // mutations and GET for `/v1/me` and the public JWKS document.
 export const CONSUMER_CORS_ALLOWED_METHODS = ['GET', 'POST'] as const;
 
-// Request headers the consumer identity operations actually send: JSON
-// bodies. `authorization` is admitted for receiving APIs that verify the
-// access token; these cookie-based identity operations do not require it.
+// JSON operations use `content-type`. `authorization` remains in the accepted
+// preflight set for compatibility with the existing direct-browser contract;
+// no User Service route treats Reader State or another Bearer value as
+// authority.
 export const CONSUMER_CORS_ALLOWED_HEADERS = ['content-type', 'authorization'] as const;
 
 export interface ConsumerCorsOriginInput {
@@ -71,7 +72,7 @@ export const CONSUMER_CORS_PATHS = [
   '/auth/request-password-reset',
   '/auth/reset-password',
   '/auth/sign-out',
-  '/auth/token',
+  '/auth/reader-state',
   '/auth/jwks',
   '/me',
 ] as const;
