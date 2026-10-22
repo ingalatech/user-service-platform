@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   clearStoredReaderState,
+  invalidateStoredReaderState,
   jwksStorageKey,
   loadStoredReaderState,
+  readerStateInvalidationKey,
   readerStateStorageKey,
   saveStoredReaderState,
   type KeyValueStorage,
@@ -48,6 +50,16 @@ describe('Reader State storage', () => {
     expect(loadStoredReaderState(storage, scope)).toBeNull();
     saveStoredReaderState(storage, scope, { readerState: 'signed.state.value', expiresAt: 123 });
     clearStoredReaderState(storage, scope);
+    expect(loadStoredReaderState(storage, scope)).toBeNull();
+  });
+
+  it('treats a durable invalidation marker as absent state', () => {
+    const storage = memoryStorage();
+    saveStoredReaderState(storage, scope, { readerState: 'signed.state.value', expiresAt: 123 });
+
+    invalidateStoredReaderState(storage, scope);
+
+    expect(storage.getItem(readerStateInvalidationKey(scope))).toBe('1');
     expect(loadStoredReaderState(storage, scope)).toBeNull();
   });
 });

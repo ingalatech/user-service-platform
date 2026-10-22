@@ -445,6 +445,110 @@ describe('Reader State consumer client', () => {
     }
   });
 
+  it('does not restore valid state after a cross-tab logout removal failure', async () => {
+    const network = transport();
+    const values = new Map<string, string>();
+    const listeners = new Set<(event: { key: string | null; newValue: string | null }) => void>();
+    let failStateRemoval = false;
+    const storage: KeyValueStorage = {
+      getItem: (key) => values.get(key) ?? null,
+      setItem: (key, value) => {
+        values.set(key, value);
+        for (const listener of listeners) listener({ key, newValue: value });
+      },
+      removeItem: (key) => {
+        if (failStateRemoval && key === readerStateStorageKey(scope))
+          throw new Error('storage denied');
+        values.delete(key);
+      },
+    };
+    const originalStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+    const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+    Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: storage });
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: {
+        addEventListener: (
+          type: string,
+          listener: (event: { key: string | null; newValue: string | null }) => void,
+        ) => {
+          if (type === 'storage') listeners.add(listener);
+        },
+        removeEventListener: (
+          type: string,
+          listener: (event: { key: string | null; newValue: string | null }) => void,
+        ) => {
+          if (type === 'storage') listeners.delete(listener);
+        },
+      },
+    });
+    Object.defineProperty(globalThis, 'navigator', {
+      configurable: true,
+      value: {
+        locks: {
+          request: async <T>(_name: string, _options: unknown, callback: () => Promise<T>) =>
+            callback(),
+        },
+      },
+    });
+
+    try {
+      const setup = createConsumerClient({
+        baseUrl: scope.service,
+        issuer: scope.issuer,
+        audience: scope.audience,
+        readerStateStore: storage,
+        broadcast: null,
+        fetchImpl: network.fetchImpl,
+      });
+      await setup.register({ name: 'Ada', email: 'ada@example.com', password: 'correct-horse-41' });
+      await setup.verifyEmail(verificationToken());
+      const authenticated = await setup.login({
+        email: 'ada@example.com',
+        password: 'correct-horse-41',
+      });
+      expect(values.get(readerStateStorageKey(scope))).not.toBeNull();
+      failStateRemoval = true;
+
+      const receiver = createConsumerClient({
+        baseUrl: scope.service,
+        issuer: scope.issuer,
+        audience: scope.audience,
+        readerStateStore: storage,
+        broadcast: createBrowserReaderStateBroadcast(scope),
+        fetchImpl: () => Promise.reject(new Error('event must not fetch')),
+      });
+      const observed: (string | null)[] = [];
+      receiver.observeReaderState((state) => observed.push(state?.subject ?? null));
+      const sender = createBrowserReaderStateBroadcast(scope);
+
+      sender.notify('logout', 'other-tab', 1);
+
+      expect(observed).toEqual([null]);
+      expect(values.get(readerStateStorageKey(scope))).not.toBeNull();
+      await expect(receiver.getSnapshot()).resolves.toBeNull();
+      const reloaded = createConsumerClient({
+        baseUrl: scope.service,
+        issuer: scope.issuer,
+        audience: scope.audience,
+        readerStateStore: storage,
+        broadcast: null,
+        fetchImpl: () => Promise.reject(new Error('reload must not fetch')),
+      });
+      await expect(reloaded.getSnapshot()).resolves.toBeNull();
+      expect(authenticated.subject).toBeTypeOf('string');
+    } finally {
+      if (originalStorage === undefined)
+        delete (globalThis as Record<string, unknown>).localStorage;
+      else Object.defineProperty(globalThis, 'localStorage', originalStorage);
+      if (originalWindow === undefined) delete (globalThis as Record<string, unknown>).window;
+      else Object.defineProperty(globalThis, 'window', originalWindow);
+      if (originalNavigator === undefined) delete (globalThis as Record<string, unknown>).navigator;
+      else Object.defineProperty(globalThis, 'navigator', originalNavigator);
+    }
+  });
+
   it('lets a newer cross-tab replacement supersede delayed login and refresh work', async () => {
     const network = transport();
     const localStore = memoryStorage();

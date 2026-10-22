@@ -1045,20 +1045,27 @@ export default {
       `
         window.__crossTabErrors = [];
         window.addEventListener('error', (event) => window.__crossTabErrors.push(event.message));
-        window.addEventListener('unhandledrejection', (event) => window.__crossTabErrors.push(String(event.reason)));
-        const failingStore = {
-          getItem: () => null,
-          setItem: () => undefined,
-          removeItem: () => { throw new Error('storage denied'); },
-        };
+         window.addEventListener('unhandledrejection', (event) => window.__crossTabErrors.push(String(event.reason)));
+         const stateKey = ConsumerClient.readerStateStorageKey({ service: window.location.origin, issuer: window.__cfg.issuer, audience: window.__cfg.audience });
+         const persistedBeforeLogout = window.localStorage.getItem(stateKey);
+         if (persistedBeforeLogout === null) throw new Error('expected valid persisted Reader State');
+         const failingStore = {
+           getItem: (key) => window.localStorage.getItem(key),
+           setItem: (key, value) => window.localStorage.setItem(key, value),
+           removeItem: (key) => {
+             if (key === stateKey) throw new Error('storage denied');
+             window.localStorage.removeItem(key);
+           },
+         };
         window.__crossTabStates = [];
         window.__crossTabClient = ConsumerClient.createConsumerClient({
           baseUrl: window.location.origin,
           issuer: window.__cfg.issuer,
           audience: window.__cfg.audience,
-          readerStateStore: failingStore,
-        });
-        window.__crossTabClient.observeReaderState((state) => window.__crossTabStates.push(state));
+           readerStateStore: failingStore,
+         });
+         window.__crossTabBefore = await window.__crossTabClient.getSnapshot();
+         window.__crossTabClient.observeReaderState((state) => window.__crossTabStates.push(state));
         return null;
       `,
     );
@@ -1066,13 +1073,35 @@ export default {
     await unsupported.waitForFunction('window.__crossTabStates.length > 0');
     const crossTabFailure = await browserJson(
       unsupported,
-      'return { state: window.__crossTabStates.at(-1) ?? null, errors: window.__crossTabErrors };',
+      'return { state: window.__crossTabStates.at(-1) ?? null, before: window.__crossTabBefore, errors: window.__crossTabErrors };',
     );
     assert(
-      asRecord(crossTabFailure)?.state === null &&
+      typeof asRecord(asRecord(crossTabFailure)?.before)?.subject === 'string' &&
+        asRecord(crossTabFailure)?.state === null &&
         Array.isArray(asRecord(crossTabFailure)?.errors) &&
         (asRecord(crossTabFailure)?.errors as unknown[]).length === 0,
       'cross-tab storage failure is handled as unsupported-browser without an event error',
+    );
+    const reloadedAfterFailedRemoval = await browserJson(
+      unsupported,
+      `
+        const next = ConsumerClient.createConsumerClient({
+          baseUrl: window.location.origin,
+          issuer: window.__cfg.issuer,
+          audience: window.__cfg.audience,
+          readerStateStore: window.__crossTabClient ? {
+            getItem: (key) => window.localStorage.getItem(key),
+            setItem: (key, value) => window.localStorage.setItem(key, value),
+            removeItem: (key) => window.localStorage.removeItem(key),
+          } : undefined,
+          broadcast: null,
+        });
+        return await next.getSnapshot();
+      `,
+    );
+    assert(
+      reloadedAfterFailedRemoval === null,
+      'new controller cannot restore state after failed cross-tab removal',
     );
     await unsupported.close();
 

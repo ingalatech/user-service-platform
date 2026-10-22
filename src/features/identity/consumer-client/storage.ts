@@ -26,6 +26,10 @@ export function readerStateStorageKey(scope: ConsumerStorageScope): string {
   return `${STORAGE_VERSION}.state.${scopeSuffix(scope)}`;
 }
 
+export function readerStateInvalidationKey(scope: ConsumerStorageScope): string {
+  return `${STORAGE_VERSION}.invalidated.${scopeSuffix(scope)}`;
+}
+
 export function jwksStorageKey(scope: ConsumerStorageScope): string {
   return `${STORAGE_VERSION}.jwks.${scopeSuffix(scope)}`;
 }
@@ -42,6 +46,7 @@ export function loadStoredReaderState(
   storage: KeyValueStorage,
   scope: ConsumerStorageScope,
 ): StoredReaderState | null {
+  if (storage.getItem(readerStateInvalidationKey(scope)) !== null) return null;
   const raw = storage.getItem(readerStateStorageKey(scope));
   if (raw === null) return null;
   try {
@@ -57,6 +62,7 @@ export function saveStoredReaderState(
   state: StoredReaderState,
 ): void {
   storage.setItem(readerStateStorageKey(scope), JSON.stringify(state));
+  storage.removeItem(readerStateInvalidationKey(scope));
 }
 
 export function clearStoredReaderState(
@@ -64,4 +70,11 @@ export function clearStoredReaderState(
   scope: ConsumerStorageScope,
 ): void {
   storage.removeItem(readerStateStorageKey(scope));
+}
+
+export function invalidateStoredReaderState(
+  storage: KeyValueStorage,
+  scope: ConsumerStorageScope,
+): void {
+  storage.setItem(readerStateInvalidationKey(scope), '1');
 }

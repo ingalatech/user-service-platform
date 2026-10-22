@@ -34,6 +34,9 @@ Reader State and the public-key cache use versioned deployment-scoped
 audience (`usp.reader-state.v1.*`). The client stores only the compact verified
 Reader State and verified expiry, never login identity fields, a session
 credential, an unverified payload or an API credential.
+If a cross-tab logout cannot remove the state key, it records a durable
+invalidation marker so a reload or new controller fails closed instead of
+restoring the old snapshot.
 
 Before exposure, the client validates fixed `EdDSA`, key id, Ed25519 signature,
 configured issuer, exact Reader State audience, integer `iat`/`exp`, current

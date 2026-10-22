@@ -16,9 +16,11 @@ export {
 export { createJwksCache, type JwksCache, type JwksCacheInput } from './jwks-cache.js';
 export {
   clearStoredReaderState,
+  invalidateStoredReaderState,
   jwksStorageKey,
   loadStoredReaderState,
   readerStateStorageKey,
+  readerStateInvalidationKey,
   saveStoredReaderState,
   type ConsumerStorageScope,
   type KeyValueStorage,

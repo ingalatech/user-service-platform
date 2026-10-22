@@ -2,6 +2,7 @@ import createClient, { type ClientOptions } from 'openapi-fetch';
 import { createJwksCache } from './jwks-cache.js';
 import {
   clearStoredReaderState,
+  invalidateStoredReaderState,
   loadStoredReaderState,
   saveStoredReaderState,
   type ConsumerStorageScope,
@@ -529,6 +530,11 @@ export function createConsumerClient(options: ConsumerClientOptions): ConsumerCl
         // The clear wrapper maps storage errors to unsupported-browser. A
         // storage event has no caller to reject, so contain that stable error
         // instead of leaking the browser exception through event dispatch.
+        try {
+          invalidateStoredReaderState(store, scope);
+        } catch {
+          // Storage remains unavailable; the observer still fails closed.
+        }
         for (const observer of observers) observer(null);
         return;
       }
