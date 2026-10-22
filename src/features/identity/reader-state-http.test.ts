@@ -71,7 +71,10 @@ function sessionCookieFrom(res: Response): string | null {
   return pair === undefined || pair.length === 0 ? null : pair.trim();
 }
 
-function tokenFromLastMessage(): string {
+async function tokenFromLastMessage(): Promise<string> {
+  for (let attempt = 0; attempt < 20 && mailer.sent.length === 0; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
   const messages = mailer.sent;
   expect(messages.length).toBeGreaterThan(0);
   const last = messages[messages.length - 1];
@@ -101,7 +104,7 @@ async function registerVerifyLogin(email: string): Promise<string> {
     email,
     password: 'correct-horse-41',
   });
-  await post('/v1/auth/verify-email', { token: tokenFromLastMessage() });
+  await post('/v1/auth/verify-email', { token: await tokenFromLastMessage() });
   const loginRes = await post('/v1/auth/login', { email, password: 'correct-horse-41' });
   expect(loginRes.status).toBe(200);
   const cookie = sessionCookieFrom(loginRes);
@@ -262,6 +265,7 @@ beforeEach(async () => {
     db.prepare('DELETE FROM "session"'),
     db.prepare('DELETE FROM "account"'),
     db.prepare('DELETE FROM "verification"'),
+    db.prepare('DELETE FROM "email_verification_token"'),
     db.prepare('DELETE FROM "jwks"'),
     db.prepare('DELETE FROM "user"'),
   ]);

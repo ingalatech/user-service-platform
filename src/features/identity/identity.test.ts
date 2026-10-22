@@ -86,7 +86,8 @@ async function userCount(binding: Env['DB']): Promise<number> {
   return row?.total ?? 0;
 }
 
-function tokenFromLastMessage(): string {
+async function tokenFromLastMessage(): Promise<string> {
+  await waitForVerificationMessages(1);
   const messages = mailer.sent;
   expect(messages.length).toBeGreaterThan(0);
   const last = messages[messages.length - 1];
@@ -98,6 +99,13 @@ function tokenFromLastMessage(): string {
     throw new Error('Expected a token in the captured verification action URL.');
   }
   return token;
+}
+
+async function waitForVerificationMessages(count: number): Promise<void> {
+  for (let attempt = 0; attempt < 20 && mailer.sent.length < count; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  expect(mailer.sent.length).toBeGreaterThanOrEqual(count);
 }
 
 function resetTokenFromLastMessage(): string {
@@ -122,6 +130,7 @@ beforeEach(async () => {
     db.prepare('DELETE FROM "session"'),
     db.prepare('DELETE FROM "account"'),
     db.prepare('DELETE FROM "verification"'),
+    db.prepare('DELETE FROM "email_verification_token"'),
     db.prepare('DELETE FROM "user"'),
   ]);
   mailer.clear();
@@ -143,6 +152,9 @@ describe('POST /v1/auth/register', () => {
     expect(body.email).toBe('ada@example.com');
     expect(body.emailVerified).toBe(false);
 
+    await tokenFromLastMessage();
+    await waitForVerificationMessages(1);
+    await waitForVerificationMessages(1);
     expect(mailer.sent).toHaveLength(1);
     const message = mailer.sent[0];
     expect(message?.to).toBe('ada@example.com');
@@ -198,6 +210,7 @@ describe('POST /v1/auth/register', () => {
     // be used to probe for existing accounts.
     expect(second.status).toBe(201);
     expect(await userCount(workerEnv.DB)).toBe(1);
+    await waitForVerificationMessages(1);
     expect(mailer.sent).toHaveLength(1);
   });
 
@@ -251,7 +264,9 @@ describe('verified-email login gate', () => {
       password: 'correct-horse-41',
     });
 
-    const verifyRes = await post('/v1/auth/verify-email', { token: tokenFromLastMessage() });
+    const verifyRes = await post('/v1/auth/verify-email', {
+      token: await tokenFromLastMessage(),
+    });
     expect(verifyRes.status).toBe(200);
     const verified = (await verifyRes.json()) as { emailVerified: boolean };
     expect(verified.emailVerified).toBe(true);
@@ -309,7 +324,7 @@ describe('verified-email login gate', () => {
       email: 'known@example.com',
       password: 'correct-horse-41',
     });
-    await post('/v1/auth/verify-email', { token: tokenFromLastMessage() });
+    await post('/v1/auth/verify-email', { token: await tokenFromLastMessage() });
 
     const wrongPassword = await post('/v1/auth/login', {
       email: 'known@example.com',
@@ -332,12 +347,56 @@ describe('verified-email login gate', () => {
 });
 
 describe('POST /v1/auth/request-verification', () => {
+  it('invalidates a superseded token and consumes the latest token once', async () => {
+    await post('/v1/auth/register', {
+      name: 'Latest Token',
+      email: 'latest-token@example.com',
+      password: 'correct-horse-41',
+    });
+    const token1 = await tokenFromLastMessage();
+
+    const resend = await post('/v1/auth/request-verification', {
+      email: 'LATEST-TOKEN@example.com',
+    });
+    expect(resend.status).toBe(202);
+    await waitForVerificationMessages(2);
+    const token2 = await tokenFromLastMessage();
+    expect(token2).not.toBe(token1);
+
+    const stale = await post('/v1/auth/verify-email', { token: token1 });
+    expect(stale.status).toBe(400);
+    expect(await stale.json()).toMatchObject({ code: 'verification-invalid', status: 400 });
+
+    const verified = await post('/v1/auth/verify-email', { token: token2 });
+    expect(verified.status).toBe(200);
+
+    const reused = await post('/v1/auth/verify-email', { token: token2 });
+    expect(reused.status).toBe(400);
+    expect(await reused.json()).toMatchObject({ code: 'verification-invalid', status: 400 });
+  });
+
+  it('allows only one concurrent verification request to consume a token', async () => {
+    await post('/v1/auth/register', {
+      name: 'Race Token',
+      email: 'race-token@example.com',
+      password: 'correct-horse-41',
+    });
+    const token = await tokenFromLastMessage();
+
+    const results = await Promise.all([
+      post('/v1/auth/verify-email', { token }),
+      post('/v1/auth/verify-email', { token }),
+    ]);
+    expect(results.map((result) => result.status).sort()).toEqual([200, 400]);
+  });
+
   it('resends verification without creating duplicate identities', async () => {
     await post('/v1/auth/register', {
       name: 'Resend Me',
       email: 'resend@example.com',
       password: 'correct-horse-41',
     });
+    await waitForVerificationMessages(1);
     expect(mailer.sent).toHaveLength(1);
 
     const first = await post('/v1/auth/request-verification', { email: 'resend@example.com' });
@@ -345,6 +404,7 @@ describe('POST /v1/auth/request-verification', () => {
 
     expect(first.status).toBe(202);
     expect(second.status).toBe(202);
+    await waitForVerificationMessages(3);
     expect(await userCount(workerEnv.DB)).toBe(1);
     expect(mailer.sent.length).toBeGreaterThanOrEqual(3);
   });
@@ -365,7 +425,7 @@ describe('GET /v1/me', () => {
       email: 'ada-me@example.com',
       password: 'correct-horse-41',
     });
-    await post('/v1/auth/verify-email', { token: tokenFromLastMessage() });
+    await post('/v1/auth/verify-email', { token: await tokenFromLastMessage() });
     const loginRes = await post('/v1/auth/login', {
       email: 'ada-me@example.com',
       password: 'correct-horse-41',
@@ -418,7 +478,7 @@ describe('POST /v1/auth/sign-out', () => {
       email: 'grace-me@example.com',
       password: 'correct-horse-41',
     });
-    await post('/v1/auth/verify-email', { token: tokenFromLastMessage() });
+    await post('/v1/auth/verify-email', { token: await tokenFromLastMessage() });
     const loginRes = await post('/v1/auth/login', {
       email: 'grace-me@example.com',
       password: 'correct-horse-41',
@@ -444,7 +504,7 @@ describe('POST /v1/auth/sign-out', () => {
       email: 'cookie@example.com',
       password: 'correct-horse-41',
     });
-    await post('/v1/auth/verify-email', { token: tokenFromLastMessage() });
+    await post('/v1/auth/verify-email', { token: await tokenFromLastMessage() });
     const loginRes = await post('/v1/auth/login', {
       email: 'cookie@example.com',
       password: 'correct-horse-41',
@@ -464,7 +524,7 @@ describe('password recovery', () => {
       email: 'recover@example.com',
       password: 'correct-horse-41',
     });
-    await post('/v1/auth/verify-email', { token: tokenFromLastMessage() });
+    await post('/v1/auth/verify-email', { token: await tokenFromLastMessage() });
     mailer.clear();
 
     const res = await post('/v1/auth/request-password-reset', {
@@ -491,7 +551,7 @@ describe('password recovery', () => {
       email: 'known-recover@example.com',
       password: 'correct-horse-41',
     });
-    await post('/v1/auth/verify-email', { token: tokenFromLastMessage() });
+    await post('/v1/auth/verify-email', { token: await tokenFromLastMessage() });
     mailer.clear();
 
     const known = await post('/v1/auth/request-password-reset', {
@@ -519,7 +579,7 @@ describe('password recovery', () => {
       email: 'rotate@example.com',
       password: 'correct-horse-41',
     });
-    await post('/v1/auth/verify-email', { token: tokenFromLastMessage() });
+    await post('/v1/auth/verify-email', { token: await tokenFromLastMessage() });
     const loginRes = await post('/v1/auth/login', {
       email: 'rotate@example.com',
       password: 'correct-horse-41',
@@ -574,7 +634,7 @@ describe('password recovery', () => {
       email: 'reset-safety@example.com',
       password: 'correct-horse-41',
     });
-    await post('/v1/auth/verify-email', { token: tokenFromLastMessage() });
+    await post('/v1/auth/verify-email', { token: await tokenFromLastMessage() });
     mailer.clear();
     await post('/v1/auth/request-password-reset', { email: 'reset-safety@example.com' });
     const token = resetTokenFromLastMessage();
@@ -624,7 +684,7 @@ describe('password recovery', () => {
       email: 'expired-reset@example.com',
       password: 'correct-horse-41',
     });
-    await post('/v1/auth/verify-email', { token: tokenFromLastMessage() });
+    await post('/v1/auth/verify-email', { token: await tokenFromLastMessage() });
     mailer.clear();
     await post('/v1/auth/request-password-reset', { email: 'expired-reset@example.com' });
     const token = resetTokenFromLastMessage();
@@ -657,7 +717,7 @@ describe('password recovery', () => {
       email: 'weak-reset@example.com',
       password: 'correct-horse-41',
     });
-    await post('/v1/auth/verify-email', { token: tokenFromLastMessage() });
+    await post('/v1/auth/verify-email', { token: await tokenFromLastMessage() });
     mailer.clear();
     await post('/v1/auth/request-password-reset', { email: 'weak-reset@example.com' });
     const token = resetTokenFromLastMessage();
@@ -702,7 +762,7 @@ describe('password recovery', () => {
         email: 'reset-logs@example.com',
         password: 'correct-horse-41',
       });
-      await post('/v1/auth/verify-email', { token: tokenFromLastMessage() });
+      await post('/v1/auth/verify-email', { token: await tokenFromLastMessage() });
       await post('/v1/auth/request-password-reset', { email: 'reset-logs@example.com' });
       const last = mailer.passwordResets[mailer.passwordResets.length - 1];
       captured.token = last?.token ?? '';
@@ -744,7 +804,7 @@ describe('identity observability redaction', () => {
         email: 'logs@example.com',
         password: 'correct-horse-41',
       });
-      const token = tokenFromLastMessage();
+      const token = await tokenFromLastMessage();
       await post('/v1/auth/login', { email: 'logs@example.com', password: 'correct-horse-41' });
       await post('/v1/auth/verify-email', { token });
       const loginRes = await post('/v1/auth/login', {
@@ -763,7 +823,7 @@ describe('identity observability redaction', () => {
 
     const transcript = seen.join('\n');
     expect(transcript).not.toContain('correct-horse-41');
-    expect(transcript).not.toContain(tokenFromLastMessage());
+    expect(transcript).not.toContain(await tokenFromLastMessage());
     // No action URLs, tokens or query strings: request logs carry the matched
     // route pattern (`/v1/auth/verify-email`) but never `?token=...`.
     expect(transcript).not.toContain('token=');

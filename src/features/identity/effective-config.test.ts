@@ -42,6 +42,13 @@ async function postRegister(body: unknown, overrides: Partial<Env> = {}): Promis
   );
 }
 
+async function waitForVerificationMessage(): Promise<void> {
+  for (let attempt = 0; attempt < 20 && mailer.sent.length === 0; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+  expect(mailer.sent.length).toBeGreaterThan(0);
+}
+
 beforeAll(async () => {
   await applyD1Migrations(workerEnv.DB, testMigrations);
 });
@@ -52,6 +59,7 @@ beforeEach(async () => {
     db.prepare('DELETE FROM "session"'),
     db.prepare('DELETE FROM "account"'),
     db.prepare('DELETE FROM "verification"'),
+    db.prepare('DELETE FROM "email_verification_token"'),
     db.prepare('DELETE FROM "user"'),
   ]);
   mailer.clear();
@@ -75,6 +83,7 @@ describe('effective configuration as Identity source of truth', () => {
     });
 
     expect(res.status).toBe(201);
+    await waitForVerificationMessage();
     expect(mailer.sent).toHaveLength(1);
   });
 

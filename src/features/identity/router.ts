@@ -35,6 +35,7 @@ import {
 } from './route.js';
 import { resolveAuthSecret } from './secret.js';
 import { resolveSessionContext, toAuthenticatedUser } from './session.js';
+import { consumeLatestVerificationToken, isLatestVerificationToken } from './verification-token.js';
 
 export interface IdentityRouterOptions {
   // Test seam: an explicitly provided mailer (in-memory in tests) takes
@@ -384,6 +385,26 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
   router.openapi(verifyEmailRoute, async (c) => {
     const { auth } = scopedAuth(c, override);
     const input = c.req.valid('json');
+    try {
+      const currentToken = await isLatestVerificationToken({ db: c.env.DB, token: input.token });
+      if (!currentToken) {
+        return problem(
+          c,
+          400,
+          'verification-invalid',
+          'Invalid or expired verification',
+          'The verification action is invalid or has expired.',
+        );
+      }
+    } catch {
+      return problem(
+        c,
+        400,
+        'verification-invalid',
+        'Invalid or expired verification',
+        'The verification action is invalid or has expired.',
+      );
+    }
     const outcome = await callEngine(() =>
       auth.api.verifyEmail({
         query: { token: input.token },
@@ -393,6 +414,25 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     );
     if (outcome instanceof Response) {
       if (outcome.ok) {
+        try {
+          if (!(await consumeLatestVerificationToken({ db: c.env.DB, token: input.token }))) {
+            return problem(
+              c,
+              400,
+              'verification-invalid',
+              'Invalid or expired verification',
+              'The verification action is invalid or has expired.',
+            );
+          }
+        } catch {
+          return problem(
+            c,
+            400,
+            'verification-invalid',
+            'Invalid or expired verification',
+            'The verification action is invalid or has expired.',
+          );
+        }
         // The engine returns `{ status: true, user: null }` on this path;
         // the verified address is the one the client submitted the action
         // for, and eligibility is proven by the subsequent login instead of

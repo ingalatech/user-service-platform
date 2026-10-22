@@ -69,6 +69,16 @@ export const verification = sqliteTable('verification', {
   updatedAt: integer('updated_at', { mode: 'timestamp' }),
 });
 
+// Application-owned latest-token guard. Better Auth remains the signer and
+// verifier; this table only stores a digest and lifecycle metadata.
+export const emailVerificationToken = sqliteTable('email_verification_token', {
+  targetEmail: text('target_email').primaryKey(),
+  tokenDigest: text('token_digest').notNull().unique(),
+  expiresAt: integer('expires_at').notNull(),
+  issuedAt: integer('issued_at').notNull(),
+  consumedAt: integer('consumed_at'),
+});
+
 // Durable consumer-JWT signing-key ring (spec #150, ADR-0013). This table
 // backs the pinned Better Auth JWT capability through its Drizzle adapter:
 // one row per asymmetric signing key, with the private key encrypted through
@@ -88,4 +98,11 @@ export const jwks = sqliteTable('jwks', {
 
 // Adapter-facing schema object for Better Auth's Drizzle adapter. Kept next
 // to the tables so the mapping cannot drift from the table definitions.
-export const identitySchema = { user, session, account, verification, jwks };
+export const identitySchema = {
+  user,
+  session,
+  account,
+  verification,
+  emailVerificationToken,
+  jwks,
+};
