@@ -206,7 +206,7 @@ async function main(): Promise<void> {
     },
     sourceMetadata: async () => {
       const [commit, branch] = await Promise.all([
-        execFileAsync('git', ['rev-parse', 'HEAD'], { cwd: deployRepoRoot }),
+        execFileAsync('git', ['rev-parse', '--verify', 'HEAD^{commit}'], { cwd: deployRepoRoot }),
         execFileAsync('git', ['branch', '--show-current'], { cwd: deployRepoRoot }),
       ]);
       return { commit: commit.stdout.trim(), branch: branch.stdout.trim() || 'detached' };
