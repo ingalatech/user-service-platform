@@ -34,9 +34,15 @@ export function preparePromotionVersions(value: unknown): {
   readonly display: string[];
 } {
   const versions = parseWorkerVersions(value);
+  const latest = [...versions]
+    .sort((left, right) => right.createdOn.localeCompare(left.createdOn))
+    .slice(0, 10);
   return {
-    versions,
-    display: versions.map((version) => `${version.id} ${version.createdOn} ${version.annotations}`),
+    versions: latest,
+    display: latest.map(
+      (version) =>
+        `${version.tag ?? 'untagged'} — ${version.id} — ${new Date(version.createdOn).toISOString()}`,
+    ),
   };
 }
 
