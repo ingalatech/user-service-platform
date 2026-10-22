@@ -464,6 +464,13 @@ export async function runDeployment(
       throw new Error('Unable to determine whether the Worker already exists.');
     }
     const isFirstDeployment = existingVersions.length === 0;
+    const source = (await io.sourceMetadata?.()) ?? { commit: 'unknown', branch: 'unknown' };
+    const manifest = buildVersionManifest(request.resolved.applicationConfig, {
+      branch: source.branch,
+      commit: source.commit,
+      tag: versionLabel(source.branch, source.commit, new Date()),
+    });
+    const manifestArguments = ['--message', manifest.message, '--tag', manifest.tag];
     steps = planDeploymentSteps(request, { firstDeployment: isFirstDeployment });
     if (isFirstDeployment) {
       io.log(
@@ -494,28 +501,17 @@ export async function runDeployment(
       runner,
     );
     if (isFirstDeployment) {
-      await runStep('deploy-worker', 'npx', ['wrangler', 'deploy', '--config', configPath], runner);
-    } else {
-      const source = (await io.sourceMetadata?.()) ?? { commit: 'unknown', branch: 'unknown' };
-      const manifest = buildVersionManifest(request.resolved.applicationConfig, {
-        branch: source.branch,
-        commit: source.commit,
-        tag: versionLabel(source.branch, source.commit, new Date()),
-      });
       await runStep(
         'deploy-worker',
         'npx',
-        [
-          'wrangler',
-          'versions',
-          'upload',
-          '--message',
-          manifest.message,
-          '--tag',
-          manifest.tag,
-          '--config',
-          configPath,
-        ],
+        ['wrangler', 'deploy', ...manifestArguments, '--config', configPath],
+        runner,
+      );
+    } else {
+      await runStep(
+        'deploy-worker',
+        'npx',
+        ['wrangler', 'versions', 'upload', ...manifestArguments, '--config', configPath],
         runner,
       );
     }

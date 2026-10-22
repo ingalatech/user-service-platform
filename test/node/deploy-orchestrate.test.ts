@@ -293,6 +293,24 @@ describe('deployment orchestration', () => {
       PATH: process.env.PATH,
       SMOKE_SANDBOX_BASE_URL: 'https://sandbox.example.test',
     });
+    const deploy = harness.commands.find(({ args }) => args.includes('deploy'));
+    const messageIndex = deploy?.args.indexOf('--message') ?? -1;
+    const tagIndex = deploy?.args.indexOf('--tag') ?? -1;
+    const message = messageIndex < 0 ? undefined : deploy?.args[messageIndex + 1];
+    const tag = tagIndex < 0 ? undefined : deploy?.args[tagIndex + 1];
+    expect(message).toBeDefined();
+    expect(tag).toMatch(/^0123456-\d{8}T\d{6}Z-test-branch$/);
+    expect(
+      parseVersionManifest({
+        'workers/message': message,
+        'workers/tag': tag,
+      }),
+    ).toMatchObject({
+      branch: 'test/branch',
+      commit: '0123456789abcdef0123456789abcdef01234567',
+      fingerprint: VERSION_MANIFEST.fingerprint,
+      mailTransport: 'resend',
+    });
   });
 
   it('confirms and deploys when versions discovery returns the absent-Worker 10007 fixture', async () => {
