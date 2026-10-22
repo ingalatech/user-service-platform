@@ -483,6 +483,25 @@ export default {
       'live replacement performs no credentialed Identity calls in the second tab',
     );
 
+    phase = 'manual refresh propagates live to an already-current tab';
+    await browserJson(
+      second,
+      'window.__manualRefreshIssuedAt = undefined; client.observeReaderState((state) => { if (state !== null) window.__manualRefreshIssuedAt = state.issuedAt; }); return null;',
+    );
+    await pause(1100);
+    const manualRefresh = await browserJson(page, outcomeOf('client.refreshReaderState()'));
+    assert(asRecord(manualRefresh)?.ok === true, 'manual Reader State refresh succeeds');
+    const manualRefreshIssuedAt = asRecord(asRecord(manualRefresh)?.value)?.issuedAt;
+    assert(typeof manualRefreshIssuedAt === 'number', 'manual refresh has a new issue time');
+    await second.waitForFunction(
+      `window.__manualRefreshIssuedAt === ${String(manualRefreshIssuedAt)}`,
+    );
+    assert(
+      (await browserJson(second, 'return window.__manualRefreshIssuedAt;')) ===
+        manualRefreshIssuedAt,
+      'manual refresh replacement propagates to the already-current tab',
+    );
+
     phase = 'newer replacement wins over a delayed login response';
     let releaseDelayedReplacementLogin: () => void = () => undefined;
     let delayedReplacementLoginReady: () => void = () => undefined;
@@ -581,6 +600,67 @@ export default {
       outcomeOf(`client.login({ email: '${otherEmail}', password: '${password}' })`),
     );
     assert(asRecord(restoreReplacement)?.ok === true, 'restore replacement after ordering tests');
+
+    phase = 'refresh after logout marker cannot survive delayed server sign-out';
+    await browserJson(
+      second,
+      'window.__logoutRaceStates = []; client.observeReaderState((state) => { window.__logoutRaceStates.push(state?.subject ?? null); }); return null;',
+    );
+    let releaseDelayedSignOut: () => void = () => undefined;
+    let delayedSignOutReady: () => void = () => undefined;
+    const delayedSignOutBlocked = new Promise<void>((resolve) => {
+      releaseDelayedSignOut = resolve;
+    });
+    const delayedSignOutRequest = new Promise<void>((resolve) => {
+      delayedSignOutReady = resolve;
+    });
+    await page.route('**/v1/auth/sign-out', async (route) => {
+      delayedSignOutReady();
+      await delayedSignOutBlocked;
+      await route.continue();
+    });
+    const delayedSignOut = browserJson(page, outcomeOf('client.logout()'));
+    await delayedSignOutRequest;
+    await second.waitForFunction('window.__logoutRaceStates.includes(null)');
+    const refreshBetweenMarkerAndSignOut = await browserJson(
+      second,
+      outcomeOf('client.refreshReaderState()'),
+    );
+    assert(
+      asRecord(refreshBetweenMarkerAndSignOut)?.ok === true,
+      'refresh starts after logout marker while the authoritative session is still live',
+    );
+    releaseDelayedSignOut();
+    const delayedSignOutOutcome = await delayedSignOut;
+    assert(asRecord(delayedSignOutOutcome)?.ok === true, 'delayed server sign-out succeeds');
+    await page.unroute('**/v1/auth/sign-out');
+    await second.waitForFunction('window.__logoutRaceStates.at(-1) === null');
+    const stateAfterDelayedSignOut = await browserJson(
+      second,
+      outcomeOf(`
+        (async () => {
+          const scope = { service: window.location.origin, issuer: window.__cfg.issuer, audience: window.__cfg.audience };
+          return {
+            snapshot: await client.getSnapshot(),
+            stored: window.localStorage.getItem(ConsumerClient.readerStateStorageKey(scope)),
+          };
+        })()
+      `),
+    );
+    assert(
+      asRecord(asRecord(stateAfterDelayedSignOut)?.value)?.snapshot === null &&
+        asRecord(asRecord(stateAfterDelayedSignOut)?.value)?.stored === null,
+      'logout completion owns final local clear after an intervening refresh',
+    );
+
+    const restoreAfterLogoutRace = await browserJson(
+      second,
+      outcomeOf(`client.login({ email: '${otherEmail}', password: '${password}' })`),
+    );
+    assert(
+      asRecord(restoreAfterLogoutRace)?.ok === true,
+      'login after completed logout remains valid',
+    );
 
     phase = 'unavailable JWKS refresh recovers without credentialed renewal';
     await browserJson(
@@ -742,6 +822,13 @@ export default {
     const failedLogout = await browserJson(page, outcomeOf('client.logout()'));
     assert(asRecord(failedLogout)?.ok === false, 'failed logout surfaces');
     assert(asRecord(failedLogout)?.code === 'logout-failed', 'stable logout-failed code');
+    await second.waitForFunction('window.__logoutRaceStates.at(-1) === null');
+    const stateAfterFailedLogout = await browserJson(second, outcomeOf('client.getSnapshot()'));
+    assert(
+      asRecord(stateAfterFailedLogout)?.ok === true &&
+        asRecord(stateAfterFailedLogout)?.value === null,
+      'failed server logout still owns final cross-tab local clear',
+    );
     await page.unroute('**/v1/auth/sign-out');
 
     phase = 'unsupported browser auth mutations fail closed after local logout';

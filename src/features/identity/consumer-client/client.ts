@@ -80,7 +80,6 @@ export function createBrowserReaderStateBroadcast(
   scope: ConsumerStorageScope,
 ): ReaderStateBroadcast {
   const key = broadcastKey(scope);
-  const versionKey = authMutationVersionKey(scope);
   const globalRecord = globalThis as Record<string, unknown>;
   const storage = browserStorage(globalRecord);
   const windowCandidate = globalRecord.window as
@@ -88,16 +87,12 @@ export function createBrowserReaderStateBroadcast(
   return {
     notify: (change, source, authMutationVersion) => {
       try {
-        const storedVersion = Number(storage?.getItem(versionKey));
-        const effectiveAuthMutationVersion =
-          authMutationVersion ??
-          (Number.isSafeInteger(storedVersion) && storedVersion > 0 ? storedVersion : undefined);
         storage?.setItem(
           key,
           JSON.stringify({
             change,
             source,
-            authMutationVersion: effectiveAuthMutationVersion,
+            authMutationVersion,
             at: Date.now(),
           }),
         );
@@ -498,7 +493,11 @@ export function createConsumerClient(options: ConsumerClientOptions): ConsumerCl
 
   broadcast?.observe((change, sender, authMutationVersion) => {
     if (sender === source) return;
-    if (authMutationVersion !== undefined && authMutationVersion <= latestAuthMutationVersion)
+    if (
+      authMutationVersion !== undefined &&
+      (authMutationVersion < latestAuthMutationVersion ||
+        (authMutationVersion === latestAuthMutationVersion && change !== 'logout'))
+    )
       return;
     if (authMutationVersion !== undefined) latestAuthMutationVersion = authMutationVersion;
     generation += 1;
@@ -554,21 +553,28 @@ export function createConsumerClient(options: ConsumerClientOptions): ConsumerCl
       for (const observer of observers) observer(null);
       await coordinateAuthMutation(async (authMutationVersion) => {
         clear('anonymous');
+        for (const observer of observers) observer(null);
         broadcast?.notify('logout', source, authMutationVersion);
         try {
-          const response = await api.POST('/v1/auth/sign-out', {
-            credentials: 'include',
-          } as Record<string, unknown>);
-          if (!response.response.ok) {
-            throw new ConsumerClientError(
-              'logout-failed',
-              'Server sign-out failed.',
-              response.response.status,
-            );
+          try {
+            const response = await api.POST('/v1/auth/sign-out', {
+              credentials: 'include',
+            } as Record<string, unknown>);
+            if (!response.response.ok) {
+              throw new ConsumerClientError(
+                'logout-failed',
+                'Server sign-out failed.',
+                response.response.status,
+              );
+            }
+          } catch (error) {
+            if (error instanceof ConsumerClientError) throw error;
+            throw new ConsumerClientError('logout-failed', 'Server sign-out failed.');
           }
-        } catch (error) {
-          if (error instanceof ConsumerClientError) throw error;
-          throw new ConsumerClientError('logout-failed', 'Server sign-out failed.');
+        } finally {
+          clear('anonymous');
+          for (const observer of observers) observer(null);
+          broadcast?.notify('logout', source, authMutationVersion);
         }
       });
     },

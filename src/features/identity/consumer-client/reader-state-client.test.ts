@@ -4,7 +4,11 @@ import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../../../app.js';
 import type { Env } from '../../../env.js';
 import { InMemoryAuthMailer } from '../mailer.js';
-import { createConsumerClient, createMemoryReaderStateBroadcast } from './client.js';
+import {
+  createBrowserReaderStateBroadcast,
+  createConsumerClient,
+  createMemoryReaderStateBroadcast,
+} from './client.js';
 import { readerStateStorageKey, type KeyValueStorage } from './storage.js';
 
 const workerEnv = env;
@@ -100,6 +104,60 @@ beforeEach(async () => {
 });
 
 describe('Reader State consumer client', () => {
+  it('keeps manual replacement outside browser auth-mutation revision ordering', () => {
+    const listeners = new Set<(event: { key: string | null; newValue: string | null }) => void>();
+    const values = new Map<string, string>();
+    const storage: KeyValueStorage = {
+      getItem: (key) => values.get(key) ?? null,
+      setItem: (key, value) => {
+        values.set(key, value);
+        for (const listener of listeners) listener({ key, newValue: value });
+      },
+      removeItem: (key) => values.delete(key),
+    };
+    const originalStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+    Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: storage });
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: {
+        addEventListener: (
+          type: string,
+          listener: (event: { key: string | null; newValue: string | null }) => void,
+        ) => {
+          if (type === 'storage') listeners.add(listener);
+        },
+        removeEventListener: (
+          type: string,
+          listener: (event: { key: string | null; newValue: string | null }) => void,
+        ) => {
+          if (type === 'storage') listeners.delete(listener);
+        },
+      },
+    });
+
+    try {
+      const received: (number | undefined)[] = [];
+      const sender = createBrowserReaderStateBroadcast(scope);
+      const receiver = createBrowserReaderStateBroadcast(scope);
+      receiver.observe((_change, _source, authMutationVersion) => {
+        received.push(authMutationVersion);
+      });
+      const versionKey = `usp.auth-mutation.v1.${encodeURIComponent(scope.service)}.${encodeURIComponent(scope.issuer)}.${encodeURIComponent(scope.audience)}.version`;
+      storage.setItem(versionKey, '7');
+
+      sender.notify('replacement', 'manual-refresh');
+
+      expect(received).toEqual([undefined]);
+    } finally {
+      if (originalStorage === undefined)
+        delete (globalThis as Record<string, unknown>).localStorage;
+      else Object.defineProperty(globalThis, 'localStorage', originalStorage);
+      if (originalWindow === undefined) delete (globalThis as Record<string, unknown>).window;
+      else Object.defineProperty(globalThis, 'window', originalWindow);
+    }
+  });
+
   it('restores verified presentation in a second controller without probing Identity', async () => {
     const network = transport();
     const localStore = memoryStorage();
@@ -424,5 +482,65 @@ describe('Reader State consumer client', () => {
     await expect(pending).rejects.toMatchObject({ code: 'unauthenticated' });
     expect(localStore.getItem(readerStateStorageKey(scope))).toBeNull();
     expect(await second.getSnapshot()).toBeNull();
+  });
+
+  it('clears a refresh started after the logout marker before delayed server sign-out', async () => {
+    const network = transport();
+    const localStore = memoryStorage();
+    const broadcast = createMemoryReaderStateBroadcast();
+    let releaseSignOut: () => void = () => undefined;
+    let signOutReady: () => void = () => undefined;
+    const signOutBlocked = new Promise<void>((resolve) => {
+      releaseSignOut = resolve;
+    });
+    const signOutRequestReady = new Promise<void>((resolve) => {
+      signOutReady = resolve;
+    });
+    const delayedSignOutFetch: typeof fetch = async (input) => {
+      if (input instanceof Request && new URL(input.url).pathname === '/v1/auth/sign-out') {
+        signOutReady();
+        await signOutBlocked;
+      }
+      return network.fetchImpl(input);
+    };
+    const first = createConsumerClient({
+      baseUrl: scope.service,
+      issuer: scope.issuer,
+      audience: scope.audience,
+      readerStateStore: localStore,
+      broadcast,
+      fetchImpl: delayedSignOutFetch,
+    });
+    const second = createConsumerClient({
+      baseUrl: scope.service,
+      issuer: scope.issuer,
+      audience: scope.audience,
+      readerStateStore: localStore,
+      broadcast,
+      fetchImpl: network.fetchImpl,
+    });
+    await first.register({ name: 'Ada', email: 'ada@example.com', password: 'correct-horse-41' });
+    await first.verifyEmail(verificationToken());
+    await first.login({ email: 'ada@example.com', password: 'correct-horse-41' });
+
+    let logoutMarkerObserved: () => void = () => undefined;
+    const logoutMarker = new Promise<void>((resolve) => {
+      logoutMarkerObserved = resolve;
+    });
+    second.observeReaderState((state) => {
+      if (state === null) logoutMarkerObserved();
+    });
+    const logout = first.logout();
+    await signOutRequestReady;
+    await logoutMarker;
+    await expect(second.refreshReaderState()).resolves.toMatchObject({
+      sessionStatus: 'authenticated',
+    });
+
+    releaseSignOut();
+    await expect(logout).resolves.toBeUndefined();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(localStore.getItem(readerStateStorageKey(scope))).toBeNull();
+    await expect(second.getSnapshot()).resolves.toBeNull();
   });
 });
