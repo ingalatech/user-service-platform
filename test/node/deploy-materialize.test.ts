@@ -42,6 +42,7 @@ const SANDBOX_RESOLVED: ResolvedDeployment = {
     AUTH_REGISTRATION_ENABLED: 'true',
     AUTH_EMAIL_PASSWORD_ENABLED: 'true',
     AUTH_REQUIRE_EMAIL_VERIFICATION: 'true',
+    AUTH_EMAIL_VERIFICATION_TTL_SECONDS: '3600',
     AUTH_MAIL_TRANSPORT: 'resend',
     AUTH_MAIL_FROM: 'User Service <jg@ingalatech.com>',
     AUTH_APP_NAME: 'User Service',

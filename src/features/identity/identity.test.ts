@@ -86,6 +86,21 @@ async function userCount(binding: Env['DB']): Promise<number> {
   return row?.total ?? 0;
 }
 
+async function userIdentity(
+  binding: Env['DB'],
+  email: string,
+): Promise<{
+  readonly email: string;
+  readonly email_verified: number;
+}> {
+  const row = await binding
+    .prepare('SELECT "email", "email_verified" FROM "user" WHERE "email" = ?')
+    .bind(email)
+    .first<{ email: string; email_verified: number }>();
+  if (row === null) throw new Error('Expected identity row.');
+  return row;
+}
+
 async function tokenFromLastMessage(): Promise<string> {
   await waitForVerificationMessages(1);
   const messages = mailer.sent;
@@ -366,6 +381,7 @@ describe('POST /v1/auth/request-verification', () => {
     const stale = await post('/v1/auth/verify-email', { token: token1 });
     expect(stale.status).toBe(400);
     expect(await stale.json()).toMatchObject({ code: 'verification-invalid', status: 400 });
+    expect((await userIdentity(workerEnv.DB, 'latest-token@example.com')).email_verified).toBe(0);
 
     const verified = await post('/v1/auth/verify-email', { token: token2 });
     expect(verified.status).toBe(200);
@@ -373,6 +389,25 @@ describe('POST /v1/auth/request-verification', () => {
     const reused = await post('/v1/auth/verify-email', { token: token2 });
     expect(reused.status).toBe(400);
     expect(await reused.json()).toMatchObject({ code: 'verification-invalid', status: 400 });
+  });
+
+  it('consumes before a later engine failure and leaves identity state unchanged', async () => {
+    await post('/v1/auth/register', {
+      name: 'Engine Failure',
+      email: 'engine-failure@example.com',
+      password: 'correct-horse-41',
+    });
+    const token = await tokenFromLastMessage();
+    await workerEnv.DB.prepare('DELETE FROM "user" WHERE "email" = ?')
+      .bind('engine-failure@example.com')
+      .run();
+
+    const failed = await post('/v1/auth/verify-email', { token });
+    expect(failed.status).toBe(400);
+    const consumed = await workerEnv.DB.prepare(
+      'SELECT COUNT(*) AS total FROM "email_verification_token" WHERE "consumed_at" IS NOT NULL',
+    ).first<{ total: number }>();
+    expect(consumed?.total).toBe(1);
   });
 
   it('allows only one concurrent verification request to consume a token', async () => {
@@ -388,6 +423,25 @@ describe('POST /v1/auth/request-verification', () => {
       post('/v1/auth/verify-email', { token }),
     ]);
     expect(results.map((result) => result.status).sort()).toEqual([200, 400]);
+    expect((await userIdentity(workerEnv.DB, 'race-token@example.com')).email_verified).toBe(1);
+  });
+
+  it('linearizes resend against verification at the consume boundary', async () => {
+    await post('/v1/auth/register', {
+      name: 'Resend Race',
+      email: 'resend-race@example.com',
+      password: 'correct-horse-41',
+    });
+    const token = await tokenFromLastMessage();
+
+    const [verification, resend] = await Promise.all([
+      post('/v1/auth/verify-email', { token }),
+      post('/v1/auth/request-verification', { email: 'resend-race@example.com' }),
+    ]);
+    expect(resend.status).toBe(202);
+    expect([200, 400]).toContain(verification.status);
+    const identity = await userIdentity(workerEnv.DB, 'resend-race@example.com');
+    expect(identity.email_verified).toBe(verification.status === 200 ? 1 : 0);
   });
 
   it('resends verification without creating duplicate identities', async () => {
@@ -415,6 +469,23 @@ describe('POST /v1/auth/request-verification', () => {
     expect(res.status).toBe(202);
     expect(mailer.sent).toHaveLength(0);
     expect(await userCount(workerEnv.DB)).toBe(0);
+  });
+
+  it('keeps unknown and already-verified requests on the same public contract', async () => {
+    await post('/v1/auth/register', {
+      name: 'Already Verified',
+      email: 'already-verified@example.com',
+      password: 'correct-horse-41',
+    });
+    await post('/v1/auth/verify-email', { token: await tokenFromLastMessage() });
+
+    const [verified, unknown] = await Promise.all([
+      post('/v1/auth/request-verification', { email: 'already-verified@example.com' }),
+      post('/v1/auth/request-verification', { email: 'not-registered@example.com' }),
+    ]);
+    expect(verified.status).toBe(202);
+    expect(unknown.status).toBe(202);
+    expect(await verified.json()).toEqual(await unknown.json());
   });
 });
 

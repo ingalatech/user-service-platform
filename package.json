@@ -68,6 +68,7 @@
     "better-auth": "1.7.4",
     "drizzle-orm": "0.45.2",
     "hono": "4.13.7",
+    "jose": "6.2.12",
     "openapi-fetch": "0.17.0",
     "zod": "4.6.1"
   },

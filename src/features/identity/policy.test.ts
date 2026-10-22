@@ -19,11 +19,13 @@ describe('resolveAuthPolicy', () => {
         AUTH_REGISTRATION_ENABLED: 'false',
         AUTH_EMAIL_PASSWORD_ENABLED: 'false',
         AUTH_REQUIRE_EMAIL_VERIFICATION: 'false',
+        AUTH_EMAIL_VERIFICATION_TTL_SECONDS: '7200',
       }),
     ).toEqual({
       registrationEnabled: false,
       emailPasswordEnabled: false,
       requireEmailVerification: false,
+      emailVerificationTTLSeconds: 7200,
     });
   });
 
@@ -38,6 +40,7 @@ describe('resolveAuthPolicy', () => {
       registrationEnabled: true,
       emailPasswordEnabled: false,
       requireEmailVerification: true,
+      emailVerificationTTLSeconds: 3600,
     });
   });
 
@@ -46,5 +49,6 @@ describe('resolveAuthPolicy', () => {
     expect(() => resolveAuthPolicy({ AUTH_REGISTRATION_ENABLED: 'yes' })).toThrow();
     expect(() => resolveAuthPolicy({ AUTH_EMAIL_PASSWORD_ENABLED: '' })).toThrow();
     expect(() => resolveAuthPolicy({ AUTH_REQUIRE_EMAIL_VERIFICATION: '2' })).toThrow();
+    expect(() => resolveAuthPolicy({ AUTH_EMAIL_VERIFICATION_TTL_SECONDS: '0' })).toThrow();
   });
 });

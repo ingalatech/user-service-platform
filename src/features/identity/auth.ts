@@ -5,6 +5,7 @@ import { createEmailVerificationToken } from 'better-auth/api';
 import { admin } from 'better-auth/plugins/admin';
 import { jwt } from 'better-auth/plugins/jwt';
 import { drizzle } from 'drizzle-orm/d1';
+import { jwtVerify } from 'jose';
 import {
   RESET_PASSWORD_ACTION_PATH,
   VERIFY_EMAIL_ACTION_PATH,
@@ -15,7 +16,6 @@ import type { AuthMailer } from './mailer.js';
 import type { AuthPolicy } from './policy.js';
 import { identitySchema } from './schema.js';
 import {
-  EMAIL_VERIFICATION_TTL_SECONDS,
   normalizeVerificationTarget,
   reserveLatestVerificationToken,
 } from './verification-token.js';
@@ -61,27 +61,6 @@ export interface ReaderStateAuthInput extends IdentityAuthInput {
   // the JWT capability is always configured explicitly; deployments without
   // stable values fail closed before this builder runs.
   readonly readerState: ReaderStateOptions;
-}
-
-function originalVerificationClaims(token: string): {
-  readonly email?: string;
-  readonly updateTo?: string;
-  readonly requestType?: string;
-} {
-  try {
-    const encoded = token.split('.')[1];
-    if (encoded === undefined) return {};
-    const payload = JSON.parse(atob(encoded.replace(/-/g, '+').replace(/_/g, '/'))) as unknown;
-    if (typeof payload !== 'object' || payload === null) return {};
-    const record = payload as Record<string, unknown>;
-    return {
-      email: typeof record.email === 'string' ? record.email : undefined,
-      updateTo: typeof record.updateTo === 'string' ? record.updateTo : undefined,
-      requestType: typeof record.requestType === 'string' ? record.requestType : undefined,
-    };
-  } catch {
-    return {};
-  }
 }
 
 // Better Auth internal log sink (ADR-0009): structured level + message only.
@@ -225,7 +204,7 @@ function sharedOptions(input: IdentityAuthInput) {
     emailVerification: {
       sendOnSignUp: true,
       autoSignInAfterVerification: false,
-      expiresIn: EMAIL_VERIFICATION_TTL_SECONDS,
+      expiresIn: policy.emailVerificationTTLSeconds,
       // The engine verification callback URL never becomes public contract
       // (ticket #77): the user-facing action targets the configured consumer
       // page or the service-owned fallback route with the engine token as the
@@ -239,23 +218,26 @@ function sharedOptions(input: IdentityAuthInput) {
         token: string;
         newEmail?: string;
       }) => {
-        const claims = originalVerificationClaims(token);
+        const verifiedClaims = await jwtVerify(token, new TextEncoder().encode(secret), {
+          algorithms: ['HS256'],
+        });
+        const requestType = verifiedClaims.payload.requestType;
         const signedToken = await createEmailVerificationToken(
           secret,
-          claims.email ?? user.email,
-          claims.updateTo,
-          EMAIL_VERIFICATION_TTL_SECONDS,
+          user.email,
+          newEmail,
+          policy.emailVerificationTTLSeconds,
           {
-            ...(claims.requestType === undefined ? {} : { requestType: claims.requestType }),
+            ...(typeof requestType === 'string' ? { requestType } : {}),
             jti: crypto.randomUUID(),
           },
         );
-        const targetEmail = normalizeVerificationTarget(newEmail ?? claims.updateTo ?? user.email);
+        const targetEmail = normalizeVerificationTarget(newEmail ?? user.email);
         await reserveLatestVerificationToken({
           db,
           targetEmail,
           token: signedToken,
-          expiresAt: new Date(Date.now() + EMAIL_VERIFICATION_TTL_SECONDS * 1000),
+          expiresAt: new Date(Date.now() + policy.emailVerificationTTLSeconds * 1000),
         });
         const url = buildAuthActionUrl({
           varName: 'AUTH_VERIFY_EMAIL_ACTION_URL',

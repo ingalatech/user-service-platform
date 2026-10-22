@@ -13,6 +13,8 @@ export interface AuthPolicy {
   // Whether an email/password session requires a verified email address.
   // The initial deployment requires verification (GLOSSARY.md).
   readonly requireEmailVerification: boolean;
+  // Lifetime of Better Auth verification tokens, in seconds.
+  readonly emailVerificationTTLSeconds: number;
 }
 
 // Deployment defaults for the initial single-client release: open
@@ -21,6 +23,7 @@ export const DEFAULT_AUTH_POLICY: AuthPolicy = {
   registrationEnabled: true,
   emailPasswordEnabled: true,
   requireEmailVerification: true,
+  emailVerificationTTLSeconds: 3600,
 };
 
 function parseFlag(value: string | undefined, fallback: boolean, name: string): boolean {
@@ -37,6 +40,15 @@ function parseFlag(value: string | undefined, fallback: boolean, name: string): 
   throw new Error(`Invalid boolean for ${name}: expected "true" or "false".`);
 }
 
+function parsePositiveInteger(value: string | undefined, fallback: number, name: string): number {
+  if (value === undefined) return fallback;
+  const parsed = Number(value.trim());
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new Error(`Invalid positive integer for ${name}.`);
+  }
+  return parsed;
+}
+
 // Resolves the effective policy from Worker environment vars. Absent values
 // fall back to the deployment defaults; only the explicit strings "true" /
 // "false" (case-insensitive) are accepted. Malformed values reject
@@ -46,7 +58,10 @@ function parseFlag(value: string | undefined, fallback: boolean, name: string): 
 export function resolveAuthPolicy(
   env: Pick<
     Env,
-    'AUTH_REGISTRATION_ENABLED' | 'AUTH_EMAIL_PASSWORD_ENABLED' | 'AUTH_REQUIRE_EMAIL_VERIFICATION'
+    | 'AUTH_REGISTRATION_ENABLED'
+    | 'AUTH_EMAIL_PASSWORD_ENABLED'
+    | 'AUTH_REQUIRE_EMAIL_VERIFICATION'
+    | 'AUTH_EMAIL_VERIFICATION_TTL_SECONDS'
   >,
 ): AuthPolicy {
   return {
@@ -64,6 +79,11 @@ export function resolveAuthPolicy(
       env.AUTH_REQUIRE_EMAIL_VERIFICATION,
       DEFAULT_AUTH_POLICY.requireEmailVerification,
       'AUTH_REQUIRE_EMAIL_VERIFICATION',
+    ),
+    emailVerificationTTLSeconds: parsePositiveInteger(
+      env.AUTH_EMAIL_VERIFICATION_TTL_SECONDS,
+      DEFAULT_AUTH_POLICY.emailVerificationTTLSeconds,
+      'AUTH_EMAIL_VERIFICATION_TTL_SECONDS',
     ),
   };
 }

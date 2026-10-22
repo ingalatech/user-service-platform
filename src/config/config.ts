@@ -109,6 +109,12 @@ function validateProfile(config: NonSecretProfile): void {
   parseBooleanFlag('AUTH_REGISTRATION_ENABLED', config.AUTH_REGISTRATION_ENABLED);
   parseBooleanFlag('AUTH_EMAIL_PASSWORD_ENABLED', config.AUTH_EMAIL_PASSWORD_ENABLED);
   parseBooleanFlag('AUTH_REQUIRE_EMAIL_VERIFICATION', config.AUTH_REQUIRE_EMAIL_VERIFICATION);
+  const emailVerificationTTL = Number(config.AUTH_EMAIL_VERIFICATION_TTL_SECONDS.trim());
+  if (!Number.isSafeInteger(emailVerificationTTL) || emailVerificationTTL < 1) {
+    throw new Error(
+      'Configuration error: AUTH_EMAIL_VERIFICATION_TTL_SECONDS must be a positive integer.',
+    );
+  }
   const transport = config.AUTH_MAIL_TRANSPORT.trim().toLowerCase();
   if (
     transport !== '' &&

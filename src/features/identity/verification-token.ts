@@ -1,13 +1,5 @@
 import type { D1Database } from '@cloudflare/workers-types';
 
-export const EMAIL_VERIFICATION_TTL_SECONDS = 3600;
-
-interface VerificationTokenRow {
-  readonly token_digest: string;
-  readonly expires_at: number;
-  readonly consumed_at: number | null;
-}
-
 export function normalizeVerificationTarget(email: string): string {
   return email.trim().toLowerCase();
 }
@@ -43,27 +35,6 @@ export async function reserveLatestVerificationToken(input: {
       issuedAt,
     )
     .run();
-}
-
-export async function isLatestVerificationToken(input: {
-  readonly db: D1Database;
-  readonly token: string;
-}): Promise<boolean> {
-  const tokenDigest = await digestToken(input.token);
-  const row = await input.db
-    .prepare(
-      `SELECT "token_digest", "expires_at", "consumed_at"
-       FROM "email_verification_token"
-       WHERE "token_digest" = ?`,
-    )
-    .bind(tokenDigest)
-    .first<VerificationTokenRow>();
-  return (
-    row !== null &&
-    row.token_digest === tokenDigest &&
-    row.consumed_at === null &&
-    row.expires_at > Date.now()
-  );
 }
 
 export async function consumeLatestVerificationToken(input: {
