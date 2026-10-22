@@ -69,12 +69,17 @@ function fullWorkflowFetch(
     readerState: 'header.payload.signature',
     expiresAt: Math.floor(Date.now() / 1000) + 900,
   },
+  requests: { readonly request: string; readonly cookie: string | null }[] = [],
 ): typeof fetch {
   let anonymousMe = true;
   let verifiedLogin = false;
   let sessionActive = false;
-  return (input) => {
+  return (input, init) => {
     const path = new URL(requestPath(input)).pathname;
+    requests.push({
+      request: `${init?.method ?? 'GET'} ${path}`,
+      cookie: new Headers(init?.headers).get('cookie'),
+    });
     if (path === '/v1/health') return Promise.resolve(jsonResponse(200, { status: 'ok' }));
     if (path === '/v1/me') {
       if (anonymousMe && !sessionActive) {
@@ -127,6 +132,7 @@ describe('interactive sandbox smoke', () => {
     const smokeEmail = environmentFile.AUTH_MAIL_ALLOWLIST.split(',')[0]?.trim() ?? email;
     const prompt = prompts(1, [password, token]);
     const output: string[] = [];
+    const requests: { readonly request: string; readonly cookie: string | null }[] = [];
     vi.spyOn(console, 'log').mockImplementation((message: unknown) => {
       output.push(String(message));
     });
@@ -134,11 +140,41 @@ describe('interactive sandbox smoke', () => {
     await runInteractiveSandboxSmoke({
       environmentFile,
       prompts: prompt,
-      fetchImpl: fullWorkflowFetch(),
+      fetchImpl: fullWorkflowFetch(undefined, requests),
     });
 
     expect(prompt.chooseRecipient).toHaveBeenCalledWith(3);
     expect(prompt.readHidden).toHaveBeenCalledTimes(2);
+    expect(requests.map(({ request }) => request)).toEqual([
+      'GET /v1/health',
+      'GET /v1/me',
+      'POST /v1/auth/register',
+      'POST /v1/auth/login',
+      'POST /v1/auth/request-verification',
+      'POST /v1/auth/verify-email',
+      'POST /v1/auth/login',
+      'GET /v1/me',
+      'POST /v1/auth/reader-state',
+      'GET /v1/me',
+      'POST /v1/auth/sign-out',
+      'GET /v1/me',
+      'POST /v1/auth/reader-state',
+    ]);
+    expect(requests.map(({ cookie }) => cookie)).toEqual([
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      'session=opaque',
+      'session=opaque',
+      'session=opaque',
+      'session=opaque',
+      'session=opaque',
+      'session=opaque',
+    ]);
     expect(output.join('\n')).not.toContain(smokeEmail);
     expect(output.join('\n')).not.toContain(password);
     expect(output.join('\n')).not.toContain(token);
