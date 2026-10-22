@@ -19,7 +19,7 @@ describe('Wrangler Worker version payloads', () => {
       {
         id: 'immutable-v1',
         createdOn: '2026-10-20T12:00:00Z',
-        annotations: 'workers/message=commit=abc branch=main workers/tag=candidate',
+        tag: 'candidate',
       },
     ]);
   });

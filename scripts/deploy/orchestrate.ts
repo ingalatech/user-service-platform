@@ -9,6 +9,7 @@ import {
   buildVersionManifest,
   parseVersionManifest,
   requiredSecretNamesForTransport,
+  versionLabel,
 } from './manifest.js';
 import { isAbsentWorkerError } from './provision-worker.js';
 import {
@@ -496,8 +497,11 @@ export async function runDeployment(
       await runStep('deploy-worker', 'npx', ['wrangler', 'deploy', '--config', configPath], runner);
     } else {
       const source = (await io.sourceMetadata?.()) ?? { commit: 'unknown', branch: 'unknown' };
-      const tag = new Date().toISOString();
-      const manifest = buildVersionManifest(request.resolved.applicationConfig);
+      const manifest = buildVersionManifest(request.resolved.applicationConfig, {
+        branch: source.branch,
+        commit: source.commit,
+        tag: versionLabel(source.branch, source.commit, new Date()),
+      });
       await runStep(
         'deploy-worker',
         'npx',
@@ -506,7 +510,7 @@ export async function runDeployment(
           'versions',
           'upload',
           '--message',
-          `${manifest.message} commit=${source.commit} branch=${source.branch} uploaded=${tag}`,
+          manifest.message,
           '--tag',
           manifest.tag,
           '--config',

@@ -4,6 +4,7 @@ import {
   buildVersionManifest,
   parseVersionManifest,
   requiredSecretNamesForTransport,
+  versionLabel,
 } from '../../scripts/deploy/manifest.js';
 
 const SMTP_PROFILE: NonSecretProfile = {
@@ -11,10 +12,15 @@ const SMTP_PROFILE: NonSecretProfile = {
   ENVIRONMENT: 'sandbox',
   AUTH_MAIL_TRANSPORT: 'smtp',
 };
+const PROVENANCE = {
+  branch: 'Feature/Release Candidate',
+  commit: '0123456789abcdef0123456789abcdef01234567',
+  tag: '0123456-20261022T120000Z-feature-release-candidate',
+} as const;
 
 describe('version manifests', () => {
   it('round-trips the compiled profile fingerprint and mail transport annotations', () => {
-    const manifest = buildVersionManifest(SMTP_PROFILE);
+    const manifest = buildVersionManifest(SMTP_PROFILE, PROVENANCE);
 
     expect(JSON.stringify(manifest)).not.toMatch(
       /BETTER_AUTH_SECRET|RESEND_API_KEY|SMTP_USER|SMTP_PASSWORD|secret-marker/,
@@ -24,29 +30,34 @@ describe('version manifests', () => {
     );
     expect(
       parseVersionManifest({
-        'workers/message': `${manifest.message} commit=abc`,
+        'workers/message': manifest.message,
         'workers/tag': manifest.tag,
       }),
     ).toEqual({
+      branch: PROVENANCE.branch,
+      commit: PROVENANCE.commit,
       fingerprint: manifest.fingerprint,
       mailTransport: 'smtp',
     });
   });
 
-  it('rejects a tampered message or tag', () => {
-    const manifest = buildVersionManifest(SMTP_PROFILE);
+  it('rejects a tampered message but does not couple the tag to the fingerprint', () => {
+    const manifest = buildVersionManifest(SMTP_PROFILE, PROVENANCE);
 
     expect(() =>
       parseVersionManifest({
-        'workers/message': manifest.message.replace(manifest.fingerprint, '0'.repeat(64)),
+        'workers/message': manifest.message.replace(PROVENANCE.commit, 'g'.repeat(40)),
         'workers/tag': manifest.tag,
       }),
     ).toThrow(/manifest/);
-    expect(() =>
+    expect(
       parseVersionManifest({
         'workers/message': manifest.message,
-        'workers/tag': `${manifest.tag}-tampered`,
-      }),
+        'workers/tag': 'human-readable-candidate',
+      }).commit,
+    ).toBe(PROVENANCE.commit);
+    expect(() =>
+      parseVersionManifest({ 'workers/message': manifest.message, 'workers/tag': '' }),
     ).toThrow(/manifest/);
   });
 
@@ -56,8 +67,19 @@ describe('version manifests', () => {
 
   it('changes the fingerprint when the compiled mail transport changes', () => {
     expect(
-      buildVersionManifest({ ...SMTP_PROFILE, AUTH_MAIL_TRANSPORT: 'resend' }).fingerprint,
-    ).not.toBe(buildVersionManifest(SMTP_PROFILE).fingerprint);
+      buildVersionManifest({ ...SMTP_PROFILE, AUTH_MAIL_TRANSPORT: 'resend' }, PROVENANCE)
+        .fingerprint,
+    ).not.toBe(buildVersionManifest(SMTP_PROFILE, PROVENANCE).fingerprint);
+  });
+
+  it('uses the frontend-compatible human version label', () => {
+    expect(
+      versionLabel(
+        'Feature/Release Candidate',
+        PROVENANCE.commit,
+        new Date('2026-10-22T12:00:00.123Z'),
+      ),
+    ).toBe('0123456-20261022T120000Z-feature-release-candidate');
   });
 });
 

@@ -9,7 +9,7 @@ interface WorkerVersionRecord {
 export interface WorkerVersionSummary {
   readonly id: string;
   readonly createdOn: string;
-  readonly annotations: string;
+  readonly tag?: string;
 }
 
 export interface WorkerVersionDetails extends WorkerVersionSummary {
@@ -37,13 +37,10 @@ export function summarizeWorkerVersion(value: unknown): WorkerVersionSummary | u
   if (typeof record.id !== 'string') return undefined;
   const metadata = isRecord(record.metadata) ? record.metadata : {};
   const createdOn = typeof metadata.created_on === 'string' ? metadata.created_on : '';
-  const annotations = isRecord(record.annotations)
-    ? Object.entries(record.annotations)
-        .filter(([, annotation]) => typeof annotation === 'string')
-        .map(([name, annotation]) => `${name}=${String(annotation)}`)
-        .join(' ')
-    : '';
-  return { id: record.id, createdOn, annotations };
+  const annotations = isRecord(record.annotations) ? record.annotations : {};
+  const tag =
+    typeof annotations['workers/tag'] === 'string' ? annotations['workers/tag'] : undefined;
+  return { id: record.id, createdOn, ...(tag === undefined ? {} : { tag }) };
 }
 
 export function parseWorkerVersions(value: unknown): WorkerVersionSummary[] {
