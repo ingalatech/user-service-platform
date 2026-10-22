@@ -44,6 +44,7 @@ import { formatPreflightError, preflightFailed, runPreflight } from './deploy/pr
 import { runDeployment, type DeployCommandOptions, type DeployIo } from './deploy/orchestrate.js';
 import { startSessionFailureTail } from './deploy/diagnostic-tail.js';
 import type { ResolvedDeployment } from './deploy/environment-config.js';
+import { selectWithKeys } from './deploy/prompt.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -59,7 +60,14 @@ function isInteractive(): boolean {
   return process.stdin.isTTY && process.stdout.isTTY;
 }
 
-async function promptSelection(args: DeployArgs, interactive: boolean): Promise<DeployArgs> {
+type SelectEnvironment = (question: string, choices: readonly string[]) => Promise<number>;
+
+export async function promptDeploySelection(
+  args: DeployArgs,
+  interactive: boolean,
+  select: SelectEnvironment = (question, choices) =>
+    selectWithKeys(process.stdin, process.stdout, question, choices),
+): Promise<DeployArgs> {
   if (args.environment !== undefined) {
     return args;
   }
@@ -68,24 +76,16 @@ async function promptSelection(args: DeployArgs, interactive: boolean): Promise<
       'Missing deployment environment: pass --env <sandbox|production> or set DEPLOY_ENV.',
     );
   }
-  const readline = createInterface({ input: process.stdin, output: process.stdout });
-  try {
-    let environment: DeployableEnvironment;
-    console.log('Environments:');
-    console.log('  1) sandbox');
-    console.log('  2) production');
-    const answer = (await readline.question('Select an environment (number): ')).trim();
-    if (answer === '1') {
-      environment = 'sandbox';
-    } else if (answer === '2') {
-      environment = 'production';
-    } else {
-      throw new Error('No deployment environment selected.');
-    }
-    return { ...args, environment };
-  } finally {
-    readline.close();
-  }
+  const environments = [
+    'sandbox',
+    'production',
+  ] as const satisfies readonly DeployableEnvironment[];
+  const question = args.dryRun
+    ? 'Select deployment environment (dry-run: no changes will be made)'
+    : 'Select deployment environment';
+  const environment = environments[await select(question, environments)];
+  if (environment === undefined) throw new Error('No deployment environment selected.');
+  return { ...args, environment };
 }
 
 // Runs a deployment step with inherited stdio so the operator sees Wrangler
@@ -134,7 +134,15 @@ async function main(): Promise<void> {
     console.log(DEPLOY_HELP);
     return;
   }
-  const args = await promptSelection(parsed, isInteractive() && !parsed.nonInteractive);
+  if (
+    parsed.dryRun &&
+    parsed.environment === undefined &&
+    isInteractive() &&
+    !parsed.nonInteractive
+  ) {
+    console.log('\nDeploy dry-run: no changes will be made.');
+  }
+  const args = await promptDeploySelection(parsed, isInteractive() && !parsed.nonInteractive);
   if (args.environment === undefined) throw new Error('No deployment environment selected.');
   const resolved = resolveEnvironmentDeployment(
     loadEnvironmentFile(environmentFilePath(repoRoot(), args.environment)),
