@@ -42,10 +42,12 @@ describe('arrow-key selector', () => {
   it('highlights the default and selects with arrow-key wraparound', async () => {
     const input = new InputHarness();
     const output = new OutputHarness();
+    const existingDataListener = (): void => undefined;
+    input.on('data', existingDataListener);
     const selection = selectWithKeys(input, output, 'Environment', ['sandbox', 'production']);
 
-    input.emit('keypress', '', { name: 'up' });
-    input.emit('keypress', '', { name: 'return' });
+    input.emit('data', '\u001b[A');
+    input.emit('data', '\r');
 
     await expect(selection).resolves.toBe(1);
     expect(output.value).toContain('\u001b[36m❯ sandbox\u001b[0m');
@@ -53,6 +55,8 @@ describe('arrow-key selector', () => {
     expect(output.value).toContain('Selected: production');
     expect(input.rawModes).toEqual([true, false]);
     expect(input.listenerCount('keypress')).toBe(0);
+    expect(input.listenerCount('data')).toBe(1);
+    input.off('data', existingDataListener);
   });
 
   it('wraps down from the last choice to the first', async () => {
@@ -60,26 +64,40 @@ describe('arrow-key selector', () => {
     const output = new OutputHarness();
     const selection = selectWithKeys(input, output, 'Version', ['version one', 'version two'], 1);
 
-    input.emit('keypress', '', { name: 'down' });
-    input.emit('keypress', '', { name: 'enter' });
+    input.emit('data', '\u001b[B');
+    input.emit('data', '\r');
 
     await expect(selection).resolves.toBe(0);
+    expect(input.listenerCount('data')).toBe(0);
   });
 
-  it.each([
-    ['Escape', { name: 'escape' }],
-    ['Ctrl+C', { ctrl: true, name: 'c' }],
-  ])('cancels on %s and restores terminal state', async (_label, key) => {
+  it('cancels on Escape and restores terminal state', async () => {
     const input = new InputHarness();
     const output = new OutputHarness();
     const selection = selectWithKeys(input, output, 'Environment', ['sandbox', 'production']);
 
-    input.emit('keypress', '', key);
+    input.emit('data', '\u001b');
 
     await expect(selection).rejects.toThrow('Selection cancelled.');
     expect(input.rawModes).toEqual([true, false]);
     expect(input.resumeCalls).toBe(1);
     expect(input.pauseCalls).toBe(1);
     expect(input.listenerCount('keypress')).toBe(0);
+    expect(input.listenerCount('data')).toBe(0);
+  });
+
+  it('cancels on Ctrl+C and restores terminal state', async () => {
+    const input = new InputHarness();
+    const output = new OutputHarness();
+    const selection = selectWithKeys(input, output, 'Environment', ['sandbox', 'production']);
+
+    input.emit('data', '\u0003');
+
+    await expect(selection).rejects.toThrow('Selection cancelled.');
+    expect(input.rawModes).toEqual([true, false]);
+    expect(input.resumeCalls).toBe(1);
+    expect(input.pauseCalls).toBe(1);
+    expect(input.listenerCount('keypress')).toBe(0);
+    expect(input.listenerCount('data')).toBe(0);
   });
 });
