@@ -77,10 +77,11 @@ export function readReaderStateKid(readerState: string): string | null {
   }
 }
 
-export async function verifyReaderState(
+async function verifyReaderStateClaims(
   readerState: string,
   keys: readonly ConsumerJsonWebKey[],
   input: VerifyReaderStateInput,
+  requireCurrent: boolean,
 ): Promise<VerifiedReaderState> {
   const parts = readerState.split('.');
   const [headerSegment, payloadSegment, signatureSegment] = parts;
@@ -144,8 +145,8 @@ export async function verifyReaderState(
   if (
     typeof expiresAt !== 'number' ||
     !Number.isInteger(expiresAt) ||
-    expiresAt <= now - tolerance ||
-    expiresAt <= issuedAt
+    expiresAt <= issuedAt ||
+    (requireCurrent && expiresAt <= now - tolerance)
   ) {
     fail('reader-state-expired', 'Rejected expired Reader State.');
   }
@@ -162,4 +163,22 @@ export async function verifyReaderState(
     expiresAt,
     entitlements: [],
   };
+}
+
+export function verifyReaderState(
+  readerState: string,
+  keys: readonly ConsumerJsonWebKey[],
+  input: VerifyReaderStateInput,
+): Promise<VerifiedReaderState> {
+  return verifyReaderStateClaims(readerState, keys, input, true);
+}
+
+// Used only to decide whether an otherwise valid signed snapshot needs lazy
+// renewal. It still verifies the signature and every claim contract.
+export function verifyReaderStateForRenewal(
+  readerState: string,
+  keys: readonly ConsumerJsonWebKey[],
+  input: VerifyReaderStateInput,
+): Promise<VerifiedReaderState> {
+  return verifyReaderStateClaims(readerState, keys, input, false);
 }

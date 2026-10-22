@@ -84,7 +84,7 @@ async function stopWorker(child: ChildProcess): Promise<void> {
 
 interface TrackedRequests {
   readonly me: number;
-  readonly token: number;
+  readonly readerState: number;
   readonly jwks: number;
 }
 
@@ -93,24 +93,24 @@ interface TrackedRequests {
 // narrowing; every counted call is a genuine client request, never a mock.
 function createTracker() {
   let me = 0;
-  let token = 0;
+  let readerState = 0;
   let jwks = 0;
   return {
     watch(page: Page): void {
       page.on('request', (request) => {
         const pathname = new URL(request.url()).pathname;
         if (pathname === '/v1/me') me += 1;
-        else if (pathname === '/v1/auth/reader-state') token += 1;
+        else if (pathname === '/v1/auth/reader-state') readerState += 1;
         else if (pathname === '/v1/auth/jwks') jwks += 1;
       });
     },
     reset(): void {
       me = 0;
-      token = 0;
+      readerState = 0;
       jwks = 0;
     },
     snapshot(): TrackedRequests {
-      return { me, token, jwks };
+      return { me, readerState, jwks };
     },
   };
 }
@@ -169,7 +169,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 // Real shipped-client + real built Worker/D1 browser fixture. Two document
 // URLs exercise actual localStorage across full navigations, reloads and tabs;
-// every identity/token/renewal call is observed, never mocked. Fixture-only
+// every Identity and Reader State renewal call is observed, never mocked. Fixture-only
 // mail capture uses the public AuthMailer injection seam in a temporary
 // Worker entrypoint. Registration, verification and login use the real API;
 // the mailbox route exists only in this disposable loopback fixture.
@@ -343,7 +343,7 @@ export default {
     assert(loginRecord.sessionStatus === 'authenticated', 'login confirms the live session');
     assert(typeof loginRecord.expiresAt === 'number', 'Reader State carries expiry');
 
-    phase = 'valid-token navigation performs zero identity calls';
+    phase = 'valid Reader State navigation performs zero identity calls';
     tracker.reset();
     await page.goto(`${base}${DOC_B}`);
     await installClient(page, bundle);
@@ -354,7 +354,7 @@ export default {
       'same presentation subject after navigation',
     );
     assert(
-      tracker.snapshot().me === 0 && tracker.snapshot().token === 0,
+      tracker.snapshot().me === 0 && tracker.snapshot().readerState === 0,
       'zero /me/token calls on navigation',
     );
     assert(tracker.snapshot().jwks <= 1, 'bounded initial JWKS behavior');
@@ -364,7 +364,7 @@ export default {
     const reloaded = await browserJson(page, outcomeOf('client.getSnapshot()'));
     assert(asRecord(reloaded)?.ok === true, 'snapshot resolves after reload');
     assert(
-      tracker.snapshot().me === 0 && tracker.snapshot().token === 0,
+      tracker.snapshot().me === 0 && tracker.snapshot().readerState === 0,
       'zero /me/token calls on reload',
     );
     assert(tracker.snapshot().jwks === 0, 'cached keys verify without refetch');
@@ -374,7 +374,7 @@ export default {
     const backAgain = await browserJson(page, outcomeOf('client.getSnapshot()'));
     assert(asRecord(backAgain)?.ok === true, 'snapshot resolves after second navigation');
     assert(
-      tracker.snapshot().me === 0 && tracker.snapshot().token === 0,
+      tracker.snapshot().me === 0 && tracker.snapshot().readerState === 0,
       'zero /me/token calls across documents',
     );
     assert(tracker.snapshot().jwks === 0, 'cached keys shared across documents');
@@ -399,7 +399,7 @@ export default {
       ),
     );
     assert(asRecord(renewed)?.ok === true, 'concurrent renewal resolves');
-    assert(tracker.snapshot().token === 1, 'exactly one renewal for concurrent consumers');
+    assert(tracker.snapshot().readerState === 1, 'exactly one renewal for concurrent consumers');
     assert(tracker.snapshot().me === 0, 'renewal performs no /me call');
 
     phase = 'invalid signature is discarded without renewal';
@@ -421,9 +421,31 @@ export default {
       asRecord(tampered)?.ok === true && asRecord(tampered)?.value === null,
       'tampered Reader State is discarded',
     );
-    assert(tracker.snapshot().token === 0, 'no renewal for invalid Reader State');
+    assert(tracker.snapshot().readerState === 0, 'no renewal for invalid Reader State');
 
-    phase = 'second user replaces previous state';
+    phase = 'second user replaces previous state live in an open tab';
+    const restoredBeforeReplacement = await browserJson(
+      page,
+      outcomeOf('client.refreshReaderState()'),
+    );
+    assert(asRecord(restoredBeforeReplacement)?.ok === true, 'restore state before replacement');
+    const previousSubject = asRecord(asRecord(restoredBeforeReplacement)?.value)?.subject;
+    const second = await context.newPage();
+    const secondTracker = createTracker();
+    secondTracker.watch(second);
+    await second.goto(`${base}${DOC_A}`);
+    await installClient(second, bundle);
+    const restoredSecondTab = await browserJson(second, outcomeOf('client.getSnapshot()'));
+    assert(asRecord(restoredSecondTab)?.ok === true, 'open second tab restores Reader State');
+    assert(
+      asRecord(asRecord(restoredSecondTab)?.value)?.subject === previousSubject,
+      'open second tab starts with the previous presentation subject',
+    );
+    await browserJson(
+      second,
+      'client.observeReaderState((state) => { if (state !== null) window.__replacementSubject = state.subject; }); return null;',
+    );
+    secondTracker.reset();
     const otherEmail = 'fixture-second@example.com';
     const otherRegistered = await browserJson(
       page,
@@ -442,6 +464,59 @@ export default {
       asRecord(asRecord(otherLogin)?.value)?.subject !== loginRecord.subject,
       'replacement carries the new opaque subject',
     );
+    const replacementSubject = asRecord(asRecord(otherLogin)?.value)?.subject;
+    assert(typeof replacementSubject === 'string', 'replacement subject is available');
+    await second.waitForFunction(
+      `window.__replacementSubject === ${JSON.stringify(replacementSubject)}`,
+    );
+    const liveReplacement = await browserJson(second, outcomeOf('client.getSnapshot()'));
+    assert(
+      asRecord(asRecord(liveReplacement)?.value)?.subject === replacementSubject,
+      'replacement propagates to the already-open second tab',
+    );
+    assert(
+      asRecord(asRecord(liveReplacement)?.value)?.sessionStatus === 'unknown',
+      'cross-tab replacement does not claim a live session',
+    );
+    assert(
+      secondTracker.snapshot().me === 0 && secondTracker.snapshot().readerState === 0,
+      'live replacement performs no credentialed Identity calls in the second tab',
+    );
+
+    phase = 'unavailable JWKS refresh recovers without credentialed renewal';
+    await browserJson(
+      page,
+      outcomeOf(`
+        (() => {
+          const scope = { service: window.location.origin, issuer: window.__cfg.issuer, audience: window.__cfg.audience };
+          window.localStorage.removeItem(ConsumerClient.jwksStorageKey(scope));
+          window.__consumer = undefined;
+          return true;
+        })()
+      `),
+    );
+    await page.route('**/v1/auth/jwks', (route) => route.abort());
+    tracker.reset();
+    const keysUnavailable = await browserJson(page, outcomeOf('client.getSnapshot()'));
+    assert(asRecord(keysUnavailable)?.ok === false, 'unavailable verification keys surface');
+    assert(
+      asRecord(keysUnavailable)?.code === 'service-unavailable',
+      'unavailable verification keys keep a stable code',
+    );
+    assert(tracker.snapshot().readerState === 0, 'JWKS outage never triggers credentialed renewal');
+    await page.unroute('**/v1/auth/jwks');
+    await browserJson(
+      page,
+      outcomeOf('(() => { window.__clockOffset = 61; return window.__clockOffset; })()'),
+    );
+    const keysRestored = await browserJson(page, outcomeOf('client.getSnapshot()'));
+    assert(asRecord(keysRestored)?.ok === true, 'verification recovers after JWKS returns');
+    assert(
+      asRecord(asRecord(keysRestored)?.value)?.subject === replacementSubject,
+      'restored key refresh verifies the retained Reader State',
+    );
+    assert(tracker.snapshot().readerState === 0, 'key-refresh restoration performs no renewal');
+    await browserJson(page, outcomeOf('(() => { window.__clockOffset = 0; return true; })()'));
 
     phase = 'lost renewal session clears expired authentication';
     await context.clearCookies();
@@ -462,7 +537,7 @@ export default {
       asRecord(revoked)?.ok === true && asRecord(revoked)?.value === null,
       'denied renewal resolves anonymous',
     );
-    assert(tracker.snapshot().token === 1, 'one denied renewal attempt');
+    assert(tracker.snapshot().readerState === 1, 'one denied renewal attempt');
     const cleared = await browserJson(
       page,
       outcomeOf(`
@@ -530,28 +605,11 @@ export default {
       'unrelated deployment has no credentials',
     );
     assert(
-      tracker.snapshot().me === 0 && tracker.snapshot().token === 0,
+      tracker.snapshot().me === 0 && tracker.snapshot().readerState === 0,
       'no probing for unrelated deployments',
     );
 
-    phase = 'Reader State restores and logout propagates credential-free to the second tab';
-    const second = await context.newPage();
-    const secondTracker = createTracker();
-    secondTracker.watch(second);
-    await second.goto(`${base}${DOC_A}`);
-    await installClient(second, bundle);
-    const restoredSecondTab = await browserJson(second, outcomeOf('client.getSnapshot()'));
-    assert(asRecord(restoredSecondTab)?.ok === true, 'second tab restores Reader State');
-    assert(
-      asRecord(asRecord(restoredSecondTab)?.value)?.sessionStatus === 'unknown',
-      'restored Reader State does not claim a live session',
-    );
-    assert(
-      secondTracker.snapshot().me === 0 &&
-        secondTracker.snapshot().token === 0 &&
-        secondTracker.snapshot().jwks === 0,
-      'second tab restoration performs zero Identity calls',
-    );
+    phase = 'logout propagates credential-free to the open second tab';
     secondTracker.reset();
     await browserJson(
       second,
@@ -565,7 +623,7 @@ export default {
       'logout notification clears the second tab',
     );
     assert(
-      secondTracker.snapshot().me === 0 && secondTracker.snapshot().token === 0,
+      secondTracker.snapshot().me === 0 && secondTracker.snapshot().readerState === 0,
       'propagated logout performs no identity calls',
     );
 

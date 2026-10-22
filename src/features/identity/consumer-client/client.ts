@@ -11,6 +11,7 @@ import {
   ReaderStateError,
   readReaderStateKid,
   verifyReaderState,
+  verifyReaderStateForRenewal,
   type VerifiedReaderState,
 } from './verifier.js';
 import type { paths } from './generated/api.js';
@@ -242,13 +243,24 @@ export function createConsumerClient(options: ConsumerClientOptions): ConsumerCl
     return new ConsumerClientError('unknown-error', `The request failed while ${action}.`, status);
   }
 
+  function toTransportError(error: unknown, action: string): ConsumerClientError {
+    if (error instanceof ConsumerClientError) return error;
+    return new ConsumerClientError(
+      'network-unavailable',
+      `The service is unreachable while ${action}.`,
+    );
+  }
+
   const clear = (status: AuthoritativeSessionStatus): void => {
     generation += 1;
     sessionStatus = status;
     clearStoredReaderState(store, scope);
   };
 
-  const verify = async (readerState: string): Promise<VerifiedReaderState | null> => {
+  const verify = async (
+    readerState: string,
+    allowExpired = false,
+  ): Promise<VerifiedReaderState | null> => {
     const kid = readReaderStateKid(readerState);
     if (kid === null) return null;
     let key;
@@ -259,7 +271,8 @@ export function createConsumerClient(options: ConsumerClientOptions): ConsumerCl
     }
     if (key === null) return null;
     try {
-      return await verifyReaderState(readerState, jwks.cachedKeys(), {
+      const verifier = allowExpired ? verifyReaderStateForRenewal : verifyReaderState;
+      return await verifier(readerState, jwks.cachedKeys(), {
         issuer: scope.issuer,
         audience: scope.audience,
         nowSeconds: nowSeconds(),
@@ -327,13 +340,13 @@ export function createConsumerClient(options: ConsumerClientOptions): ConsumerCl
     const attemptGeneration = generation;
     const stored = loadStoredReaderState(store, scope);
     if (stored === null) return null;
-    if (stored.expiresAt <= nowSeconds()) return coalescedIssue();
-    const verified = await verify(stored.readerState);
+    const verified = await verify(stored.readerState, true);
     if (attemptGeneration !== generation) return null;
     if (verified?.expiresAt !== stored.expiresAt) {
       clear('unknown');
       return null;
     }
+    if (verified.expiresAt <= nowSeconds()) return coalescedIssue();
     return { ...verified, sessionStatus };
   };
 
@@ -354,6 +367,7 @@ export function createConsumerClient(options: ConsumerClientOptions): ConsumerCl
   return {
     login: async (input) => {
       clear('unknown');
+      const attemptGeneration = generation;
       let response;
       try {
         response = await api.POST('/v1/auth/login', {
@@ -366,8 +380,14 @@ export function createConsumerClient(options: ConsumerClientOptions): ConsumerCl
       if (response.data === undefined) {
         throw toClientError(response.error, response.response.status, 'signing in');
       }
+      if (attemptGeneration !== generation) {
+        throw new ConsumerClientError(
+          'unauthenticated',
+          'Authentication changed while signing in.',
+        );
+      }
       const state = await coalescedIssue();
-      if (state === null)
+      if (state === null || attemptGeneration !== generation)
         throw new ConsumerClientError('unauthenticated', 'Session was not active.');
       return state;
     },
@@ -400,34 +420,60 @@ export function createConsumerClient(options: ConsumerClientOptions): ConsumerCl
       }
     },
     register: async (input) => {
-      const response = await api.POST('/v1/auth/register', { body: input });
-      if (response.data === undefined) {
-        throw toClientError(response.error, response.response.status, 'registering');
+      try {
+        const response = await api.POST('/v1/auth/register', { body: input });
+        if (response.data === undefined) {
+          throw toClientError(response.error, response.response.status, 'registering');
+        }
+        return response.data;
+      } catch (error) {
+        throw toTransportError(error, 'registering');
       }
-      return response.data;
     },
     verifyEmail: async (token) => {
-      const response = await api.POST('/v1/auth/verify-email', { body: { token } });
-      if (response.data === undefined) {
-        throw toClientError(response.error, response.response.status, 'verifying email');
+      try {
+        const response = await api.POST('/v1/auth/verify-email', { body: { token } });
+        if (response.data === undefined) {
+          throw toClientError(response.error, response.response.status, 'verifying email');
+        }
+      } catch (error) {
+        throw toTransportError(error, 'verifying email');
       }
     },
     requestVerification: async (email) => {
-      const response = await api.POST('/v1/auth/request-verification', { body: { email } });
-      if (response.data === undefined) {
-        throw toClientError(response.error, response.response.status, 'requesting verification');
+      try {
+        const response = await api.POST('/v1/auth/request-verification', { body: { email } });
+        if (response.data === undefined) {
+          throw toClientError(response.error, response.response.status, 'requesting verification');
+        }
+      } catch (error) {
+        throw toTransportError(error, 'requesting verification');
       }
     },
     requestPasswordReset: async (email) => {
-      const response = await api.POST('/v1/auth/request-password-reset', { body: { email } });
-      if (response.data === undefined) {
-        throw toClientError(response.error, response.response.status, 'requesting password reset');
+      try {
+        const response = await api.POST('/v1/auth/request-password-reset', { body: { email } });
+        if (response.data === undefined) {
+          throw toClientError(
+            response.error,
+            response.response.status,
+            'requesting password reset',
+          );
+        }
+      } catch (error) {
+        throw toTransportError(error, 'requesting password reset');
       }
     },
     resetPassword: async (token, newPassword) => {
-      const response = await api.POST('/v1/auth/reset-password', { body: { token, newPassword } });
-      if (response.data === undefined) {
-        throw toClientError(response.error, response.response.status, 'resetting password');
+      try {
+        const response = await api.POST('/v1/auth/reset-password', {
+          body: { token, newPassword },
+        });
+        if (response.data === undefined) {
+          throw toClientError(response.error, response.response.status, 'resetting password');
+        }
+      } catch (error) {
+        throw toTransportError(error, 'resetting password');
       }
     },
     observeReaderState: (listener) => {
