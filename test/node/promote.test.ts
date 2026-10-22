@@ -44,7 +44,7 @@ describe('promotion CLI version selection', () => {
     ]);
 
     expect(prepared.display).toEqual([
-      '1) immutable-v1 2026-10-20T12:00:00Z workers/message=commit=abc branch=main workers/tag=candidate',
+      'immutable-v1 2026-10-20T12:00:00Z workers/message=commit=abc branch=main workers/tag=candidate',
     ]);
     expect(prepared.versions[0]?.id).toBe('immutable-v1');
   });
