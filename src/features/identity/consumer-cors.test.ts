@@ -259,7 +259,7 @@ describe('public consumer operation CORS responses', () => {
       () => get('/v1/me', { headers: { origin: CONSUMER_ORIGIN }, overrides }),
       () =>
         post(
-          '/v1/auth/token',
+          '/v1/auth/reader-state',
           {},
           { headers: { origin: CONSUMER_ORIGIN, 'sec-fetch-site': 'same-site' }, overrides },
         ),
@@ -344,20 +344,20 @@ describe('direct-browser consumer lifecycle from a configured origin', () => {
     expect(me.headers.get('access-control-allow-origin')).toBe(CONSUMER_ORIGIN);
     expect(me.headers.get('cache-control')).toBe('private, no-store');
 
-    const token = await post('/v1/auth/token', {}, { cookie, headers, overrides });
+    const token = await post('/v1/auth/reader-state', {}, { cookie, headers, overrides });
     expect(token.status).toBe(200);
     expect(token.headers.get('cache-control')).toContain('no-store');
     expect(token.headers.get('access-control-allow-origin')).toBe(CONSUMER_ORIGIN);
-    const issued = (await token.json()) as { accessToken: string };
-    expect(typeof issued.accessToken).toBe('string');
+    const issued = (await token.json()) as { readerState: string };
+    expect(typeof issued.readerState).toBe('string');
 
     // Renewal with the same live session succeeds before sign-out.
-    const renewed = await post('/v1/auth/token', {}, { cookie, headers, overrides });
+    const renewed = await post('/v1/auth/reader-state', {}, { cookie, headers, overrides });
     expect(renewed.status).toBe(200);
     expect(renewed.headers.get('cache-control')).toContain('no-store');
     expect(renewed.headers.get('access-control-allow-origin')).toBe(CONSUMER_ORIGIN);
-    const renewedBody = (await renewed.json()) as { accessToken: string };
-    expect(typeof renewedBody.accessToken).toBe('string');
+    const renewedBody = (await renewed.json()) as { readerState: string };
+    expect(typeof renewedBody.readerState).toBe('string');
 
     const jwks = await get('/v1/auth/jwks', { headers, overrides });
     expect(jwks.status).toBe(200);
@@ -368,7 +368,7 @@ describe('direct-browser consumer lifecycle from a configured origin', () => {
     expect(signOut.status).toBe(200);
     expect(signOut.headers.get('access-control-allow-origin')).toBe(CONSUMER_ORIGIN);
 
-    const after = await post('/v1/auth/token', {}, { cookie, headers, overrides });
+    const after = await post('/v1/auth/reader-state', {}, { cookie, headers, overrides });
     expect(after.status).toBe(401);
   });
 

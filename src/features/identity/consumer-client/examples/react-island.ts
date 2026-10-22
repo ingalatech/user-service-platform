@@ -1,8 +1,4 @@
-import {
-  createConsumerClient,
-  type ConsumerClient,
-  type ConsumerIdentitySnapshot,
-} from '../index.js';
+import { createConsumerClient, type ConsumerClient, type ConsumerReaderState } from '../index.js';
 
 // Shared consumption pattern for React islands on cached editorial pages
 // (spec #150, ticket #152). Islands must not each own a client: they share
@@ -13,7 +9,7 @@ import {
 // host primitive, such as `useSyncExternalStore` in the consumer app).
 export interface IslandConsumerState {
   readonly status: 'anonymous' | 'authenticated' | 'unavailable';
-  readonly snapshot: ConsumerIdentitySnapshot | null;
+  readonly snapshot: ConsumerReaderState | null;
 }
 
 export interface IslandController {
@@ -25,7 +21,7 @@ export interface IslandController {
   dispose(): void;
 }
 
-function toState(snapshot: ConsumerIdentitySnapshot | null): IslandConsumerState {
+function toState(snapshot: ConsumerReaderState | null): IslandConsumerState {
   return snapshot === null
     ? { status: 'anonymous', snapshot: null }
     : { status: 'authenticated', snapshot };
@@ -46,7 +42,7 @@ export function createIslandController(client: ConsumerClient): IslandController
   };
   // Cross-tab logout clears the shared client state internally; re-emit so
   // islands on this tab re-render without polling Identity.
-  const stopBroadcast = client.observeLogout(() => {
+  const stopBroadcast = client.observeReaderState(() => {
     emit();
   });
   return {
@@ -60,7 +56,7 @@ export function createIslandController(client: ConsumerClient): IslandController
     },
     refresh: async () => {
       try {
-        return toState(await client.recoverSession());
+        return toState(await client.refreshReaderState());
       } catch {
         return unavailable();
       }

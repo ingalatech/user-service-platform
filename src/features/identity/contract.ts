@@ -209,23 +209,20 @@ export const AdminUserDetailParamsSchema = z
   })
   .openapi('AdminUserDetailParams');
 
-// Response for the application-owned consumer token issuance/renewal
-// operation (spec #150). The same operation serves initial issue and
-// renewal from the live HttpOnly session; `expiresAt` is an integer Unix
-// timestamp in seconds.
-export const ConsumerTokenResponseSchema = z
+// Reader State issue/refresh response (spec #195, ticket #196). Reader State
+// is presentation-only and deliberately has no Bearer token type.
+export const ReaderStateResponseSchema = z
   .object({
-    accessToken: z.string().min(1).openapi({
-      description: 'Short-lived application-owned access token.',
+    readerState: z.string().min(1).openapi({
+      description: 'Short-lived signed presentation-only Reader State.',
       example: 'eyJhbGciOiJFZERTQSJ9.eyJzdWIiOiJhYmMxMjMifQ.sig',
     }),
-    tokenType: z.literal('Bearer').openapi({ example: 'Bearer' }),
     expiresAt: z.number().int().min(1).openapi({
-      description: 'Token expiry as integer Unix seconds.',
+      description: 'Reader State expiry as integer Unix seconds.',
       example: 1790000900,
     }),
   })
-  .openapi('ConsumerToken');
+  .openapi('ReaderState');
 
 // Public verification key entry (RFC 7517 JSON Web Key, public material
 // only). Only asymmetric signature parameters are representable; private
@@ -252,7 +249,7 @@ export const ConsumerJwksResponseSchema = z
   })
   .openapi('ConsumerJwks');
 
-export type ConsumerTokenResponse = z.infer<typeof ConsumerTokenResponseSchema>;
+export type ReaderStateResponse = z.infer<typeof ReaderStateResponseSchema>;
 export type ConsumerJsonWebKey = z.infer<typeof ConsumerJsonWebKeySchema>;
 export type ConsumerJwksResponse = z.infer<typeof ConsumerJwksResponseSchema>;
 

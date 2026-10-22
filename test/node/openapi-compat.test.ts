@@ -128,16 +128,20 @@ describe('OpenAPI compatibility gate', () => {
   it('detects a removed operation as breaking', async () => {
     const baseline = (await readJson('openapi/openapi.json')) as Record<string, unknown>;
     const current = clone(baseline);
-    const token = (current.paths as Record<string, Record<string, unknown>>)['/v1/auth/token'];
-    if (token !== undefined) {
-      delete token.post;
+    const readerState = (current.paths as Record<string, Record<string, unknown>>)[
+      '/v1/auth/reader-state'
+    ];
+    if (readerState !== undefined) {
+      delete readerState.post;
     }
 
     const breaking = compareOpenApiDocuments(baseline, current).filter(
       (finding) => finding.breaking,
     );
     expect(breaking.length).toBeGreaterThan(0);
-    expect(breaking.map((finding) => finding.message).join('\n')).toContain('/v1/auth/token');
+    expect(breaking.map((finding) => finding.message).join('\n')).toContain(
+      '/v1/auth/reader-state',
+    );
   });
 
   it('detects a newly required request field as breaking', async () => {
@@ -164,14 +168,14 @@ describe('OpenAPI compatibility gate', () => {
       string,
       Record<string, unknown>
     >;
-    const token = removedSchemas.ConsumerToken as { properties: Record<string, unknown> };
-    delete token.properties.expiresAt;
+    const readerState = removedSchemas.ReaderState as { properties: Record<string, unknown> };
+    delete readerState.properties.expiresAt;
 
     const removedBreaking = compareOpenApiDocuments(baseline, removed).filter(
       (finding) => finding.breaking,
     );
     expect(removedBreaking.length).toBeGreaterThan(0);
-    expect(removedBreaking.map((finding) => finding.message).join('\n')).toContain('ConsumerToken');
+    expect(removedBreaking.map((finding) => finding.message).join('\n')).toContain('ReaderState');
 
     const retyped = clone(baseline);
     const retypedSchemas = (retyped.components as Record<string, unknown>).schemas as Record<

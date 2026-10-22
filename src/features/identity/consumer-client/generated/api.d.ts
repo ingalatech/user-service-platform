@@ -179,7 +179,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/auth/token": {
+    "/v1/auth/reader-state": {
         parameters: {
             query?: never;
             header?: never;
@@ -189,10 +189,10 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Issue or renew a consumer access token
-         * @description Issues or renews a short-lived application-owned access token from the live HttpOnly cookie session. The request carries no user, claims, issuer or audience: the token holds the opaque session subject, the deployment-configured issuer/audience, integer issued/expiry bounds and an empty entitlements list. Expiry never exceeds the live session expiry. Revoked or expired sessions are denied further issuance; already-issued offline tokens remain valid until their own expiry (at most 15 minutes initially). All responses are private, no-store.
+         * Issue or refresh presentation-only Reader State
+         * @description Issues or refreshes short-lived signed Reader State from the live HttpOnly cookie session. The request carries no user, claims, issuer or audience. Reader State holds the opaque subject, stable issuer, Reader-State-specific audience, integer issued/expiry bounds and an empty entitlements list. Expiry never exceeds the live session expiry and is at most 15 minutes. Reader State is for presentation only and never authenticates or authorizes an endpoint. All responses are private, no-store.
          */
-        post: operations["issueConsumerToken"];
+        post: operations["issueReaderState"];
         delete?: never;
         options?: never;
         head?: never;
@@ -207,7 +207,7 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Publish consumer token verification keys
+         * Publish Reader State verification keys
          * @description Returns the active and retained public asymmetric verification keys as an RFC 7517 JSON Web Key Set. Private key material is never published. Responses carry bounded public caching; verification keys remain available through every outstanding token lifetime plus the documented clock tolerance.
          */
         get: operations["getConsumerJwks"];
@@ -445,19 +445,14 @@ export interface components {
              */
             status: "ok";
         };
-        ConsumerToken: {
+        ReaderState: {
             /**
-             * @description Short-lived application-owned access token.
+             * @description Short-lived signed presentation-only Reader State.
              * @example eyJhbGciOiJFZERTQSJ9.eyJzdWIiOiJhYmMxMjMifQ.sig
              */
-            accessToken: string;
+            readerState: string;
             /**
-             * @example Bearer
-             * @enum {string}
-             */
-            tokenType: "Bearer";
-            /**
-             * @description Token expiry as integer Unix seconds.
+             * @description Reader State expiry as integer Unix seconds.
              * @example 1790000900
              */
             expiresAt: number;
@@ -857,7 +852,7 @@ export interface operations {
             };
         };
     };
-    issueConsumerToken: {
+    issueReaderState: {
         parameters: {
             query?: never;
             header?: never;
@@ -866,13 +861,13 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description The access token, its type and its integer Unix expiry. */
+            /** @description The signed Reader State and its integer Unix expiry. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ConsumerToken"];
+                    "application/json": components["schemas"]["ReaderState"];
                 };
             };
             /** @description Issuance failure as RFC 9457 Problem Details. */

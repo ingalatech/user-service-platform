@@ -3,12 +3,12 @@ import type { Context } from 'hono';
 import { resolveEffectiveConfig, type EffectiveConfig } from '../../config/index.js';
 import type { Env } from '../../env.js';
 import { PROBLEM_JSON, createProblem, type ProblemCode } from '../../shared/problem.js';
-import { createConsumerTokenAuth, createIdentityAuth } from './auth.js';
+import { createIdentityAuth, createReaderStateAuth } from './auth.js';
 import { resolveAdminIdentity } from './authorization.js';
 import { getAdminUserById, listAdminUsers } from './admin-users.js';
 import { bootstrapAdminUser } from './admin.js';
 import { CONSUMER_CORS_PATHS, createConsumerCorsMiddleware } from './consumer-cors.js';
-import { resolveConsumerTokenConfig, extractTokenExpiry } from './consumer-tokens.js';
+import { extractReaderStateExpiry, resolveReaderStateConfig } from './reader-state.js';
 import type { ConsumerJsonWebKey } from './contract.js';
 import { deferredAuthMailer, resolveAuthMailer, type AuthMailer } from './mailer.js';
 import {
@@ -23,7 +23,7 @@ import {
   adminUserDetailRoute,
   adminUsersRoute,
   consumerJwksRoute,
-  consumerTokenRoute,
+  readerStateRoute,
   currentUserRoute,
   loginRoute,
   registerRoute,
@@ -184,22 +184,22 @@ function scopedAuth(
   return { auth, policy: base.policy };
 }
 
-// Token-capable per-request wiring for the application-owned consumer token
-// operations (spec #150). The consumer JWT configuration resolves here and
+// JWT-capable per-request wiring for Reader State issue/refresh and public
+// JWKS publication (spec #195). Reader State configuration resolves here and
 // fails closed before any key or token handling; deployments without stable
 // values never reach issuance or publication.
-function scopedTokenAuth(
+function scopedReaderStateAuth(
   c: IdentityContext,
   override?: AuthMailer,
-): ReturnType<typeof createConsumerTokenAuth> {
+): ReturnType<typeof createReaderStateAuth> {
   const base = scopedBase(c, override);
-  const consumerTokens = resolveConsumerTokenConfig({
+  const readerState = resolveReaderStateConfig({
     environment: base.effective.environment,
     issuer: base.effective.config.AUTH_JWT_ISSUER,
-    audience: base.effective.config.AUTH_JWT_AUDIENCE,
-    ttlSeconds: base.effective.config.AUTH_JWT_TTL_SECONDS,
+    audience: base.effective.config.AUTH_READER_STATE_AUDIENCE,
+    ttlSeconds: base.effective.config.AUTH_READER_STATE_TTL_SECONDS,
   });
-  return createConsumerTokenAuth({
+  return createReaderStateAuth({
     db: c.env.DB,
     policy: base.policy,
     mailer: base.mailer,
@@ -208,7 +208,7 @@ function scopedTokenAuth(
     verifyEmailActionURL: base.effective.config.AUTH_VERIFY_EMAIL_ACTION_URL,
     resetPasswordActionURL: base.effective.config.AUTH_RESET_PASSWORD_ACTION_URL,
     background: base.background,
-    consumerTokens,
+    readerState,
   });
 }
 
@@ -557,19 +557,19 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     return c.json({ status: 'ok' as const }, 200);
   });
 
-  // Consumer token issuance/renewal (spec #150, ADR-0013). The live
+  // Reader State issue/refresh (spec #195, ticket #196, ADR-0013). The live
   // HttpOnly session is resolved authoritatively (expiry/revocation aware,
   // cookie cache bypassed) before any token handling; the same operation
   // serves initial issue and renewal. All responses are private, no-store.
-  router.openapi(consumerTokenRoute, async (c) => {
+  router.openapi(readerStateRoute, async (c) => {
     const noStore = 'private, no-store';
     const rejected = guardCookieMutation(c, noStore);
     if (rejected !== null) {
       return rejected;
     }
-    let tokenAuth: ReturnType<typeof scopedTokenAuth>;
+    let tokenAuth: ReturnType<typeof scopedReaderStateAuth>;
     try {
-      tokenAuth = scopedTokenAuth(c, override);
+      tokenAuth = scopedReaderStateAuth(c, override);
     } catch {
       return problem(c, 500, 'internal-error', 'Internal Server Error', undefined, noStore);
     }
@@ -593,11 +593,11 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
         if (typeof token !== 'string' || token.length === 0) {
           return problem(c, 500, 'internal-error', 'Internal Server Error', undefined, noStore);
         }
-        const expiresAt = extractTokenExpiry(token);
+        const expiresAt = extractReaderStateExpiry(token);
         if (expiresAt === null) {
           return problem(c, 500, 'internal-error', 'Internal Server Error', undefined, noStore);
         }
-        return c.json({ accessToken: token, tokenType: 'Bearer' as const, expiresAt }, 200, {
+        return c.json({ readerState: token, expiresAt }, 200, {
           'Content-Type': 'application/json',
           'Cache-Control': noStore,
         });
@@ -622,9 +622,9 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
   // behind the engine encryption facility. Successful responses carry bounded
   // public caching; failures are never cached.
   router.openapi(consumerJwksRoute, async (c) => {
-    let tokenAuth: ReturnType<typeof scopedTokenAuth>;
+    let tokenAuth: ReturnType<typeof scopedReaderStateAuth>;
     try {
-      tokenAuth = scopedTokenAuth(c, override);
+      tokenAuth = scopedReaderStateAuth(c, override);
     } catch {
       return problem(c, 500, 'internal-error', 'Internal Server Error', undefined, 'no-store');
     }

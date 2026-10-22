@@ -9,7 +9,7 @@ import {
   VERIFY_EMAIL_ACTION_PATH,
   buildAuthActionUrl,
 } from './action-urls.js';
-import { capTokenExpirySeconds } from './consumer-tokens.js';
+import { capReaderStateExpirySeconds } from './reader-state.js';
 import type { AuthMailer } from './mailer.js';
 import type { AuthPolicy } from './policy.js';
 import { identitySchema } from './schema.js';
@@ -18,7 +18,7 @@ import { identitySchema } from './schema.js';
 // audience and lifetime arrive validated from the effective non-secret
 // configuration via `resolveConsumerTokenConfig`; this layer only translates
 // them into the pinned engine JWT capability.
-export interface ConsumerTokenOptions {
+export interface ReaderStateOptions {
   readonly issuer: string;
   readonly audience: string;
   // Bounded token lifetime in seconds (1..900). The minted `exp`
@@ -50,11 +50,11 @@ export interface IdentityAuthInput {
   readonly background: (task: Promise<unknown>) => void;
 }
 
-export interface ConsumerTokenAuthInput extends IdentityAuthInput {
+export interface ReaderStateAuthInput extends IdentityAuthInput {
   // Validated consumer-token options (issuer/audience/TTL). Required here so
   // the JWT capability is always configured explicitly; deployments without
   // stable values fail closed before this builder runs.
-  readonly consumerTokens: ConsumerTokenOptions;
+  readonly readerState: ReaderStateOptions;
 }
 
 // Better Auth internal log sink (ADR-0009): structured level + message only.
@@ -90,16 +90,16 @@ export function createIdentityAuth(input: IdentityAuthInput) {
   });
 }
 
-// Builds a request-scoped Better Auth instance with the consumer JWT
-// capability enabled (spec #150, ADR-0013). Used only by the
-// application-owned POST /v1/auth/token and GET /v1/auth/jwks operations;
+// Builds a request-scoped Better Auth instance with the asymmetric JWT/JWKS
+// capability behind the Reader State contract (spec #195, ADR-0013). Used only by the
+// application-owned POST /v1/auth/reader-state and GET /v1/auth/jwks operations;
 // every other identity operation uses `createIdentityAuth` so no ambient
 // token header or key provisioning can occur elsewhere. The engine auth
 // router is never mounted; handlers reach this capability through `auth.api`
 // only. The return type is intentionally inferred so the plugin endpoints
 // (`getToken`, `getJwks`) flow to consumers with precise types.
-export function createConsumerTokenAuth(input: ConsumerTokenAuthInput) {
-  const consumerTokens = input.consumerTokens;
+export function createReaderStateAuth(input: ReaderStateAuthInput) {
+  const readerState = input.readerState;
   return betterAuth({
     ...sharedOptions(input),
     plugins: [
@@ -115,19 +115,19 @@ export function createConsumerTokenAuth(input: ConsumerTokenAuthInput) {
         disableSettingJwtHeader: true,
         jwks: { keyPairConfig: { alg: 'EdDSA', crv: 'Ed25519' } },
         jwt: {
-          issuer: consumerTokens.issuer,
-          audience: consumerTokens.audience,
-          expirationTime: `${consumerTokens.ttlSeconds.toString()} seconds`,
+          issuer: readerState.issuer,
+          audience: readerState.audience,
+          expirationTime: `${readerState.ttlSeconds.toString()} seconds`,
           definePayload: ({ session }) => {
             const nowSeconds = Math.floor(Date.now() / 1000);
             const sessionExpirySeconds = Math.floor(session.expiresAt.getTime() / 1000);
             return {
               entitlements: [],
-              iss: consumerTokens.issuer,
-              aud: consumerTokens.audience,
-              exp: capTokenExpirySeconds({
+              iss: readerState.issuer,
+              aud: readerState.audience,
+              exp: capReaderStateExpirySeconds({
                 nowSeconds,
-                ttlSeconds: consumerTokens.ttlSeconds,
+                ttlSeconds: readerState.ttlSeconds,
                 sessionExpirySeconds,
               }),
             };

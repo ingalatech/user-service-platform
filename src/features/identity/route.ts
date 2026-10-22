@@ -9,7 +9,7 @@ import {
   AdminUserListSchema,
   AdminUserSchema,
   ConsumerJwksResponseSchema,
-  ConsumerTokenResponseSchema,
+  ReaderStateResponseSchema,
   CurrentUserSchema,
   LoginRequestSchema,
   LoginResultSchema,
@@ -172,25 +172,25 @@ export const signOutRoute = createRoute({
   },
 });
 
-export const consumerTokenRoute = createRoute({
+export const readerStateRoute = createRoute({
   method: 'post',
-  path: '/auth/token',
-  operationId: 'issueConsumerToken',
-  summary: 'Issue or renew a consumer access token',
+  path: '/auth/reader-state',
+  operationId: 'issueReaderState',
+  summary: 'Issue or refresh presentation-only Reader State',
   description:
-    'Issues or renews a short-lived application-owned access token from the ' +
+    'Issues or refreshes short-lived signed Reader State from the ' +
     'live HttpOnly cookie session. The request carries no user, claims, ' +
-    'issuer or audience: the token holds the opaque session subject, the ' +
-    'deployment-configured issuer/audience, integer issued/expiry bounds and ' +
+    'issuer or audience. Reader State holds the opaque subject, stable issuer, ' +
+    'Reader-State-specific audience, integer issued/expiry bounds and ' +
     'an empty entitlements list. Expiry never exceeds the live session ' +
-    'expiry. Revoked or expired sessions are denied further issuance; ' +
-    'already-issued offline tokens remain valid until their own expiry ' +
-    '(at most 15 minutes initially). All responses are private, no-store.',
+    'expiry and is at most 15 minutes. Reader State is for presentation only ' +
+    'and never authenticates or authorizes an endpoint. All responses are ' +
+    'private, no-store.',
   tags: ['identity'],
   responses: {
     200: {
-      content: { 'application/json': { schema: ConsumerTokenResponseSchema } },
-      description: 'The access token, its type and its integer Unix expiry.',
+      content: { 'application/json': { schema: ReaderStateResponseSchema } },
+      description: 'The signed Reader State and its integer Unix expiry.',
     },
     ...problemResponses('Issuance failure as RFC 9457 Problem Details.'),
   },
@@ -200,7 +200,7 @@ export const consumerJwksRoute = createRoute({
   method: 'get',
   path: '/auth/jwks',
   operationId: 'getConsumerJwks',
-  summary: 'Publish consumer token verification keys',
+  summary: 'Publish Reader State verification keys',
   description:
     'Returns the active and retained public asymmetric verification keys as ' +
     'an RFC 7517 JSON Web Key Set. Private key material is never published. ' +

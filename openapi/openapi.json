@@ -332,32 +332,24 @@
           "status"
         ]
       },
-      "ConsumerToken": {
+      "ReaderState": {
         "type": "object",
         "properties": {
-          "accessToken": {
+          "readerState": {
             "type": "string",
             "minLength": 1,
-            "description": "Short-lived application-owned access token.",
+            "description": "Short-lived signed presentation-only Reader State.",
             "example": "eyJhbGciOiJFZERTQSJ9.eyJzdWIiOiJhYmMxMjMifQ.sig"
-          },
-          "tokenType": {
-            "type": "string",
-            "enum": [
-              "Bearer"
-            ],
-            "example": "Bearer"
           },
           "expiresAt": {
             "type": "integer",
             "minimum": 1,
-            "description": "Token expiry as integer Unix seconds.",
+            "description": "Reader State expiry as integer Unix seconds.",
             "example": 1790000900
           }
         },
         "required": [
-          "accessToken",
-          "tokenType",
+          "readerState",
           "expiresAt"
         ]
       },
@@ -916,21 +908,21 @@
         }
       }
     },
-    "/v1/auth/token": {
+    "/v1/auth/reader-state": {
       "post": {
-        "operationId": "issueConsumerToken",
-        "summary": "Issue or renew a consumer access token",
-        "description": "Issues or renews a short-lived application-owned access token from the live HttpOnly cookie session. The request carries no user, claims, issuer or audience: the token holds the opaque session subject, the deployment-configured issuer/audience, integer issued/expiry bounds and an empty entitlements list. Expiry never exceeds the live session expiry. Revoked or expired sessions are denied further issuance; already-issued offline tokens remain valid until their own expiry (at most 15 minutes initially). All responses are private, no-store.",
+        "operationId": "issueReaderState",
+        "summary": "Issue or refresh presentation-only Reader State",
+        "description": "Issues or refreshes short-lived signed Reader State from the live HttpOnly cookie session. The request carries no user, claims, issuer or audience. Reader State holds the opaque subject, stable issuer, Reader-State-specific audience, integer issued/expiry bounds and an empty entitlements list. Expiry never exceeds the live session expiry and is at most 15 minutes. Reader State is for presentation only and never authenticates or authorizes an endpoint. All responses are private, no-store.",
         "tags": [
           "identity"
         ],
         "responses": {
           "200": {
-            "description": "The access token, its type and its integer Unix expiry.",
+            "description": "The signed Reader State and its integer Unix expiry.",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ConsumerToken"
+                  "$ref": "#/components/schemas/ReaderState"
                 }
               }
             }
@@ -951,7 +943,7 @@
     "/v1/auth/jwks": {
       "get": {
         "operationId": "getConsumerJwks",
-        "summary": "Publish consumer token verification keys",
+        "summary": "Publish Reader State verification keys",
         "description": "Returns the active and retained public asymmetric verification keys as an RFC 7517 JSON Web Key Set. Private key material is never published. Responses carry bounded public caching; verification keys remain available through every outstanding token lifetime plus the documented clock tolerance.",
         "tags": [
           "identity"

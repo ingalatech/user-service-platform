@@ -7,7 +7,7 @@ import {
   type DeployableEnvironment,
 } from './naming.js';
 import { resolveEffectiveConfig } from '../../src/config/config.js';
-import { resolveConsumerTokenConfig } from '../../src/features/identity/consumer-tokens.js';
+import { resolveReaderStateConfig } from '../../src/features/identity/reader-state.js';
 import {
   resolveConsumerOrigins,
   resolveGatewayOrigins,
@@ -41,8 +41,8 @@ export const ENVIRONMENT_VAR_NAMES = [
   'AUTH_VERIFY_EMAIL_ACTION_URL',
   'AUTH_RESET_PASSWORD_ACTION_URL',
   'AUTH_JWT_ISSUER',
-  'AUTH_JWT_AUDIENCE',
-  'AUTH_JWT_TTL_SECONDS',
+  'AUTH_READER_STATE_AUDIENCE',
+  'AUTH_READER_STATE_TTL_SECONDS',
   'AUTH_GATEWAY_ORIGINS',
   'AUTH_CONSUMER_ORIGINS',
   'SMTP_HOST',
@@ -205,11 +205,11 @@ export function resolveEnvironmentDeployment(
     environment: target.environment,
     runtime: vars,
   }).config;
-  resolveConsumerTokenConfig({
+  resolveReaderStateConfig({
     environment: 'local',
     issuer: file.AUTH_JWT_ISSUER,
-    audience: file.AUTH_JWT_AUDIENCE,
-    ttlSeconds: file.AUTH_JWT_TTL_SECONDS,
+    audience: file.AUTH_READER_STATE_AUDIENCE,
+    ttlSeconds: file.AUTH_READER_STATE_TTL_SECONDS,
   });
   resolveGatewayOrigins(file.AUTH_GATEWAY_ORIGINS);
   resolveConsumerOrigins(file.AUTH_CONSUMER_ORIGINS);

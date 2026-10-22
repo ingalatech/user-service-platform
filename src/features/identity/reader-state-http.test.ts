@@ -3,7 +3,7 @@ import type { D1Migration } from 'cloudflare:test';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../../app.js';
 import type { Env } from '../../env.js';
-import { LOCAL_CONSUMER_TOKEN_AUDIENCE, LOCAL_CONSUMER_TOKEN_ISSUER } from './consumer-tokens.js';
+import { LOCAL_READER_STATE_AUDIENCE, LOCAL_READER_STATE_ISSUER } from './reader-state.js';
 import { InMemoryAuthMailer } from './mailer.js';
 
 // Seam under test (spec #150, ADR-0013): the public HTTP boundary of the
@@ -15,8 +15,8 @@ import { InMemoryAuthMailer } from './mailer.js';
 const workerEnv = env;
 const testMigrations = env.TEST_MIGRATIONS as D1Migration[];
 
-const EXPECTED_ISSUER = LOCAL_CONSUMER_TOKEN_ISSUER;
-const EXPECTED_AUDIENCE = LOCAL_CONSUMER_TOKEN_AUDIENCE;
+const EXPECTED_ISSUER = LOCAL_READER_STATE_ISSUER;
+const EXPECTED_AUDIENCE = LOCAL_READER_STATE_AUDIENCE;
 
 function testEnv(overrides: Partial<Env> = {}): Env {
   return {
@@ -112,8 +112,7 @@ async function registerVerifyLogin(email: string): Promise<string> {
 }
 
 interface TokenSuccess {
-  readonly accessToken: string;
-  readonly tokenType: string;
+  readonly readerState: string;
   readonly expiresAt: number;
 }
 
@@ -125,7 +124,7 @@ async function issueToken(
   },
 ): Promise<Response> {
   return post(
-    '/v1/auth/token',
+    '/v1/auth/reader-state',
     {},
     { cookie, headers: extra?.headers, overrides: extra?.overrides },
   );
@@ -135,8 +134,7 @@ async function readTokenSuccess(res: Response): Promise<TokenSuccess> {
   expect(res.status).toBe(200);
   expect(res.headers.get('content-type')).toContain('application/json');
   const body = (await res.json()) as TokenSuccess;
-  expect(typeof body.accessToken).toBe('string');
-  expect(body.tokenType).toBe('Bearer');
+  expect(typeof body.readerState).toBe('string');
   expect(Number.isInteger(body.expiresAt)).toBe(true);
   return body;
 }
@@ -270,7 +268,35 @@ beforeEach(async () => {
   mailer.clear();
 });
 
-describe('POST /v1/auth/token tracer bullet', () => {
+describe('POST /v1/auth/reader-state tracer bullet', () => {
+  it('issues presentation-only Reader State from the live session', async () => {
+    const cookie = await registerVerifyLogin('reader-state@example.com');
+
+    const response = await post('/v1/auth/reader-state', {}, { cookie });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe('private, no-store');
+    const body = (await response.json()) as Record<string, unknown>;
+    expect(typeof body.readerState).toBe('string');
+    expect(Number.isInteger(body.expiresAt)).toBe(true);
+    expect(body).not.toHaveProperty('accessToken');
+    expect(body).not.toHaveProperty('tokenType');
+
+    const jwks = (await (await get('/v1/auth/jwks')).json()) as PublicJwkSet;
+    const payload = await verifyConsumerToken(String(body.readerState), jwks, {
+      issuer: EXPECTED_ISSUER,
+      audience: 'user-service-local-reader-state',
+    });
+    expect(Object.keys(payload).sort()).toEqual([
+      'aud',
+      'entitlements',
+      'exp',
+      'iat',
+      'iss',
+      'sub',
+    ]);
+    expect(payload.entitlements).toEqual([]);
+  });
+
   it('issues a token from the live session verifiable with only the public JWKS', async () => {
     const cookie = await registerVerifyLogin('tracer@example.com');
 
@@ -286,7 +312,7 @@ describe('POST /v1/auth/token tracer bullet', () => {
 
     // Independent verification: no session/database read, only the fetched
     // public keys plus the deployment-configured issuer/audience.
-    const payload = await verifyConsumerToken(issued.accessToken, jwks, {
+    const payload = await verifyConsumerToken(issued.readerState, jwks, {
       issuer: EXPECTED_ISSUER,
       audience: EXPECTED_AUDIENCE,
     });
@@ -307,7 +333,7 @@ describe('POST /v1/auth/token tracer bullet', () => {
 
     const first = await readTokenSuccess(await issueToken(cookie));
     const second = await readTokenSuccess(await issueToken(cookie));
-    expect(typeof second.accessToken).toBe('string');
+    expect(typeof second.readerState).toBe('string');
     expect(second.expiresAt).toBeGreaterThanOrEqual(first.expiresAt);
 
     const signOutRes = await post('/v1/auth/sign-out', {}, { cookie });
@@ -365,13 +391,13 @@ describe('POST /v1/auth/token tracer bullet', () => {
     const jwks = (await (await get('/v1/auth/jwks')).json()) as PublicJwkSet;
 
     await expect(
-      verifyConsumerToken(issued.accessToken, jwks, {
+      verifyConsumerToken(issued.readerState, jwks, {
         issuer: 'https://wrong-issuer.example',
         audience: EXPECTED_AUDIENCE,
       }),
     ).rejects.toThrow(/issuer/);
     await expect(
-      verifyConsumerToken(issued.accessToken, jwks, {
+      verifyConsumerToken(issued.readerState, jwks, {
         issuer: EXPECTED_ISSUER,
         audience: 'wrong-audience',
       }),
@@ -379,7 +405,7 @@ describe('POST /v1/auth/token tracer bullet', () => {
 
     // Tampered signature: flip a fully significant leading character so the
     // decoded signature bytes change while the encoding stays valid.
-    const segments = issued.accessToken.split('.');
+    const segments = issued.readerState.split('.');
     const headerSegment = segments[0] ?? '';
     const payloadSegment = segments[1] ?? '';
     const signature = segments[2] ?? '';
@@ -392,7 +418,7 @@ describe('POST /v1/auth/token tracer bullet', () => {
     // Unknown key id.
     await expect(
       verifyConsumerToken(
-        issued.accessToken,
+        issued.readerState,
         { keys: [] },
         {
           issuer: EXPECTED_ISSUER,
@@ -419,7 +445,7 @@ describe('POST /v1/auth/token tracer bullet', () => {
 
     // Expiration is enforced against the token's own exp.
     await expect(
-      verifyConsumerToken(issued.accessToken, jwks, {
+      verifyConsumerToken(issued.readerState, jwks, {
         issuer: EXPECTED_ISSUER,
         audience: EXPECTED_AUDIENCE,
         nowSeconds: issued.expiresAt + 1,
@@ -472,7 +498,7 @@ describe('GET /v1/auth/jwks', () => {
   });
 });
 
-describe('consumer token TTL and session-expiry bounds', () => {
+describe('Reader State TTL and session-expiry bounds', () => {
   it('keeps token expiry within the live session expiry and the TTL', async () => {
     const cookie = await registerVerifyLogin('cap@example.com');
     const before = Math.floor(Date.now() / 1000);
@@ -499,7 +525,7 @@ describe('consumer token TTL and session-expiry bounds', () => {
     const before = Math.floor(Date.now() / 1000);
 
     const issued = await readTokenSuccess(
-      await issueToken(cookie, { overrides: { AUTH_JWT_TTL_SECONDS: '120' } }),
+      await issueToken(cookie, { overrides: { AUTH_READER_STATE_TTL_SECONDS: '120' } }),
     );
     const after = Math.floor(Date.now() / 1000);
 
@@ -511,9 +537,9 @@ describe('consumer token TTL and session-expiry bounds', () => {
     const cookie = await registerVerifyLogin('bad-config@example.com');
 
     for (const overrides of [
-      { AUTH_JWT_TTL_SECONDS: '0' },
-      { AUTH_JWT_TTL_SECONDS: '3600' },
-      { AUTH_JWT_TTL_SECONDS: 'soon' },
+      { AUTH_READER_STATE_TTL_SECONDS: '0' },
+      { AUTH_READER_STATE_TTL_SECONDS: '3600' },
+      { AUTH_READER_STATE_TTL_SECONDS: 'soon' },
       { AUTH_JWT_ISSUER: 'has space' },
     ]) {
       const res = await issueToken(cookie, { overrides });
@@ -523,7 +549,7 @@ describe('consumer token TTL and session-expiry bounds', () => {
   });
 });
 
-describe('consumer token origin protection', () => {
+describe('Reader State origin protection', () => {
   it('rejects hostile and null origins on token issuance', async () => {
     const cookie = await registerVerifyLogin('origin@example.com');
 
@@ -538,7 +564,7 @@ describe('consumer token origin protection', () => {
     const cookie = await registerVerifyLogin('same-origin@example.com');
 
     const sameOrigin = await post(
-      '/v1/auth/token',
+      '/v1/auth/reader-state',
       {},
       { cookie, headers: { origin: 'http://localhost', 'sec-fetch-site': 'same-origin' } },
     );
@@ -552,7 +578,7 @@ describe('consumer token origin protection', () => {
     const cookie = await registerVerifyLogin('fetch-meta@example.com');
 
     const res = await post(
-      '/v1/auth/token',
+      '/v1/auth/reader-state',
       {},
       { cookie, headers: { 'sec-fetch-site': 'cross-site' } },
     );
@@ -563,7 +589,7 @@ describe('consumer token origin protection', () => {
     const cookie = await registerVerifyLogin('contradictory-meta@example.com');
 
     const crossSite = await post(
-      '/v1/auth/token',
+      '/v1/auth/reader-state',
       {},
       { cookie, headers: { origin: 'http://localhost', 'sec-fetch-site': 'cross-site' } },
     );
@@ -571,7 +597,7 @@ describe('consumer token origin protection', () => {
     expect(await crossSite.json()).toMatchObject({ code: 'forbidden', status: 403 });
 
     const unknown = await post(
-      '/v1/auth/token',
+      '/v1/auth/reader-state',
       {},
       { cookie, headers: { origin: 'http://localhost', 'sec-fetch-site': 'super-future-value' } },
     );
@@ -585,14 +611,14 @@ describe('consumer token origin protection', () => {
     const overrides = { AUTH_GATEWAY_ORIGINS: gateway };
 
     const gatewayCrossSite = await post(
-      '/v1/auth/token',
+      '/v1/auth/reader-state',
       {},
       { cookie, headers: { origin: gateway, 'sec-fetch-site': 'cross-site' }, overrides },
     );
     expect(gatewayCrossSite.status).toBe(200);
 
     const gatewayUnknown = await post(
-      '/v1/auth/token',
+      '/v1/auth/reader-state',
       {},
       { cookie, headers: { origin: gateway, 'sec-fetch-site': 'super-future-value' }, overrides },
     );
@@ -609,12 +635,13 @@ describe('consumer token origin protection', () => {
       emailVerified: true,
     });
 
-    // A JWT alone authorizes nothing administrative: no bearer transport.
+    // Reader State alone authorizes no account, administration or issuance
+    // operation: User Service has no Bearer transport.
     const issued = await readTokenSuccess(await issueToken(cookie));
-    const adminWithBearer = await get('/v1/admin/me', {
-      headers: { authorization: `Bearer ${issued.accessToken}` },
-    });
-    expect(adminWithBearer.status).toBe(401);
+    const authorization = { authorization: `Bearer ${issued.readerState}` };
+    expect((await get('/v1/me', { headers: authorization })).status).toBe(401);
+    expect((await get('/v1/admin/me', { headers: authorization })).status).toBe(401);
+    expect((await issueToken(null, { headers: authorization })).status).toBe(401);
 
     const signOutRes = await post('/v1/auth/sign-out', {}, { cookie });
     expect(signOutRes.status).toBe(200);
@@ -622,19 +649,19 @@ describe('consumer token origin protection', () => {
   });
 });
 
-describe('consumer token observability redaction', () => {
-  it('never logs access tokens, private key material or session cookies', async () => {
+describe('Reader State observability redaction', () => {
+  it('never logs Reader State, private key material or session cookies', async () => {
     const seen: string[] = [];
     const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
       seen.push(args.map((arg) => String(arg)).join(' '));
     });
 
-    const captured = { accessToken: '', cookieValue: '' };
+    const captured = { readerState: '', cookieValue: '' };
     try {
       const cookie = await registerVerifyLogin('token-logs@example.com');
       captured.cookieValue = cookie.split('=')[1] ?? '';
       const issued = await readTokenSuccess(await issueToken(cookie));
-      captured.accessToken = issued.accessToken;
+      captured.readerState = issued.readerState;
       await get('/v1/auth/jwks');
       await issueToken('better-auth.session_token=forged-value');
     } finally {
@@ -642,8 +669,8 @@ describe('consumer token observability redaction', () => {
     }
 
     const transcript = seen.join('\n');
-    expect(captured.accessToken.length).toBeGreaterThan(0);
-    expect(transcript).not.toContain(captured.accessToken);
+    expect(captured.readerState.length).toBeGreaterThan(0);
+    expect(transcript).not.toContain(captured.readerState);
     expect(transcript).not.toContain('correct-horse-41');
     expect(transcript).not.toContain('better-auth.session_token=');
     if (captured.cookieValue.length > 0) {

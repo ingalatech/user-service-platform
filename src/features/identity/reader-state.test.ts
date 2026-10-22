@@ -1,20 +1,20 @@
 import { describe, expect, it } from 'vitest';
 import {
-  DEFAULT_CONSUMER_TOKEN_TTL_SECONDS,
-  LOCAL_CONSUMER_TOKEN_AUDIENCE,
-  LOCAL_CONSUMER_TOKEN_ISSUER,
-  MAX_CONSUMER_TOKEN_TTL_SECONDS,
-  capTokenExpirySeconds,
-  extractTokenExpiry,
-  resolveConsumerTokenConfig,
-} from './consumer-tokens.js';
+  DEFAULT_READER_STATE_TTL_SECONDS as DEFAULT_CONSUMER_TOKEN_TTL_SECONDS,
+  LOCAL_READER_STATE_AUDIENCE as LOCAL_CONSUMER_TOKEN_AUDIENCE,
+  LOCAL_READER_STATE_ISSUER as LOCAL_CONSUMER_TOKEN_ISSUER,
+  MAX_READER_STATE_TTL_SECONDS as MAX_CONSUMER_TOKEN_TTL_SECONDS,
+  capReaderStateExpirySeconds as capTokenExpirySeconds,
+  extractReaderStateExpiry as extractTokenExpiry,
+  resolveReaderStateConfig as resolveConsumerTokenConfig,
+} from './reader-state.js';
 
-// Seam under test: the pure application-owned consumer JWT configuration
-// boundary (spec #150, ADR-0013). Issuer, audience and lifetime resolve from
+// Seam under test: the pure application-owned Reader State configuration
+// boundary (spec #195, ADR-0013). Issuer, audience and lifetime resolve from
 // the effective non-secret configuration; malformed values fail closed and
 // sandbox/production never fall back to local defaults. No runtime, database
 // or auth engine is involved.
-describe('resolveConsumerTokenConfig', () => {
+describe('resolveReaderStateConfig', () => {
   it('uses deterministic local-only defaults when nothing is configured', () => {
     const config = resolveConsumerTokenConfig({ environment: 'local' });
 
@@ -76,7 +76,7 @@ describe('resolveConsumerTokenConfig', () => {
         environment: 'production',
         issuer: 'https://auth.example',
       }),
-    ).toThrow(/AUTH_JWT_AUDIENCE/);
+    ).toThrow(/AUTH_READER_STATE_AUDIENCE/);
     expect(() =>
       resolveConsumerTokenConfig({
         environment: 'production',
@@ -97,7 +97,7 @@ describe('resolveConsumerTokenConfig', () => {
   it('rejects malformed TTL values instead of minting with an unintended lifetime', () => {
     for (const ttlSeconds of ['0', '-5', '901', '900.5', 'fifteen', '1e2', '0x10', '+60']) {
       expect(() => resolveConsumerTokenConfig({ environment: 'local', ttlSeconds })).toThrow(
-        /AUTH_JWT_TTL_SECONDS/,
+        /AUTH_READER_STATE_TTL_SECONDS/,
       );
     }
   });
@@ -108,7 +108,7 @@ describe('resolveConsumerTokenConfig', () => {
     ).toThrow(/AUTH_JWT_ISSUER/);
     expect(() =>
       resolveConsumerTokenConfig({ environment: 'sandbox', issuer: 'ok', audience: '' }),
-    ).toThrow(/AUTH_JWT_AUDIENCE/);
+    ).toThrow(/AUTH_READER_STATE_AUDIENCE/);
     expect(() =>
       resolveConsumerTokenConfig({
         environment: 'local',
@@ -135,7 +135,7 @@ describe('resolveConsumerTokenConfig', () => {
   });
 });
 
-describe('capTokenExpirySeconds', () => {
+describe('capReaderStateExpirySeconds', () => {
   it('uses the TTL when the session outlives it', () => {
     expect(
       capTokenExpirySeconds({ nowSeconds: 1000, ttlSeconds: 900, sessionExpirySeconds: 2000 }),

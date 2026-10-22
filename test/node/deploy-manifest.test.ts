@@ -20,7 +20,7 @@ describe('version manifests', () => {
       /BETTER_AUTH_SECRET|RESEND_API_KEY|SMTP_USER|SMTP_PASSWORD|secret-marker/,
     );
     expect(manifest.fingerprint).toBe(
-      'ec85d2aa1f592801c3d1f601ff96988af7c7fa97df40270b73fcb38bcb4573aa',
+      'd17c786abd05f26b58483b9250be20d8bc594f497e9a6db8c1cc807459a76f1f',
     );
     expect(
       parseVersionManifest({

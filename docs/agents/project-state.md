@@ -103,22 +103,22 @@ from an approved browser origin with service-only session cookies") is the
 first executable slice; #166 is the shipped-client slice and is blocked by
 accepted #165 and #152. PR #154's branch is preserved and was not modified.
 
-#165 is implemented on branch `ticket/165-direct-browser-service-session`,
-created from main `b94bca996c9b68fed9af3d01e8ddd0f7df2c19c7` (accepted #151
-present). Changes are additive and confined to the identity slice:
-`AUTH_CONSUMER_ORIGINS` non-secret configuration, the consumer CORS module,
-the Origin/Fetch Metadata guard accepting exact consumer origins, an explicit
-host-only/HttpOnly/SameSite=Lax session-cookie pin, and the real-browser
-distinct-origin acceptance test. Direct-browser requests reuse the existing
-Better Auth/D1 session for issuance/renewal; JWT claims, lifetime and
-revocation rules are unchanged.
+#165/#167 are accepted and merged. Main commit `2e8d450` contains exact
+credentialed consumer CORS, retained Origin/Fetch Metadata authorization,
+service-only host-only/HttpOnly/SameSite=Lax sessions and real distinct-origin
+browser evidence. Direct-browser requests reuse the Better Auth/D1 session.
 
-Explicit limitations: this is not merged and not deployed; no live sandbox
-service URL, issuer, audience, DNS or TLS is verified by this work.
-`usuarios.rugbychampagneweb.com` remains a selected desired production
-hostname, not proof of activation. The exact reviewed commit SHA is published
-as PR/issue evidence; agent work stops at `READY FOR FINAL ACCEPTANCE` and
-does not merge or deploy.
+Spec #195 supersedes the former single consumer-JWT semantics. Ticket #196 is
+the current presentation-only Reader State slice: explicit
+`POST /v1/auth/reader-state`, a Reader-State-specific audience, verified-only
+deployment-scoped `localStorage`, cross-tab replacement/logout, manual refresh
+and lazy single-flight renewal. Reader State never authenticates an endpoint.
+Resource-bound Access Tokens and receiving-backend use remain #197/#198 and
+are not part of #196.
+
+No live sandbox Reader State issuer/audience, DNS/TLS activation, deployment
+or promotion is established by #196. `usuarios.rugbychampagneweb.com` remains
+a selected desired production hostname rather than proof of activation.
 
 ## Maintaining this checkpoint
 

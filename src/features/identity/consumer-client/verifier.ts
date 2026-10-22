@@ -1,13 +1,3 @@
-// Application-owned consumer JWT verifier (spec #150, ADR-0013, ticket #152).
-//
-// The shipped browser client and the documented backend verifier share these
-// checks: fixed asymmetric algorithm, stable key id, signature against the
-// cached public JWKS, expected issuer/audience, integer issue/expiry bounds
-// and the explicit claims allowlist. Verified output is a UI snapshot only —
-// a decoded payload or browser result is never authorization for a receiving
-// API, which verifies independently. Empty entitlements grant no
-// premium/statistics right; nonempty rights are rejected here rather than
-// faked, and remain blocked on future billing integration.
 export interface ConsumerJsonWebKey {
   readonly kid: string;
   readonly kty: string;
@@ -20,14 +10,14 @@ export interface ConsumerJsonWebKey {
   readonly e?: string;
 }
 
-export interface VerifyConsumerTokenInput {
+export interface VerifyReaderStateInput {
   readonly issuer: string;
   readonly audience: string;
   readonly nowSeconds?: number;
   readonly clockToleranceSeconds?: number;
 }
 
-export interface VerifiedConsumerSnapshot {
+export interface VerifiedReaderState {
   readonly subject: string;
   readonly issuer: string;
   readonly audience: string;
@@ -36,198 +26,140 @@ export interface VerifiedConsumerSnapshot {
   readonly entitlements: readonly [];
 }
 
-export type VerifyConsumerTokenErrorCode =
-  | 'malformed-token'
+export type VerifyReaderStateErrorCode =
+  | 'malformed-reader-state'
   | 'unsupported-algorithm'
   | 'unknown-key'
   | 'invalid-signature'
   | 'invalid-issuer'
   | 'invalid-audience'
-  | 'token-expired'
+  | 'reader-state-expired'
   | 'invalid-issued-at'
   | 'invalid-subject'
   | 'forbidden-claim'
   | 'invalid-entitlements';
 
-export class ConsumerTokenError extends Error {
-  readonly code: VerifyConsumerTokenErrorCode;
+export class ReaderStateError extends Error {
+  readonly code: VerifyReaderStateErrorCode;
 
-  constructor(code: VerifyConsumerTokenErrorCode, message: string) {
+  constructor(code: VerifyReaderStateErrorCode, message: string) {
     super(message);
-    this.name = 'ConsumerTokenError';
+    this.name = 'ReaderStateError';
     this.code = code;
   }
 }
 
-// Documented clock tolerance for receiving verifiers (see
-// docs/operations/consumer-tokens.md): small skew between the issuer and the
-// verifier clocks must not invalidate an otherwise valid snapshot.
-const DEFAULT_CLOCK_TOLERANCE_SECONDS = 60;
-
-// Claims that must never appear in an application-owned consumer token. They
-// would leak engine internals, session material or provider identifiers into
-// a bearer snapshot.
-const FORBIDDEN_CLAIMS = ['email', 'role', 'sessionId', 'sessionToken', 'password', 'providerId'];
+const ALLOWED_CLAIMS = new Set(['sub', 'iss', 'aud', 'iat', 'exp', 'entitlements']);
 
 function decodeSegment(segment: string): unknown {
-  const padded = segment.replace(/-/g, '+').replace(/_/g, '/');
-  const binary = atob(padded);
+  const binary = atob(segment.replace(/-/g, '+').replace(/_/g, '/'));
   const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index);
   return JSON.parse(new TextDecoder().decode(bytes)) as unknown;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
-  if (typeof value !== 'object' || value === null) {
-    return null;
-  }
-  return value as Record<string, unknown>;
+  return typeof value === 'object' && value !== null ? (value as Record<string, unknown>) : null;
 }
 
-function fail(code: VerifyConsumerTokenErrorCode, message: string): never {
-  throw new ConsumerTokenError(code, message);
+function fail(code: VerifyReaderStateErrorCode, message: string): never {
+  throw new ReaderStateError(code, message);
 }
 
-// Reads the key id from a compact JWS header without verifying anything.
-// Used only to select the cached verification key; the result never
-// authorizes anything on its own.
-export function readTokenKid(token: string): string | null {
+export function readReaderStateKid(readerState: string): string | null {
   try {
-    const segment = token.split('.')[0];
-    if (segment === undefined || segment.length === 0) {
-      return null;
-    }
-    const header = asRecord(decodeSegment(segment));
-    const kid = header?.kid;
-    return typeof kid === 'string' && kid.length > 0 ? kid : null;
+    const segment = readerState.split('.')[0];
+    if (segment === undefined || segment === '') return null;
+    const kid = asRecord(decodeSegment(segment))?.kid;
+    return typeof kid === 'string' && kid !== '' ? kid : null;
   } catch {
     return null;
   }
 }
 
-export async function verifyConsumerToken(
-  token: string,
+export async function verifyReaderState(
+  readerState: string,
   keys: readonly ConsumerJsonWebKey[],
-  input: VerifyConsumerTokenInput,
-): Promise<VerifiedConsumerSnapshot> {
-  const parts = token.split('.');
-  const headerSegment = parts[0];
-  const payloadSegment = parts[1];
-  const signatureSegment = parts[2];
+  input: VerifyReaderStateInput,
+): Promise<VerifiedReaderState> {
+  const parts = readerState.split('.');
+  const [headerSegment, payloadSegment, signatureSegment] = parts;
   if (
     parts.length !== 3 ||
     headerSegment === undefined ||
     payloadSegment === undefined ||
     signatureSegment === undefined ||
-    headerSegment.length === 0 ||
-    payloadSegment.length === 0 ||
-    signatureSegment.length === 0
+    headerSegment === '' ||
+    payloadSegment === '' ||
+    signatureSegment === ''
   ) {
-    fail('malformed-token', 'Rejected: malformed token.');
+    fail('malformed-reader-state', 'Rejected malformed Reader State.');
   }
-
-  let header: Record<string, unknown> | null = null;
-  let payload: Record<string, unknown> | null = null;
+  let header: Record<string, unknown> | null;
+  let payload: Record<string, unknown> | null;
   try {
     header = asRecord(decodeSegment(headerSegment));
     payload = asRecord(decodeSegment(payloadSegment));
   } catch {
-    fail('malformed-token', 'Rejected: malformed token.');
+    fail('malformed-reader-state', 'Rejected malformed Reader State.');
   }
   if (header === null || payload === null) {
-    fail('malformed-token', 'Rejected: malformed token.');
+    fail('malformed-reader-state', 'Rejected malformed Reader State.');
   }
-
-  // The algorithm is pinned before any key lookup or signature work so a
-  // header pinning a different algorithm is rejected even with a valid kid.
-  if (header.alg !== 'EdDSA') {
-    fail('unsupported-algorithm', 'Rejected: unexpected algorithm.');
-  }
+  if (header.alg !== 'EdDSA') fail('unsupported-algorithm', 'Rejected unexpected algorithm.');
   const kid = header.kid;
-  if (typeof kid !== 'string' || kid.length === 0) {
-    fail('unknown-key', 'Rejected: unknown key id.');
-  }
-  const key = keys.find((entry) => entry.kid === kid);
-  if (key === undefined) {
-    fail('unknown-key', 'Rejected: unknown key id.');
-  }
-
-  // `InstanceType<typeof CryptoKey>` names the WebCrypto key type without
-  // relying on a DOM lib type: the repository compiles without DOM globals.
+  if (typeof kid !== 'string' || kid === '') fail('unknown-key', 'Rejected unknown key.');
+  const key = keys.find((candidate) => candidate.kid === kid);
+  if (key === undefined) fail('unknown-key', 'Rejected unknown key.');
   const publicKey = await crypto.subtle
     .importKey('jwk', key as unknown as { kty: string }, { name: 'Ed25519' }, false, ['verify'])
     .catch(() => null);
-  if (publicKey === null) {
-    fail('unknown-key', 'Rejected: unknown key id.');
-  }
-
-  const signingInput = new TextEncoder().encode(`${headerSegment}.${payloadSegment}`);
+  if (publicKey === null) fail('unknown-key', 'Rejected unknown key.');
   let signature: Uint8Array;
   try {
-    const padded = signatureSegment.replace(/-/g, '+').replace(/_/g, '/');
-    const binary = atob(padded);
-    signature = new Uint8Array(binary.length);
-    for (let index = 0; index < binary.length; index += 1) {
-      signature[index] = binary.charCodeAt(index);
-    }
+    const binary = atob(signatureSegment.replace(/-/g, '+').replace(/_/g, '/'));
+    signature = Uint8Array.from(binary, (character) => character.charCodeAt(0));
   } catch {
-    fail('malformed-token', 'Rejected: malformed token.');
+    fail('malformed-reader-state', 'Rejected malformed Reader State.');
   }
   const authentic = await crypto.subtle.verify(
     { name: 'Ed25519' },
     publicKey,
     signature,
-    signingInput,
+    new TextEncoder().encode(`${headerSegment}.${payloadSegment}`),
   );
-  if (!authentic) {
-    fail('invalid-signature', 'Rejected: invalid signature.');
+  if (!authentic) fail('invalid-signature', 'Rejected invalid signature.');
+  if (payload.iss !== input.issuer) fail('invalid-issuer', 'Rejected unexpected issuer.');
+  if (payload.aud !== input.audience) fail('invalid-audience', 'Rejected unexpected audience.');
+  for (const claim of Object.keys(payload)) {
+    if (!ALLOWED_CLAIMS.has(claim)) fail('forbidden-claim', `Rejected forbidden claim ${claim}.`);
   }
-
-  if (payload.iss !== input.issuer) {
-    fail('invalid-issuer', 'Rejected: unexpected issuer.');
+  const now = input.nowSeconds ?? Math.floor(Date.now() / 1000);
+  const tolerance = input.clockToleranceSeconds ?? 0;
+  const issuedAt = payload.iat;
+  const expiresAt = payload.exp;
+  if (typeof issuedAt !== 'number' || !Number.isInteger(issuedAt) || issuedAt > now + tolerance) {
+    fail('invalid-issued-at', 'Rejected invalid issued-at time.');
   }
-  if (payload.aud !== input.audience) {
-    fail('invalid-audience', 'Rejected: unexpected audience.');
+  if (
+    typeof expiresAt !== 'number' ||
+    !Number.isInteger(expiresAt) ||
+    expiresAt <= now - tolerance ||
+    expiresAt <= issuedAt
+  ) {
+    fail('reader-state-expired', 'Rejected expired Reader State.');
   }
-
-  const nowSeconds = input.nowSeconds ?? Math.floor(Date.now() / 1000);
-  const tolerance = input.clockToleranceSeconds ?? DEFAULT_CLOCK_TOLERANCE_SECONDS;
-  const exp = payload.exp;
-  if (typeof exp !== 'number' || !Number.isInteger(exp) || exp <= nowSeconds - tolerance) {
-    fail('token-expired', 'Rejected: expired or missing exp.');
+  const subject = payload.sub;
+  if (typeof subject !== 'string' || subject === '') fail('invalid-subject', 'Rejected subject.');
+  if (!Array.isArray(payload.entitlements) || payload.entitlements.length !== 0) {
+    fail('invalid-entitlements', 'Rejected unexpected Entitlements.');
   }
-  const iat = payload.iat;
-  if (typeof iat !== 'number' || !Number.isInteger(iat) || iat > nowSeconds + tolerance) {
-    fail('invalid-issued-at', 'Rejected: invalid iat.');
-  }
-  if (exp <= iat) {
-    fail('token-expired', 'Rejected: expired or missing exp.');
-  }
-  const sub = payload.sub;
-  if (typeof sub !== 'string' || sub.length === 0) {
-    fail('invalid-subject', 'Rejected: missing sub.');
-  }
-  for (const forbidden of FORBIDDEN_CLAIMS) {
-    if (forbidden in payload) {
-      fail('forbidden-claim', `Rejected: forbidden claim ${forbidden}.`);
-    }
-  }
-  // This increment emits no paid rights: only the empty Entitlement list is
-  // acceptable. Nonempty entries are rejected rather than interpreted, so no
-  // premium or statistics right can be faked from browser state.
-  const entitlements = payload.entitlements;
-  if (!Array.isArray(entitlements) || entitlements.length !== 0) {
-    fail('invalid-entitlements', 'Rejected: unexpected entitlements.');
-  }
-
   return {
-    subject: sub,
+    subject,
     issuer: input.issuer,
     audience: input.audience,
-    issuedAt: iat,
-    expiresAt: exp,
+    issuedAt,
+    expiresAt,
     entitlements: [],
   };
 }

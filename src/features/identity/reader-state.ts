@@ -1,28 +1,28 @@
-// Application-owned consumer JWT configuration (spec #150, ADR-0013).
+// Application-owned Reader State configuration (spec #195, ADR-0013).
 // Issuer, audience and token lifetime resolve from the effective non-secret
 // configuration; malformed values fail closed and sandbox/production never
 // fall back to local defaults. Secrets never enter this boundary.
-export const MAX_CONSUMER_TOKEN_TTL_SECONDS = 900;
+export const MAX_READER_STATE_TTL_SECONDS = 900;
 
-export const DEFAULT_CONSUMER_TOKEN_TTL_SECONDS = 900;
+export const DEFAULT_READER_STATE_TTL_SECONDS = 900;
 
 // Deterministic local-only issuer/audience defaults. These constants are the
 // only fallback and apply exclusively to local/test contexts; they are never
 // derived from request or forwarded hosts.
-export const LOCAL_CONSUMER_TOKEN_ISSUER = 'https://local.user-service.internal';
+export const LOCAL_READER_STATE_ISSUER = 'https://local.user-service.internal';
 
-export const LOCAL_CONSUMER_TOKEN_AUDIENCE = 'user-service-local';
+export const LOCAL_READER_STATE_AUDIENCE = 'user-service-local-reader-state';
 
 const MAX_CLAIM_VALUE_LENGTH = 256;
 
-export interface ConsumerTokenConfigInput {
+export interface ReaderStateConfigInput {
   readonly environment?: string;
   readonly issuer?: string;
   readonly audience?: string;
   readonly ttlSeconds?: string;
 }
 
-export interface ConsumerTokenConfig {
+export interface ReaderStateConfig {
   readonly issuer: string;
   readonly audience: string;
   // Bounded token lifetime in seconds (1..900). The minted `exp` additionally
@@ -72,31 +72,31 @@ function hasControlChar(value: string): boolean {
 function parseTtlSeconds(value: string | undefined): number {
   const trimmed = (value ?? '').trim();
   if (trimmed.length === 0) {
-    return DEFAULT_CONSUMER_TOKEN_TTL_SECONDS;
+    return DEFAULT_READER_STATE_TTL_SECONDS;
   }
   if (!/^[0-9]+$/.test(trimmed)) {
     throw new Error(
-      'Configuration error: AUTH_JWT_TTL_SECONDS must be an integer number of seconds within 1..900.',
+      'Configuration error: AUTH_READER_STATE_TTL_SECONDS must be an integer number of seconds within 1..900.',
     );
   }
   const parsed = Number.parseInt(trimmed, 10);
-  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > MAX_CONSUMER_TOKEN_TTL_SECONDS) {
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > MAX_READER_STATE_TTL_SECONDS) {
     throw new Error(
-      'Configuration error: AUTH_JWT_TTL_SECONDS must be an integer number of seconds within 1..900.',
+      'Configuration error: AUTH_READER_STATE_TTL_SECONDS must be an integer number of seconds within 1..900.',
     );
   }
   return parsed;
 }
 
-// Resolves the consumer JWT configuration from effective non-secret values.
+// Resolves Reader State configuration from effective non-secret values.
 // Local/test contexts fall back to deterministic local-only defaults;
 // sandbox/production fail closed without explicit stable deployment values.
-export function resolveConsumerTokenConfig(input: ConsumerTokenConfigInput): ConsumerTokenConfig {
+export function resolveReaderStateConfig(input: ReaderStateConfigInput): ReaderStateConfig {
   const environment = (input.environment ?? 'local').trim().toLowerCase();
   const productionLike = isProductionLike(environment);
 
   const issuer = parseClaimValue('AUTH_JWT_ISSUER', input.issuer) ?? null;
-  const audience = parseClaimValue('AUTH_JWT_AUDIENCE', input.audience) ?? null;
+  const audience = parseClaimValue('AUTH_READER_STATE_AUDIENCE', input.audience) ?? null;
 
   if (issuer === null && productionLike) {
     throw new Error(
@@ -105,13 +105,13 @@ export function resolveConsumerTokenConfig(input: ConsumerTokenConfigInput): Con
   }
   if (audience === null && productionLike) {
     throw new Error(
-      'Configuration error: AUTH_JWT_AUDIENCE must be an explicit stable deployment value in sandbox/production.',
+      'Configuration error: AUTH_READER_STATE_AUDIENCE must be an explicit stable deployment value in sandbox/production.',
     );
   }
 
   return {
-    issuer: issuer ?? LOCAL_CONSUMER_TOKEN_ISSUER,
-    audience: audience ?? LOCAL_CONSUMER_TOKEN_AUDIENCE,
+    issuer: issuer ?? LOCAL_READER_STATE_ISSUER,
+    audience: audience ?? LOCAL_READER_STATE_AUDIENCE,
     ttlSeconds: parseTtlSeconds(input.ttlSeconds),
   };
 }
@@ -120,8 +120,8 @@ export function resolveConsumerTokenConfig(input: ConsumerTokenConfigInput): Con
 // Used only to report the expiry of a token this service just minted in the
 // issuance response; verification of received tokens always goes through the
 // public JWKS. Returns null for malformed tokens or non-integer exp claims.
-export function extractTokenExpiry(token: string): number | null {
-  const parts = token.split('.');
+export function extractReaderStateExpiry(readerState: string): number | null {
+  const parts = readerState.split('.');
   if (parts.length !== 3) {
     return null;
   }
@@ -154,7 +154,7 @@ function decodeBase64Url(segment: string): Uint8Array {
   return bytes;
 }
 
-export interface CapTokenExpiryInput {
+export interface CapReaderStateExpiryInput {
   readonly nowSeconds: number;
   readonly ttlSeconds: number;
   // Authoritative renewal-session expiry as integer Unix seconds.
@@ -165,6 +165,6 @@ export interface CapTokenExpiryInput {
 // token can never outlive the session it was renewed from. With the pinned
 // engine's sliding sessions a live session normally outlives the token; this
 // cap is the backstop for short-lived or non-sliding session configurations.
-export function capTokenExpirySeconds(input: CapTokenExpiryInput): number {
+export function capReaderStateExpirySeconds(input: CapReaderStateExpiryInput): number {
   return Math.min(input.nowSeconds + input.ttlSeconds, input.sessionExpirySeconds);
 }

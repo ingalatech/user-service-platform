@@ -17,7 +17,7 @@ const pause = (ms: number): Promise<void> => new Promise((done) => setTimeout(do
 // lifetime is unchanged; the fixture uses a short TTL plus stored-expiry
 // manipulation instead of long real waits.
 const FIXTURE_ISSUER = 'https://consumer-fixture.example';
-const FIXTURE_AUDIENCE = 'consumer-fixture-web';
+const FIXTURE_AUDIENCE = 'consumer-fixture-reader-state';
 const FIXTURE_TTL_SECONDS = '120';
 // Two separate real document URLs on the Worker origin. These service-owned
 // fallback pages need no frontend build and make no requests without a query
@@ -100,7 +100,7 @@ function createTracker() {
       page.on('request', (request) => {
         const pathname = new URL(request.url()).pathname;
         if (pathname === '/v1/me') me += 1;
-        else if (pathname === '/v1/auth/token') token += 1;
+        else if (pathname === '/v1/auth/reader-state') token += 1;
         else if (pathname === '/v1/auth/jwks') jwks += 1;
       });
     },
@@ -134,7 +134,7 @@ const ENSURE_CLIENT = `
     nowSeconds: () => Math.floor(Date.now() / 1000) + (window.__clockOffset ?? 0),
     fetchImpl: async (request, init) => {
       const response = await fetch(request, init);
-      if (new URL(request.url).pathname === '/v1/auth/token' && response.ok) window.__clockOffset = 0;
+       if (new URL(request.url).pathname === '/v1/auth/reader-state' && response.ok) window.__clockOffset = 0;
       return response;
     },
   });
@@ -168,7 +168,7 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 }
 
 // Real shipped-client + real built Worker/D1 browser fixture. Two document
-// URLs exercise actual sessionStorage across full navigations and reloads;
+// URLs exercise actual localStorage across full navigations, reloads and tabs;
 // every identity/token/renewal call is observed, never mocked. Fixture-only
 // mail capture uses the public AuthMailer injection seam in a temporary
 // Worker entrypoint. Registration, verification and login use the real API;
@@ -218,7 +218,7 @@ export default {
         )
         .replace(
           '"ENVIRONMENT": "local",',
-          `"ENVIRONMENT": "local",\n    "AUTH_JWT_ISSUER": ${JSON.stringify(FIXTURE_ISSUER)},\n    "AUTH_JWT_AUDIENCE": ${JSON.stringify(FIXTURE_AUDIENCE)},\n    "AUTH_JWT_TTL_SECONDS": ${JSON.stringify(FIXTURE_TTL_SECONDS)},`,
+          `"ENVIRONMENT": "local",\n    "AUTH_JWT_ISSUER": ${JSON.stringify(FIXTURE_ISSUER)},\n    "AUTH_READER_STATE_AUDIENCE": ${JSON.stringify(FIXTURE_AUDIENCE)},\n    "AUTH_READER_STATE_TTL_SECONDS": ${JSON.stringify(FIXTURE_TTL_SECONDS)},`,
         ),
     );
     const cli = join(root, 'node_modules/wrangler/bin/wrangler.js');
@@ -337,10 +337,11 @@ export default {
       outcomeOf(`client.login({ email: '${email}', password: '${password}' })`),
     );
     const loginRecord = asRecord(asRecord(loggedIn)?.value);
-    assert(asRecord(loggedIn)?.ok === true, 'login obtains the JWT snapshot');
-    assert(loginRecord !== null, 'login returns an identity snapshot');
-    assert(loginRecord.email === email, 'shared identity snapshot');
-    assert(typeof loginRecord.expiresAt === 'number', 'snapshot carries token expiry');
+    assert(asRecord(loggedIn)?.ok === true, 'login obtains Reader State');
+    assert(loginRecord !== null, 'login returns presentation state');
+    assert(typeof loginRecord.subject === 'string', 'Reader State carries an opaque subject');
+    assert(loginRecord.sessionStatus === 'authenticated', 'login confirms the live session');
+    assert(typeof loginRecord.expiresAt === 'number', 'Reader State carries expiry');
 
     phase = 'valid-token navigation performs zero identity calls';
     tracker.reset();
@@ -349,8 +350,8 @@ export default {
     const navigated = await browserJson(page, outcomeOf('client.getSnapshot()'));
     assert(asRecord(navigated)?.ok === true, 'snapshot resolves after navigation');
     assert(
-      (asRecord(asRecord(navigated)?.value)?.email as string) === email,
-      'same user after navigation',
+      (asRecord(asRecord(navigated)?.value)?.subject as string) === loginRecord.subject,
+      'same presentation subject after navigation',
     );
     assert(
       tracker.snapshot().me === 0 && tracker.snapshot().token === 0,
@@ -383,8 +384,8 @@ export default {
       page,
       outcomeOf(`
         (() => {
-          const key = ConsumerClient.tokenStorageKey({ service: window.location.origin, issuer: window.__cfg.issuer, audience: window.__cfg.audience });
-          const stored = JSON.parse(window.sessionStorage.getItem(key));
+           const key = ConsumerClient.readerStateStorageKey({ service: window.location.origin, issuer: window.__cfg.issuer, audience: window.__cfg.audience });
+           const stored = JSON.parse(window.localStorage.getItem(key));
           window.__clockOffset = stored.expiresAt - Math.floor(Date.now() / 1000) + 1;
           return stored.expiresAt;
         })()
@@ -407,20 +408,20 @@ export default {
       page,
       outcomeOf(`
         (() => {
-          const key = ConsumerClient.tokenStorageKey({ service: window.location.origin, issuer: window.__cfg.issuer, audience: window.__cfg.audience });
-          const stored = JSON.parse(window.sessionStorage.getItem(key));
-          stored.accessToken = stored.accessToken.slice(0, -4) + 'AAAA';
-          window.sessionStorage.setItem(key, JSON.stringify(stored));
-          return stored.accessToken.length;
+           const key = ConsumerClient.readerStateStorageKey({ service: window.location.origin, issuer: window.__cfg.issuer, audience: window.__cfg.audience });
+           const stored = JSON.parse(window.localStorage.getItem(key));
+           stored.readerState = stored.readerState.slice(0, -4) + 'AAAA';
+           window.localStorage.setItem(key, JSON.stringify(stored));
+           return stored.readerState.length;
         })()
       `),
     );
     const tampered = await browserJson(page, outcomeOf('client.getSnapshot()'));
     assert(
       asRecord(tampered)?.ok === true && asRecord(tampered)?.value === null,
-      'tampered token resolves anonymous',
+      'tampered Reader State is discarded',
     );
-    assert(tracker.snapshot().token === 0, 'no renewal for invalid credentials');
+    assert(tracker.snapshot().token === 0, 'no renewal for invalid Reader State');
 
     phase = 'second user replaces previous state';
     const otherEmail = 'fixture-second@example.com';
@@ -436,9 +437,10 @@ export default {
       page,
       outcomeOf(`client.login({ email: '${otherEmail}', password: '${password}' })`),
     );
+    assert(asRecord(otherLogin)?.ok === true, 'later login replaces Reader State');
     assert(
-      (asRecord(asRecord(otherLogin)?.value)?.email as string) === otherEmail,
-      'later login replaces state',
+      asRecord(asRecord(otherLogin)?.value)?.subject !== loginRecord.subject,
+      'replacement carries the new opaque subject',
     );
 
     phase = 'lost renewal session clears expired authentication';
@@ -447,8 +449,8 @@ export default {
       page,
       outcomeOf(`
         (() => {
-          const key = ConsumerClient.tokenStorageKey({ service: window.location.origin, issuer: window.__cfg.issuer, audience: window.__cfg.audience });
-          const stored = JSON.parse(window.sessionStorage.getItem(key));
+           const key = ConsumerClient.readerStateStorageKey({ service: window.location.origin, issuer: window.__cfg.issuer, audience: window.__cfg.audience });
+           const stored = JSON.parse(window.localStorage.getItem(key));
           window.__clockOffset = stored.expiresAt - Math.floor(Date.now() / 1000) + 1;
           return true;
         })()
@@ -465,8 +467,8 @@ export default {
       page,
       outcomeOf(`
         (() => {
-          const key = ConsumerClient.tokenStorageKey({ service: window.location.origin, issuer: window.__cfg.issuer, audience: window.__cfg.audience });
-          return window.sessionStorage.getItem(key);
+           const key = ConsumerClient.readerStateStorageKey({ service: window.location.origin, issuer: window.__cfg.issuer, audience: window.__cfg.audience });
+           return window.localStorage.getItem(key);
         })()
       `),
     );
@@ -487,14 +489,14 @@ export default {
       page,
       outcomeOf(`
         (() => {
-          const key = ConsumerClient.tokenStorageKey({ service: window.location.origin, issuer: window.__cfg.issuer, audience: window.__cfg.audience });
-          const stored = JSON.parse(window.sessionStorage.getItem(key));
+           const key = ConsumerClient.readerStateStorageKey({ service: window.location.origin, issuer: window.__cfg.issuer, audience: window.__cfg.audience });
+           const stored = JSON.parse(window.localStorage.getItem(key));
           window.__clockOffset = stored.expiresAt - Math.floor(Date.now() / 1000) + 1;
           return true;
         })()
       `),
     );
-    await page.route('**/v1/auth/token', (route) =>
+    await page.route('**/v1/auth/reader-state', (route) =>
       route.fulfill({
         status: 500,
         contentType: 'application/problem+json',
@@ -504,12 +506,12 @@ export default {
     const outage = await browserJson(page, outcomeOf('client.getSnapshot()'));
     assert(asRecord(outage)?.ok === false, 'service failure surfaces');
     assert(asRecord(outage)?.code === 'service-unavailable', 'stable unavailable code');
-    await page.unroute('**/v1/auth/token');
-    await page.route('**/v1/auth/token', (route) => route.abort());
+    await page.unroute('**/v1/auth/reader-state');
+    await page.route('**/v1/auth/reader-state', (route) => route.abort());
     const offline = await browserJson(page, outcomeOf('client.getSnapshot()'));
     assert(asRecord(offline)?.ok === false, 'network failure surfaces');
     assert(asRecord(offline)?.code === 'network-unavailable', 'stable network code');
-    await page.unroute('**/v1/auth/token');
+    await page.unroute('**/v1/auth/reader-state');
 
     phase = 'separate deployment stays isolated';
     tracker.reset();
@@ -532,21 +534,28 @@ export default {
       'no probing for unrelated deployments',
     );
 
-    phase = 'logout propagates credential-free to the second tab';
+    phase = 'Reader State restores and logout propagates credential-free to the second tab';
     const second = await context.newPage();
     const secondTracker = createTracker();
     secondTracker.watch(second);
     await second.goto(`${base}${DOC_A}`);
     await installClient(second, bundle);
-    const secondLogin = await browserJson(
-      second,
-      outcomeOf(`client.login({ email: '${otherEmail}', password: '${password}' })`),
+    const restoredSecondTab = await browserJson(second, outcomeOf('client.getSnapshot()'));
+    assert(asRecord(restoredSecondTab)?.ok === true, 'second tab restores Reader State');
+    assert(
+      asRecord(asRecord(restoredSecondTab)?.value)?.sessionStatus === 'unknown',
+      'restored Reader State does not claim a live session',
     );
-    assert(asRecord(secondLogin)?.ok === true, 'second tab holds its own credentials');
+    assert(
+      secondTracker.snapshot().me === 0 &&
+        secondTracker.snapshot().token === 0 &&
+        secondTracker.snapshot().jwks === 0,
+      'second tab restoration performs zero Identity calls',
+    );
     secondTracker.reset();
     await browserJson(
       second,
-      'client.observeLogout(() => { window.__consumerLoggedOut = true; }); return null;',
+      'client.observeReaderState((state) => { if (state === null) window.__consumerLoggedOut = true; }); return null;',
     );
     await browserJson(page, outcomeOf('client.logout()'));
     await second.waitForFunction('window.__consumerLoggedOut === true');

@@ -19,7 +19,7 @@ export type {
   AdminUserListQuery,
   ConsumerJwksResponse,
   ConsumerJsonWebKey,
-  ConsumerTokenResponse,
+  ReaderStateResponse,
   CurrentUser,
   LoginRequest,
   LoginResult,
@@ -65,26 +65,27 @@ export { resolveSessionContext, toAuthenticatedUser, toSessionContext } from './
 // `./consumer-client/index.js`; it depends only on generated contracts and
 // `openapi-fetch`, never on server internals.
 export {
-  createBrowserLogoutBroadcast,
+  createBrowserReaderStateBroadcast,
   createConsumerClient,
-  createMemoryLogoutBroadcast,
+  createMemoryReaderStateBroadcast,
   ConsumerClientError,
+  type AuthoritativeSessionStatus,
   type ConsumerClient,
   type ConsumerClientOptions,
-  type ConsumerIdentitySnapshot,
   type ConsumerLoginInput,
+  type ConsumerReaderState,
   type ConsumerRegisterInput,
-  type LogoutBroadcast,
+  type ReaderStateBroadcast,
 } from './consumer-client/index.js';
 export { createJwksCache, type JwksCache, type JwksCacheInput } from './consumer-client/index.js';
 export {
-  ConsumerTokenError,
-  verifyConsumerToken,
+  ReaderStateError,
+  verifyReaderState,
   // The client verification key mirrors the public contract key without
   // importing server (Zod/Hono) types into the independently importable
   // client boundary; the alias keeps the two representations distinct.
   type ConsumerJsonWebKey as ConsumerVerificationKey,
-  type VerifiedConsumerSnapshot,
-  type VerifyConsumerTokenErrorCode,
-  type VerifyConsumerTokenInput,
+  type VerifiedReaderState,
+  type VerifyReaderStateErrorCode,
+  type VerifyReaderStateInput,
 } from './consumer-client/index.js';

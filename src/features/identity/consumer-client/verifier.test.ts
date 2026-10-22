@@ -1,8 +1,8 @@
 import { beforeAll, describe, expect, it } from 'vitest';
-import { verifyConsumerToken, type ConsumerJsonWebKey } from './verifier.js';
+import { verifyReaderState as verifyConsumerToken, type ConsumerJsonWebKey } from './verifier.js';
 
 // Seam under test (spec #150, ADR-0013, ticket #152): the application-owned
-// consumer JWT verifier. These tests prove signature, algorithm, issuer,
+// Reader State verifier. These tests prove signature, algorithm, issuer,
 // audience, integer time bounds and the explicit claims allowlist against
 // real Ed25519 cryptography — the same checks the shipped browser client and
 // the documented backend verifier apply before accepting persisted
@@ -92,7 +92,7 @@ beforeAll(async () => {
   other = await generateKey('other-key');
 });
 
-describe('verifyConsumerToken', () => {
+describe('verifyReaderState', () => {
   it('accepts a correctly signed token with the expected claims', async () => {
     const token = await mintToken({ key: primary, payload: validPayload() });
 
@@ -191,7 +191,7 @@ describe('verifyConsumerToken', () => {
         audience: AUDIENCE,
         nowSeconds: NOW,
       }),
-    ).rejects.toMatchObject({ code: 'token-expired' });
+    ).rejects.toMatchObject({ code: 'reader-state-expired' });
 
     const futureIat = await mintToken({
       key: primary,
@@ -217,7 +217,7 @@ describe('verifyConsumerToken', () => {
         audience: AUDIENCE,
         nowSeconds: NOW,
       }),
-    ).rejects.toMatchObject({ code: 'token-expired' });
+    ).rejects.toMatchObject({ code: 'reader-state-expired' });
   });
 
   it('rejects forbidden claims and nonempty entitlements without faking rights', async () => {
@@ -253,7 +253,7 @@ describe('verifyConsumerToken', () => {
         audience: AUDIENCE,
         nowSeconds: NOW,
       }),
-    ).rejects.toMatchObject({ code: 'malformed-token' });
+    ).rejects.toMatchObject({ code: 'malformed-reader-state' });
   });
 
   it('never exposes the raw token in the rejection', async () => {

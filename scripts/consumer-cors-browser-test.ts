@@ -336,12 +336,12 @@ export default {
       const me = await fetch(service + '/v1/me', { credentials: 'include' });
       const meStatus = me.status;
       const meBody = meStatus === 200 ? await me.json() : null;
-      const token = await fetch(service + '/v1/auth/token', {
+      const token = await fetch(service + '/v1/auth/reader-state', {
         method: 'POST', credentials: 'include', headers: json, body: '{}'
       });
       const tokenStatus = token.status;
       const tokenBody = tokenStatus === 200 ? await token.json() : null;
-      const renewed = await fetch(service + '/v1/auth/token', {
+      const renewed = await fetch(service + '/v1/auth/reader-state', {
         method: 'POST', credentials: 'include', headers: json, body: '{}'
       });
       const renewStatus = renewed.status;
@@ -352,9 +352,9 @@ export default {
         loginStatus, meStatus,
         meEmail: meBody && typeof meBody.email === 'string' ? meBody.email : null,
         tokenStatus,
-        hasToken: !!(tokenBody && typeof tokenBody.accessToken === 'string'),
+        hasToken: !!(tokenBody && typeof tokenBody.readerState === 'string'),
         renewStatus,
-        hasRenewedToken: !!(renewBody && typeof renewBody.accessToken === 'string'),
+        hasRenewedToken: !!(renewBody && typeof renewBody.readerState === 'string'),
         jwksStatus,
         hasScriptReadableSessionCookie: document.cookie.includes('session_token')
       };
@@ -365,10 +365,10 @@ export default {
     );
     assert(authenticated.meStatus === 200, 'credentialed /v1/me resolves the session');
     assert(authenticated.meEmail === email, 'resolved identity matches the fixture');
-    assert(authenticated.tokenStatus === 200 && authenticated.hasToken, 'access token issued');
+    assert(authenticated.tokenStatus === 200 && authenticated.hasToken, 'Reader State issued');
     assert(
       authenticated.renewStatus === 200 && authenticated.hasRenewedToken,
-      'access token renewed with the same live session',
+      'Reader State refreshed with the same live session',
     );
     assert(authenticated.jwksStatus === 200, 'public JWKS readable across origins');
     assert(
@@ -399,7 +399,7 @@ export default {
         method: 'POST', credentials: 'include', headers: json, body: '{}'
       });
       const signOutStatus = signOut.status;
-      const tokenAfter = await fetch(service + '/v1/auth/token', {
+      const tokenAfter = await fetch(service + '/v1/auth/reader-state', {
         method: 'POST', credentials: 'include', headers: json, body: '{}'
       });
       return { signOutStatus, tokenAfterStatus: tokenAfter.status };
@@ -437,7 +437,7 @@ export default {
 
     await context.close();
     console.log(
-      'Consumer CORS browser acceptance passed: direct credentialed register/verify/login/me/token/renew/jwks/sign-out across distinct same-site origins, host-only service cookie, hostile-origin rejection.',
+      'Consumer CORS browser acceptance passed: direct credentialed register/verify/login/me/Reader-State refresh/jwks/sign-out across distinct same-site origins, host-only service cookie, hostile-origin rejection.',
     );
   } catch (cause) {
     if (diagnosticPage !== undefined && !diagnosticPage.isClosed()) {
