@@ -522,9 +522,20 @@ export function createConsumerClient(options: ConsumerClientOptions): ConsumerCl
     )
       return;
     if (authMutationVersion !== undefined) latestAuthMutationVersion = authMutationVersion;
-    generation += 1;
-    sessionStatus = 'unknown';
-    if (change === 'logout') clearStoredReaderState(store, scope);
+    if (change === 'logout') {
+      try {
+        clear('anonymous');
+      } catch {
+        // The clear wrapper maps storage errors to unsupported-browser. A
+        // storage event has no caller to reject, so contain that stable error
+        // instead of leaking the browser exception through event dispatch.
+        for (const observer of observers) observer(null);
+        return;
+      }
+    } else {
+      generation += 1;
+      sessionStatus = 'unknown';
+    }
     void read()
       .then((state) => {
         for (const observer of observers) observer(state);
@@ -577,6 +588,7 @@ export function createConsumerClient(options: ConsumerClientOptions): ConsumerCl
         clear('anonymous');
         for (const observer of observers) observer(null);
         broadcast?.notify('logout', source, authMutationVersion);
+        let revocationError: ConsumerClientError | undefined;
         try {
           try {
             const response = await api.POST('/v1/auth/sign-out', {
@@ -593,11 +605,23 @@ export function createConsumerClient(options: ConsumerClientOptions): ConsumerCl
             if (error instanceof ConsumerClientError) throw error;
             throw new ConsumerClientError('logout-failed', 'Server sign-out failed.');
           }
-        } finally {
-          clear('anonymous');
-          for (const observer of observers) observer(null);
-          broadcast?.notify('logout', source, authMutationVersion);
+        } catch (error) {
+          revocationError =
+            error instanceof ConsumerClientError
+              ? error
+              : new ConsumerClientError('logout-failed', 'Server sign-out failed.');
         }
+
+        let cleanupError: ConsumerClientError | undefined;
+        try {
+          clear('anonymous');
+        } catch (error) {
+          cleanupError = error instanceof ConsumerClientError ? error : unsupportedBrowser();
+        }
+        for (const observer of observers) observer(null);
+        broadcast?.notify('logout', source, authMutationVersion);
+        if (revocationError !== undefined) throw revocationError;
+        if (cleanupError !== undefined) throw cleanupError;
       });
     },
     register: async (input) => {

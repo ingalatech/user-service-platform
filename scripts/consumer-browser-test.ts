@@ -1034,6 +1034,46 @@ export default {
       asRecord(asRecord(unsupportedOutcomes)?.runtimeLogout)?.code === 'unsupported-browser',
       'runtime localStorage clear failure has stable unsupported-browser code',
     );
+
+    phase = 'cross-tab logout storage failure stays contained';
+    await browserJson(
+      page,
+      outcomeOf(`client.login({ email: '${otherEmail}', password: '${password}' })`),
+    );
+    await browserJson(
+      unsupported,
+      `
+        window.__crossTabErrors = [];
+        window.addEventListener('error', (event) => window.__crossTabErrors.push(event.message));
+        window.addEventListener('unhandledrejection', (event) => window.__crossTabErrors.push(String(event.reason)));
+        const failingStore = {
+          getItem: () => null,
+          setItem: () => undefined,
+          removeItem: () => { throw new Error('storage denied'); },
+        };
+        window.__crossTabStates = [];
+        window.__crossTabClient = ConsumerClient.createConsumerClient({
+          baseUrl: window.location.origin,
+          issuer: window.__cfg.issuer,
+          audience: window.__cfg.audience,
+          readerStateStore: failingStore,
+        });
+        window.__crossTabClient.observeReaderState((state) => window.__crossTabStates.push(state));
+        return null;
+      `,
+    );
+    await browserJson(page, outcomeOf('client.logout()'));
+    await unsupported.waitForFunction('window.__crossTabStates.length > 0');
+    const crossTabFailure = await browserJson(
+      unsupported,
+      'return { state: window.__crossTabStates.at(-1) ?? null, errors: window.__crossTabErrors };',
+    );
+    assert(
+      asRecord(crossTabFailure)?.state === null &&
+        Array.isArray(asRecord(crossTabFailure)?.errors) &&
+        (asRecord(crossTabFailure)?.errors as unknown[]).length === 0,
+      'cross-tab storage failure is handled as unsupported-browser without an event error',
+    );
     await unsupported.close();
 
     await second.close();

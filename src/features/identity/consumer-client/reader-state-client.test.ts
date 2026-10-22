@@ -343,6 +343,108 @@ describe('Reader State consumer client', () => {
     await expect(client.logout()).rejects.toMatchObject({ code: 'unsupported-browser' });
   });
 
+  it('keeps failed server revocation visible when final storage cleanup fails', async () => {
+    const localStore = memoryStorage();
+    const network = transport();
+    let failClear = false;
+    const storage: KeyValueStorage = {
+      getItem: (key) => localStore.getItem(key),
+      setItem: (key, value) => {
+        localStore.setItem(key, value);
+      },
+      removeItem: (key) => {
+        if (failClear) throw new Error('storage denied');
+        localStore.removeItem(key);
+      },
+    };
+    let signOutStatus = 500;
+    const client = createConsumerClient({
+      baseUrl: scope.service,
+      issuer: scope.issuer,
+      audience: scope.audience,
+      readerStateStore: storage,
+      broadcast: null,
+      fetchImpl: (input) => {
+        if (new URL((input as Request).url).pathname === '/v1/auth/sign-out') {
+          failClear = true;
+          return Promise.resolve(new Response(null, { status: signOutStatus }));
+        }
+        return network.fetchImpl(input);
+      },
+    });
+
+    await expect(client.logout()).rejects.toMatchObject({ code: 'logout-failed' });
+
+    failClear = false;
+    signOutStatus = 204;
+    await expect(client.logout()).rejects.toMatchObject({ code: 'unsupported-browser' });
+  });
+
+  it('does not throw raw storage errors from a cross-tab logout event', () => {
+    const listeners = new Set<(event: { key: string | null; newValue: string | null }) => void>();
+    const values = new Map<string, string>();
+    const browserStorage: KeyValueStorage = {
+      getItem: (key) => values.get(key) ?? null,
+      setItem: (key, value) => {
+        values.set(key, value);
+        for (const listener of listeners) listener({ key, newValue: value });
+      },
+      removeItem: () => {
+        throw new Error('storage denied');
+      },
+    };
+    const originalStorage = Object.getOwnPropertyDescriptor(globalThis, 'localStorage');
+    const originalWindow = Object.getOwnPropertyDescriptor(globalThis, 'window');
+    Object.defineProperty(globalThis, 'localStorage', {
+      configurable: true,
+      value: browserStorage,
+    });
+    Object.defineProperty(globalThis, 'window', {
+      configurable: true,
+      value: {
+        addEventListener: (
+          type: string,
+          listener: (event: { key: string | null; newValue: string | null }) => void,
+        ) => {
+          if (type === 'storage') listeners.add(listener);
+        },
+        removeEventListener: (
+          type: string,
+          listener: (event: { key: string | null; newValue: string | null }) => void,
+        ) => {
+          if (type === 'storage') listeners.delete(listener);
+        },
+      },
+    });
+
+    try {
+      const observed: (string | null)[] = [];
+      const receiver = createConsumerClient({
+        baseUrl: scope.service,
+        issuer: scope.issuer,
+        audience: scope.audience,
+        readerStateStore: browserStorage,
+        broadcast: createBrowserReaderStateBroadcast(scope),
+        fetchImpl: () => Promise.reject(new Error('event must not fetch')),
+      });
+      receiver.observeReaderState((state) => {
+        observed.push(state?.subject ?? null);
+      });
+      const sender = createBrowserReaderStateBroadcast(scope);
+
+      expect(() => {
+        sender.notify('logout', 'other-tab', 1);
+      }).not.toThrow();
+      expect(observed).toEqual([null]);
+    } finally {
+      if (originalStorage === undefined)
+        delete (globalThis as Record<string, unknown>).localStorage;
+      else Object.defineProperty(globalThis, 'localStorage', originalStorage);
+      if (originalWindow === undefined) delete (globalThis as Record<string, unknown>).window;
+      else Object.defineProperty(globalThis, 'window', originalWindow);
+    }
+  });
+
   it('lets a newer cross-tab replacement supersede delayed login and refresh work', async () => {
     const network = transport();
     const localStore = memoryStorage();
