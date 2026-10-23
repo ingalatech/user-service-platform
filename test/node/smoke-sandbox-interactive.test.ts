@@ -16,6 +16,13 @@ const email = 'qa@example.test';
 const password = 'not-printed-password';
 const token = 'not-printed-token';
 
+function testEnvironmentFile() {
+  return {
+    ...loadEnvironmentFile(environmentFilePath('.', 'sandbox')),
+    AUTH_MAIL_ALLOWLIST: email,
+  };
+}
+
 function jsonResponse(status: number, body: unknown, headers?: Record<string, string>): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -128,7 +135,7 @@ afterEach(() => {
 
 describe('interactive sandbox smoke', () => {
   it('selects an allowlisted recipient, hides prompts, continues token verification, and redacts output', async () => {
-    const environmentFile = loadEnvironmentFile(environmentFilePath('.', 'sandbox'));
+    const environmentFile = testEnvironmentFile();
     const smokeEmail = environmentFile.AUTH_MAIL_ALLOWLIST.split(',')[0]?.trim() ?? email;
     const prompt = prompts(1, [password, token]);
     const output: string[] = [];
@@ -143,7 +150,7 @@ describe('interactive sandbox smoke', () => {
       fetchImpl: fullWorkflowFetch(undefined, requests),
     });
 
-    expect(prompt.chooseRecipient).toHaveBeenCalledWith(3);
+    expect(prompt.chooseRecipient).toHaveBeenCalledWith(1);
     expect(prompt.readHidden).toHaveBeenCalledTimes(2);
     expect(requests.map(({ request }) => request)).toEqual([
       'GET /v1/health',
@@ -182,7 +189,7 @@ describe('interactive sandbox smoke', () => {
   });
 
   it('runs the authenticated Reader State and logout lifecycle for an already-verified exact recipient', async () => {
-    const environmentFile = loadEnvironmentFile(environmentFilePath('.', 'sandbox'));
+    const environmentFile = testEnvironmentFile();
     const smokeEmail = environmentFile.AUTH_MAIL_ALLOWLIST.split(',')[0]?.trim() ?? email;
     const prompt = prompts(1, [password]);
     const requests: { readonly request: string; readonly cookie: string | null }[] = [];
@@ -320,7 +327,7 @@ describe('interactive sandbox smoke', () => {
     [{ readerState: 'header.payload.signature', expiresAt: 0 }],
     [{ readerState: 'header.payload.signature' }],
   ])('fails closed when Reader State response shape is invalid: %j', async (readerState) => {
-    const environmentFile = loadEnvironmentFile(environmentFilePath('.', 'sandbox'));
+    const environmentFile = testEnvironmentFile();
     await expect(
       runInteractiveSandboxSmoke({
         environmentFile,
@@ -340,14 +347,14 @@ describe('interactive sandbox smoke', () => {
 
     await expect(
       runInteractiveSandboxSmoke({
-        environmentFile: loadEnvironmentFile(environmentFilePath('.', 'sandbox')),
+        environmentFile: testEnvironmentFile(),
         prompts: nonInteractive,
         fetchImpl,
       }),
     ).rejects.toThrow(/requires a TTY/);
     await expect(
       runInteractiveSandboxSmoke({
-        environmentFile: loadEnvironmentFile(environmentFilePath('.', 'sandbox')),
+        environmentFile: testEnvironmentFile(),
         prompts: prompts(undefined, []),
         fetchImpl,
       }),
@@ -360,7 +367,7 @@ describe('interactive sandbox smoke', () => {
 
     await expect(
       runInteractiveSandboxSmoke({
-        environmentFile: loadEnvironmentFile(environmentFilePath('.', 'sandbox')),
+        environmentFile: testEnvironmentFile(),
         prompts: prompt,
         fetchImpl: vi.fn<typeof fetch>(),
       }),
@@ -379,7 +386,7 @@ describe('interactive sandbox smoke', () => {
 
     await expect(
       runInteractiveSandboxSmoke({
-        environmentFile: loadEnvironmentFile(environmentFilePath('.', 'sandbox')),
+        environmentFile: testEnvironmentFile(),
         prompts: prompt,
         fetchImpl,
       }),

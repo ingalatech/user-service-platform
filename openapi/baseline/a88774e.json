@@ -12,9 +12,7 @@
         "properties": {
           "status": {
             "type": "string",
-            "enum": [
-              "ok"
-            ],
+            "enum": ["ok"],
             "example": "ok"
           },
           "service": {
@@ -31,12 +29,7 @@
             "example": "2026-09-10T00:00:00.000Z"
           }
         },
-        "required": [
-          "status",
-          "service",
-          "version",
-          "now"
-        ]
+        "required": ["status", "service", "version", "now"]
       },
       "ProblemDetails": {
         "type": "object",
@@ -66,12 +59,7 @@
             "example": "/v1/does-not-exist"
           }
         },
-        "required": [
-          "type",
-          "title",
-          "status",
-          "code"
-        ]
+        "required": ["type", "title", "status", "code"]
       },
       "RegisteredUser": {
         "type": "object",
@@ -91,11 +79,7 @@
             "example": false
           }
         },
-        "required": [
-          "id",
-          "email",
-          "emailVerified"
-        ]
+        "required": ["id", "email", "emailVerified"]
       },
       "RegisterRequest": {
         "type": "object",
@@ -104,6 +88,7 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 200,
+            "pattern": "\\S",
             "example": "Ada Lovelace"
           },
           "email": {
@@ -119,11 +104,7 @@
             "example": "correct-horse-41"
           }
         },
-        "required": [
-          "name",
-          "email",
-          "password"
-        ]
+        "required": ["email", "password"]
       },
       "LoginResult": {
         "type": "object",
@@ -143,11 +124,7 @@
             "example": true
           }
         },
-        "required": [
-          "id",
-          "email",
-          "emailVerified"
-        ]
+        "required": ["id", "email", "emailVerified"]
       },
       "LoginRequest": {
         "type": "object",
@@ -165,25 +142,18 @@
             "example": "correct-horse-41"
           }
         },
-        "required": [
-          "email",
-          "password"
-        ]
+        "required": ["email", "password"]
       },
       "VerifyEmailResult": {
         "type": "object",
         "properties": {
           "emailVerified": {
             "type": "boolean",
-            "enum": [
-              true
-            ],
+            "enum": [true],
             "example": true
           }
         },
-        "required": [
-          "emailVerified"
-        ]
+        "required": ["emailVerified"]
       },
       "VerifyEmailRequest": {
         "type": "object",
@@ -195,24 +165,18 @@
             "description": "Verification token from the action URL."
           }
         },
-        "required": [
-          "token"
-        ]
+        "required": ["token"]
       },
       "RequestVerificationResult": {
         "type": "object",
         "properties": {
           "status": {
             "type": "string",
-            "enum": [
-              "ok"
-            ],
+            "enum": ["ok"],
             "example": "ok"
           }
         },
-        "required": [
-          "status"
-        ]
+        "required": ["status"]
       },
       "RequestVerificationRequest": {
         "type": "object",
@@ -224,24 +188,18 @@
             "example": "ada@example.com"
           }
         },
-        "required": [
-          "email"
-        ]
+        "required": ["email"]
       },
       "RequestPasswordResetResult": {
         "type": "object",
         "properties": {
           "status": {
             "type": "string",
-            "enum": [
-              "ok"
-            ],
+            "enum": ["ok"],
             "example": "ok"
           }
         },
-        "required": [
-          "status"
-        ]
+        "required": ["status"]
       },
       "RequestPasswordResetRequest": {
         "type": "object",
@@ -253,24 +211,18 @@
             "example": "ada@example.com"
           }
         },
-        "required": [
-          "email"
-        ]
+        "required": ["email"]
       },
       "ResetPasswordResult": {
         "type": "object",
         "properties": {
           "status": {
             "type": "string",
-            "enum": [
-              "ok"
-            ],
+            "enum": ["ok"],
             "example": "ok"
           }
         },
-        "required": [
-          "status"
-        ]
+        "required": ["status"]
       },
       "ResetPasswordRequest": {
         "type": "object",
@@ -288,10 +240,7 @@
             "example": "correct-horse-41"
           }
         },
-        "required": [
-          "token",
-          "newPassword"
-        ]
+        "required": ["token", "newPassword"]
       },
       "CurrentUser": {
         "type": "object",
@@ -311,26 +260,72 @@
             "example": true
           }
         },
-        "required": [
-          "id",
-          "email",
-          "emailVerified"
-        ]
+        "required": ["id", "email", "emailVerified"]
       },
       "SignOutResult": {
         "type": "object",
         "properties": {
           "status": {
             "type": "string",
-            "enum": [
-              "ok"
-            ],
+            "enum": ["ok"],
             "example": "ok"
           }
         },
-        "required": [
-          "status"
-        ]
+        "required": ["status"]
+      },
+      "ReaderState": {
+        "type": "object",
+        "properties": {
+          "readerState": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Short-lived signed presentation-only Reader State.",
+            "example": "eyJhbGciOiJFZERTQSJ9.eyJzdWIiOiJhYmMxMjMifQ.sig"
+          },
+          "expiresAt": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "Reader State expiry as integer Unix seconds.",
+            "example": 1790000900
+          }
+        },
+        "required": ["readerState", "expiresAt"]
+      },
+      "ConsumerJwks": {
+        "type": "object",
+        "properties": {
+          "keys": {
+            "type": "array",
+            "items": { "$ref": "#/components/schemas/ConsumerJsonWebKey" },
+            "description": "Active and retained public verification keys."
+          }
+        },
+        "required": ["keys"]
+      },
+      "ConsumerJsonWebKey": {
+        "type": "object",
+        "properties": {
+          "kid": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Stable durable key id.",
+            "example": "abc123"
+          },
+          "kty": { "type": "string", "minLength": 1, "description": "Key type.", "example": "OKP" },
+          "alg": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Fixed supported algorithm.",
+            "example": "EdDSA"
+          },
+          "use": { "type": "string", "description": "Intended use.", "example": "sig" },
+          "crv": { "type": "string", "description": "Curve name.", "example": "Ed25519" },
+          "x": { "type": "string", "description": "Public x coordinate." },
+          "y": { "type": "string", "description": "Public y coordinate." },
+          "n": { "type": "string", "description": "Public RSA modulus." },
+          "e": { "type": "string", "description": "Public RSA exponent." }
+        },
+        "required": ["kid", "kty", "alg"]
       },
       "AdminMe": {
         "type": "object",
@@ -354,12 +349,7 @@
             "example": "admin"
           }
         },
-        "required": [
-          "id",
-          "email",
-          "emailVerified",
-          "role"
-        ]
+        "required": ["id", "email", "emailVerified", "role"]
       },
       "AdminUserList": {
         "type": "object",
@@ -378,10 +368,7 @@
             "example": 42
           }
         },
-        "required": [
-          "items",
-          "total"
-        ]
+        "required": ["items", "total"]
       },
       "AdminUser": {
         "type": "object",
@@ -405,12 +392,7 @@
             "example": "admin"
           }
         },
-        "required": [
-          "id",
-          "email",
-          "emailVerified",
-          "role"
-        ]
+        "required": ["id", "email", "emailVerified", "role"]
       },
       "AdminBootstrapResult": {
         "type": "object",
@@ -427,9 +409,7 @@
           },
           "role": {
             "type": "string",
-            "enum": [
-              "admin"
-            ],
+            "enum": ["admin"],
             "example": "admin"
           },
           "emailVerified": {
@@ -437,12 +417,7 @@
             "example": false
           }
         },
-        "required": [
-          "id",
-          "email",
-          "role",
-          "emailVerified"
-        ]
+        "required": ["id", "email", "role", "emailVerified"]
       },
       "AdminBootstrapRequest": {
         "type": "object",
@@ -466,11 +441,7 @@
             "example": "correct-horse-41"
           }
         },
-        "required": [
-          "name",
-          "email",
-          "password"
-        ]
+        "required": ["name", "email", "password"]
       }
     },
     "parameters": {}
@@ -481,9 +452,7 @@
         "operationId": "getHealth",
         "summary": "Service liveness",
         "description": "Lightweight liveness probe. It proves the Worker and router are running without touching D1 or any other dependency.",
-        "tags": [
-          "health"
-        ],
+        "tags": ["health"],
         "responses": {
           "200": {
             "description": "The Worker is running.",
@@ -513,9 +482,7 @@
         "operationId": "registerIdentity",
         "summary": "Register an email identity",
         "description": "Creates an unverified email/password identity when the deployment policy allows registration, and schedules a verification message through the application mail boundary. The account cannot establish a session until verification succeeds while the policy requires verified email.",
-        "tags": [
-          "identity"
-        ],
+        "tags": ["identity"],
         "requestBody": {
           "content": {
             "application/json": {
@@ -554,9 +521,7 @@
         "operationId": "loginIdentity",
         "summary": "Establish an email/password session",
         "description": "Authenticates an email/password identity. While the deployment policy requires verified email, unverified accounts receive a machine-readable verification-required failure instead of a session.",
-        "tags": [
-          "identity"
-        ],
+        "tags": ["identity"],
         "requestBody": {
           "content": {
             "application/json": {
@@ -595,9 +560,7 @@
         "operationId": "verifyIdentityEmail",
         "summary": "Complete email verification",
         "description": "Marks the email address verified from the token delivered by the verification action. Clients extract the `token` query parameter from the action URL and submit it here. Invalid or expired actions fail safely without revealing token material.",
-        "tags": [
-          "identity"
-        ],
+        "tags": ["identity"],
         "requestBody": {
           "content": {
             "application/json": {
@@ -636,9 +599,7 @@
         "operationId": "requestIdentityVerification",
         "summary": "Request a verification message",
         "description": "Schedules a fresh verification message for an unverified email address without creating duplicate identities. The response is identical whether or not the address is registered, so it cannot be used for account enumeration.",
-        "tags": [
-          "identity"
-        ],
+        "tags": ["identity"],
         "requestBody": {
           "content": {
             "application/json": {
@@ -677,9 +638,7 @@
         "operationId": "requestPasswordReset",
         "summary": "Request password recovery",
         "description": "Schedules a password-reset message for the account matching the email address without creating identities. The response is identical whether or not the address is registered, so it cannot be used for account enumeration.",
-        "tags": [
-          "identity"
-        ],
+        "tags": ["identity"],
         "requestBody": {
           "content": {
             "application/json": {
@@ -718,9 +677,7 @@
         "operationId": "resetPassword",
         "summary": "Complete password reset",
         "description": "Sets a new password from the token delivered by the password-reset action. Reset actions are single use and expire. Successful resets revoke existing sessions. Invalid, expired, reused, or malformed actions fail safely without revealing token material.",
-        "tags": [
-          "identity"
-        ],
+        "tags": ["identity"],
         "requestBody": {
           "content": {
             "application/json": {
@@ -759,9 +716,7 @@
         "operationId": "getCurrentUser",
         "summary": "Resolve the current User",
         "description": "Returns the stable application-owned current-User representation for the session carried by the request cookies. Anonymous or invalid sessions receive the standard unauthenticated Problem Details response.",
-        "tags": [
-          "identity"
-        ],
+        "tags": ["identity"],
         "responses": {
           "200": {
             "description": "The authenticated current User.",
@@ -791,9 +746,7 @@
         "operationId": "signOutIdentity",
         "summary": "Invalidate the current session",
         "description": "Invalidates the session carried by the request cookies. Subsequent authenticated-only requests with that session no longer resolve a User.",
-        "tags": [
-          "identity"
-        ],
+        "tags": ["identity"],
         "responses": {
           "200": {
             "description": "The session was invalidated.",
@@ -818,14 +771,60 @@
         }
       }
     },
+    "/v1/auth/reader-state": {
+      "post": {
+        "operationId": "issueReaderState",
+        "summary": "Issue or refresh presentation-only Reader State",
+        "description": "Issues or refreshes short-lived signed Reader State from the live HttpOnly cookie session. The request carries no user, claims, issuer or audience. Reader State holds the opaque subject, stable issuer, Reader-State-specific audience, integer issued/expiry bounds and an empty entitlements list. Expiry never exceeds the live session expiry and is at most 15 minutes. Reader State is for presentation only and never authenticates or authorizes an endpoint. All responses are private, no-store.",
+        "tags": ["identity"],
+        "responses": {
+          "200": {
+            "description": "The signed Reader State and its integer Unix expiry.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ReaderState" } }
+            }
+          },
+          "default": {
+            "description": "Issuance failure as RFC 9457 Problem Details.",
+            "content": {
+              "application/problem+json": {
+                "schema": { "$ref": "#/components/schemas/ProblemDetails" }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/jwks": {
+      "get": {
+        "operationId": "getConsumerJwks",
+        "summary": "Publish Reader State verification keys",
+        "description": "Returns the active and retained public asymmetric verification keys as an RFC 7517 JSON Web Key Set. Private key material is never published. Responses carry bounded public caching; verification keys remain available through every outstanding token lifetime plus the documented clock tolerance.",
+        "tags": ["identity"],
+        "responses": {
+          "200": {
+            "description": "The public verification keys.",
+            "content": {
+              "application/json": { "schema": { "$ref": "#/components/schemas/ConsumerJwks" } }
+            }
+          },
+          "default": {
+            "description": "Publication failure as RFC 9457 Problem Details.",
+            "content": {
+              "application/problem+json": {
+                "schema": { "$ref": "#/components/schemas/ProblemDetails" }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/admin/me": {
       "get": {
         "operationId": "getAdminMe",
         "summary": "Resolve the current administrator",
         "description": "Returns the exact administrative representation for the session carried by the request cookies when that session holds User listing/read access. Anonymous or invalid sessions receive the standard unauthenticated Problem Details response; valid non-administrative sessions receive the forbidden Problem Details response. The public `/v1/me` representation is unchanged by this operation.",
-        "tags": [
-          "admin"
-        ],
+        "tags": ["admin"],
         "responses": {
           "200": {
             "description": "The authenticated administrator.",
@@ -855,9 +854,7 @@
         "operationId": "listAdminUsers",
         "summary": "List Users for administrators",
         "description": "Returns the stable application-owned administrative User representation in ascending email order with bounded server pagination and optional case-insensitive literal email substring search. Anonymous or invalid sessions receive the standard unauthenticated Problem Details response; valid non-administrative sessions receive the forbidden Problem Details response. The `total` counts all matches before pagination.",
-        "tags": [
-          "admin"
-        ],
+        "tags": ["admin"],
         "parameters": [
           {
             "schema": {
@@ -873,10 +870,7 @@
           },
           {
             "schema": {
-              "type": [
-                "integer",
-                "null"
-              ],
+              "type": ["integer", "null"],
               "minimum": 0,
               "default": 0,
               "example": 0
@@ -928,9 +922,7 @@
         "operationId": "getAdminUser",
         "summary": "Read one User for administrators",
         "description": "Returns the stable application-owned administrative User representation for one opaque identifier. Anonymous or invalid sessions receive the standard unauthenticated Problem Details response; valid non-administrative sessions receive the forbidden Problem Details response even when the identifier does not exist. Authorized missing Users receive the not-found Problem Details response.",
-        "tags": [
-          "admin"
-        ],
+        "tags": ["admin"],
         "parameters": [
           {
             "schema": {
@@ -975,9 +967,7 @@
         "operationId": "bootstrapAdmin",
         "summary": "Bootstrap the first administrator",
         "description": "Creates the first administrative User through the auth engine after migrations, using explicit operator-supplied credentials. Succeeds only while no administrator exists; repeats and conflicting identities fail with stable machine codes instead of duplicating privileged accounts. The bootstrapped administrator remains subject to the deployment email verification policy before signing in.",
-        "tags": [
-          "identity"
-        ],
+        "tags": ["identity"],
         "requestBody": {
           "content": {
             "application/json": {
