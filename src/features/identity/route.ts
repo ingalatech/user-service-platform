@@ -8,6 +8,7 @@ import {
   AdminUserListQuerySchema,
   AdminUserListSchema,
   AdminUserSchema,
+  AuthConfigSchema,
   ConsumerJwksResponseSchema,
   ReaderStateResponseSchema,
   CurrentUserSchema,
@@ -214,6 +215,24 @@ export const consumerJwksRoute = createRoute({
       description: 'The public verification keys.',
     },
     ...problemResponses('Publication failure as RFC 9457 Problem Details.'),
+  },
+});
+
+export const authConfigRoute = createRoute({
+  method: 'get',
+  path: '/auth/config',
+  operationId: 'getAuthConfig',
+  summary: 'Publish effective authentication capabilities and password policy',
+  description:
+    'Returns deployment-owned authentication capabilities and password creation policy. ' +
+    'No secrets or provider configuration are included; the response is never cached.',
+  tags: ['identity'],
+  responses: {
+    200: {
+      content: { 'application/json': { schema: AuthConfigSchema } },
+      description: 'The effective public authentication configuration.',
+    },
+    ...problemResponses('Configuration failure as RFC 9457 Problem Details.'),
   },
 });
 

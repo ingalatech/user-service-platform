@@ -15,9 +15,39 @@ import {
   verifyReaderStateForRenewal,
   type VerifiedReaderState,
 } from './verifier.js';
-import type { paths } from './generated/api.js';
+import type { components, paths } from './generated/api.js';
 
 export type AuthoritativeSessionStatus = 'unknown' | 'authenticated' | 'anonymous';
+export type AuthConfig = components['schemas']['AuthConfig'];
+export type PasswordPolicy = AuthConfig['passwordPolicy'];
+export type PasswordPolicyRule =
+  'min-length' | 'max-length' | 'min-uppercase' | 'min-lowercase' | 'min-digits' | 'min-symbols';
+
+export interface PasswordPolicyEvaluation {
+  readonly valid: boolean;
+  readonly failedRules: readonly PasswordPolicyRule[];
+}
+
+export function evaluatePassword(
+  password: string,
+  policy: PasswordPolicy,
+): PasswordPolicyEvaluation {
+  const points = Array.from(password);
+  const uppercase = points.filter((value) => /\p{Lu}/u.test(value)).length;
+  const lowercase = points.filter((value) => /\p{Ll}/u.test(value)).length;
+  const digits = points.filter((value) => /\p{Nd}/u.test(value)).length;
+  const symbols = points.filter(
+    (value) => !/[\p{L}\p{N}]/u.test(value) && !/\s/u.test(value),
+  ).length;
+  const failedRules: PasswordPolicyRule[] = [];
+  if (points.length < policy.minLength) failedRules.push('min-length');
+  if (points.length > policy.maxLength) failedRules.push('max-length');
+  if (uppercase < policy.minUppercase) failedRules.push('min-uppercase');
+  if (lowercase < policy.minLowercase) failedRules.push('min-lowercase');
+  if (digits < policy.minDigits) failedRules.push('min-digits');
+  if (symbols < policy.minSymbols) failedRules.push('min-symbols');
+  return { valid: failedRules.length === 0, failedRules };
+}
 
 export interface ConsumerReaderState extends VerifiedReaderState {
   readonly sessionStatus: AuthoritativeSessionStatus;
@@ -26,12 +56,24 @@ export interface ConsumerReaderState extends VerifiedReaderState {
 export class ConsumerClientError extends Error {
   readonly code: string;
   readonly status?: number;
+  readonly failedRules?: readonly string[];
+  readonly passwordPolicy?: AuthConfig['passwordPolicy'];
 
-  constructor(code: string, message: string, status?: number) {
+  constructor(
+    code: string,
+    message: string,
+    status?: number,
+    details?: {
+      readonly failedRules?: readonly string[];
+      readonly passwordPolicy?: AuthConfig['passwordPolicy'];
+    },
+  ) {
     super(message);
     this.name = 'ConsumerClientError';
     this.code = code;
     if (status !== undefined) this.status = status;
+    if (details?.failedRules !== undefined) this.failedRules = details.failedRules;
+    if (details?.passwordPolicy !== undefined) this.passwordPolicy = details.passwordPolicy;
   }
 }
 
@@ -163,6 +205,7 @@ export interface ConsumerRegisterInput {
 }
 
 export interface ConsumerClient {
+  getAuthConfig(): Promise<AuthConfig>;
   login(input: ConsumerLoginInput): Promise<ConsumerReaderState>;
   getSnapshot(): Promise<ConsumerReaderState | null>;
   refreshReaderState(): Promise<ConsumerReaderState>;
@@ -335,7 +378,24 @@ export function createConsumerClient(options: ConsumerClientOptions): ConsumerCl
     }
     const code = asRecord(error)?.code;
     if (typeof code === 'string' && code !== '') {
-      return new ConsumerClientError(code, `The request failed: ${code}.`, status);
+      const record = asRecord(error);
+      const failedRules = Array.isArray(record?.failedRules)
+        ? record.failedRules.filter((value): value is string => typeof value === 'string')
+        : undefined;
+      const policy = asRecord(record?.passwordPolicy);
+      const passwordPolicy =
+        policy !== null &&
+        Object.values(policy).every((value) => typeof value === 'number' && Number.isInteger(value))
+          ? (policy as AuthConfig['passwordPolicy'])
+          : undefined;
+      return new ConsumerClientError(
+        code,
+        code === 'password-policy-violation'
+          ? 'La contraseña no cumple los requisitos vigentes.'
+          : `The request failed: ${code}.`,
+        status,
+        code === 'password-policy-violation' ? { failedRules, passwordPolicy } : undefined,
+      );
     }
     return new ConsumerClientError('unknown-error', `The request failed while ${action}.`, status);
   }
@@ -552,6 +612,16 @@ export function createConsumerClient(options: ConsumerClientOptions): ConsumerCl
   });
 
   return {
+    getAuthConfig: async () => {
+      try {
+        const response = await api.GET('/v1/auth/config');
+        if (response.data !== undefined) return response.data;
+        throw toClientError(response.error, response.response.status, 'loading auth config');
+      } catch (error) {
+        if (error instanceof ConsumerClientError) throw error;
+        throw new ConsumerClientError('network-unavailable', 'The service is unreachable.');
+      }
+    },
     login: (input) =>
       coordinateAuthMutation(async (authMutationVersion) => {
         clear('unknown');

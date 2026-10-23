@@ -219,6 +219,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/auth/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Publish effective authentication capabilities and password policy
+         * @description Returns deployment-owned authentication capabilities and password creation policy. No secrets or provider configuration are included; the response is never cached.
+         */
+        get: operations["getAuthConfig"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/admin/me": {
         parameters: {
             query?: never;
@@ -332,6 +352,20 @@ export interface components {
             code: string;
             /** @example /v1/does-not-exist */
             instance?: string;
+            /**
+             * @example [
+             *       "min-uppercase"
+             *     ]
+             */
+            failedRules?: ("min-length" | "max-length" | "min-uppercase" | "min-lowercase" | "min-digits" | "min-symbols")[];
+            passwordPolicy?: {
+                minLength: number;
+                maxLength: number;
+                minUppercase: number;
+                minLowercase: number;
+                minDigits: number;
+                minSymbols: number;
+            };
         };
         RegisteredUser: {
             /** @example abc123 */
@@ -352,7 +386,7 @@ export interface components {
              * @example ada@example.com
              */
             email: string;
-            /** @example correct-horse-41 */
+            /** @example Correct-horse-41 */
             password: string;
         };
         LoginResult: {
@@ -372,7 +406,7 @@ export interface components {
              * @example ada@example.com
              */
             email: string;
-            /** @example correct-horse-41 */
+            /** @example Correct-horse-41 */
             password: string;
         };
         VerifyEmailResult: {
@@ -424,7 +458,7 @@ export interface components {
         ResetPasswordRequest: {
             /** @description Password-reset token from the action URL. */
             token: string;
-            /** @example correct-horse-41 */
+            /** @example Correct-horse-41 */
             newPassword: string;
         };
         CurrentUser: {
@@ -496,6 +530,30 @@ export interface components {
             /** @description Public RSA exponent. */
             e?: string;
         };
+        AuthConfig: {
+            capabilities: components["schemas"]["AuthCapabilities"];
+            passwordPolicy: components["schemas"]["PasswordPolicy"];
+        };
+        AuthCapabilities: {
+            registration: boolean;
+            emailPassword: boolean;
+            emailVerification: boolean;
+            passwordReset: boolean;
+        };
+        PasswordPolicy: {
+            /** @example 8 */
+            minLength: number;
+            /** @example 128 */
+            maxLength: number;
+            /** @example 1 */
+            minUppercase: number;
+            /** @example 1 */
+            minLowercase: number;
+            /** @example 1 */
+            minDigits: number;
+            /** @example 0 */
+            minSymbols: number;
+        };
         AdminMe: {
             /** @example abc123 */
             id: string;
@@ -555,7 +613,7 @@ export interface components {
              * @example ada@example.com
              */
             email: string;
-            /** @example correct-horse-41 */
+            /** @example Correct-horse-41 */
             password: string;
         };
     };
@@ -900,6 +958,35 @@ export interface operations {
                 };
             };
             /** @description Publication failure as RFC 9457 Problem Details. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    getAuthConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The effective public authentication configuration. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthConfig"];
+                };
+            };
+            /** @description Configuration failure as RFC 9457 Problem Details. */
             default: {
                 headers: {
                     [name: string]: unknown;

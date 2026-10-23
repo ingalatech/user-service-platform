@@ -122,7 +122,7 @@ describe('sandbox-like anonymous session reads (ticket #93)', () => {
         body: JSON.stringify({
           name: 'Sandbox Probe',
           email: 'sandbox-probe@example.com',
-          password: 'correct-horse-41',
+          password: 'Correct-horse-41',
         }),
       },
       environment,
@@ -151,7 +151,7 @@ describe('sandbox-like anonymous session reads (ticket #93)', () => {
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ email: 'sandbox-probe@example.com', password: 'correct-horse-41' }),
+        body: JSON.stringify({ email: 'sandbox-probe@example.com', password: 'Correct-horse-41' }),
       },
       environment,
     );
@@ -184,7 +184,7 @@ describe('sandbox-like anonymous session reads (ticket #93)', () => {
         body: JSON.stringify({
           name: 'Mail Guard',
           email: 'mail-guard@example.com',
-          password: 'correct-horse-41',
+          password: 'Correct-horse-41',
         }),
       },
       sandboxLikeEnv(),

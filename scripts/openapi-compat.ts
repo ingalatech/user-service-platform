@@ -188,8 +188,18 @@ function compareSchemas(
     'default',
     '$schema',
   ]);
+  const loosenedRequestConstraint = (keyword: string): boolean => {
+    if (direction === 'response') return false;
+    const before = base[keyword];
+    const after = next[keyword];
+    if (typeof before !== 'number' || typeof after !== 'number') return false;
+    return (
+      (keyword === 'minLength' && after < before) || (keyword === 'maxLength' && after > before)
+    );
+  };
   for (const keyword of new Set([...Object.keys(base), ...Object.keys(next)])) {
-    if (structural.has(keyword) || annotations.has(keyword)) continue;
+    if (structural.has(keyword) || annotations.has(keyword) || loosenedRequestConstraint(keyword))
+      continue;
     if (JSON.stringify(base[keyword]) !== JSON.stringify(next[keyword]))
       findings.push({
         breaking: true,

@@ -13,6 +13,7 @@ import {
 } from './consumer-cors.js';
 import { InMemoryAuthMailer } from './mailer.js';
 import { resolveConsumerOrigins } from './origin-guard.js';
+import { DEFAULT_AUTH_POLICY } from './policy.js';
 
 // Seam under test (spec #164, ADR-0013): the direct-browser transport adds
 // exact credentialed CORS on the public consumer identity operations while
@@ -108,7 +109,7 @@ async function registerVerifyLogin(email: string): Promise<string> {
   const overrides = { AUTH_CONSUMER_ORIGINS: CONSUMER_ORIGIN };
   const registered = await post(
     '/v1/auth/register',
-    { name: 'Consumer', email, password: 'correct-horse-41' },
+    { name: 'Consumer', email, password: 'Correct-horse-41' },
     { headers: originHeaders, overrides },
   );
   expect(registered.status).toBe(201);
@@ -126,7 +127,7 @@ async function registerVerifyLogin(email: string): Promise<string> {
   expect(verified.headers.get('vary')).toContain('Origin');
   const login = await post(
     '/v1/auth/login',
-    { email, password: 'correct-horse-41' },
+    { email, password: 'Correct-horse-41' },
     { headers: originHeaders, overrides: { AUTH_CONSUMER_ORIGINS: CONSUMER_ORIGIN } },
   );
   expect(login.status).toBe(200);
@@ -202,10 +203,71 @@ describe('consumer CORS origin resolution', () => {
 });
 
 describe('public consumer operation CORS responses', () => {
+  it('publishes the effective auth config without secrets and with no-store CORS', async () => {
+    const res = await get('/v1/auth/config', {
+      headers: { origin: CONSUMER_ORIGIN },
+      overrides: {
+        AUTH_CONSUMER_ORIGINS: CONSUMER_ORIGIN,
+        AUTH_PASSWORD_MIN_LENGTH: '10',
+        AUTH_PASSWORD_MAX_LENGTH: '64',
+        AUTH_PASSWORD_MIN_UPPERCASE: '2',
+        AUTH_PASSWORD_MIN_LOWERCASE: '1',
+        AUTH_PASSWORD_MIN_DIGITS: '2',
+        AUTH_PASSWORD_MIN_SYMBOLS: '0',
+        BETTER_AUTH_SECRET: 'must-not-leak',
+      },
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('cache-control')).toBe('no-store');
+    expect(res.headers.get('access-control-allow-origin')).toBe(CONSUMER_ORIGIN);
+    expect(res.headers.get('access-control-allow-credentials')).toBe('true');
+    const body = await res.json();
+    expect(body).toMatchObject({
+      capabilities: {
+        registration: true,
+        emailPassword: true,
+        emailVerification: true,
+        passwordReset: true,
+      },
+      passwordPolicy: {
+        minLength: 10,
+        maxLength: 64,
+        minUppercase: 2,
+        minLowercase: 1,
+        minDigits: 2,
+        minSymbols: 0,
+      },
+    });
+    expect(JSON.stringify(body)).not.toContain('must-not-leak');
+  });
+
+  it('returns structured redacted password-policy errors with CORS', async () => {
+    const res = await post(
+      '/v1/auth/register',
+      { name: 'Policy User', email: 'policy@example.com', password: 'lowercase1' },
+      {
+        headers: { origin: CONSUMER_ORIGIN, 'sec-fetch-site': 'same-site' },
+        overrides: { AUTH_CONSUMER_ORIGINS: CONSUMER_ORIGIN },
+      },
+    );
+
+    expect(res.status).toBe(400);
+    expect(res.headers.get('access-control-allow-origin')).toBe(CONSUMER_ORIGIN);
+    expect(res.headers.get('access-control-allow-credentials')).toBe('true');
+    const body = await res.json();
+    expect(body).toMatchObject({
+      code: 'password-policy-violation',
+      failedRules: ['min-uppercase'],
+      passwordPolicy: DEFAULT_AUTH_POLICY.passwordPolicy,
+    });
+    expect(JSON.stringify(body)).not.toContain('lowercase1');
+  });
+
   it('grants the exact origin with credentials and Vary on success', async () => {
     const res = await post(
       '/v1/auth/register',
-      { name: 'Cors User', email: 'cors@example.com', password: 'correct-horse-41' },
+      { name: 'Cors User', email: 'cors@example.com', password: 'Correct-horse-41' },
       {
         headers: { origin: CONSUMER_ORIGIN, 'sec-fetch-site': 'same-site' },
         overrides: { AUTH_CONSUMER_ORIGINS: CONSUMER_ORIGIN },
@@ -379,7 +441,7 @@ describe('direct-browser consumer lifecycle from a configured origin', () => {
   it('rejects cookie mutations from an unconfigured origin even when the endpoint is CORS-enabled', async () => {
     const res = await post(
       '/v1/auth/register',
-      { name: 'Hostile', email: 'hostile@example.com', password: 'correct-horse-41' },
+      { name: 'Hostile', email: 'hostile@example.com', password: 'Correct-horse-41' },
       {
         headers: { origin: 'https://evil.test', 'sec-fetch-site': 'cross-site' },
         overrides: { AUTH_CONSUMER_ORIGINS: CONSUMER_ORIGIN },

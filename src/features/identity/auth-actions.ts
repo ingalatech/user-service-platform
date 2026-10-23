@@ -79,18 +79,30 @@ function resetPasswordPage(): string {
     `<style>${PAGE_STYLE}</style></head>` +
     '<body><main><h1>Choose a new password</h1>' +
     '<form id="reset-form"><label for="new-password">New password</label>' +
-    '<input id="new-password" name="new-password" type="password" autocomplete="new-password" minlength="8" maxlength="128" required>' +
+    '<input id="new-password" name="new-password" type="password" autocomplete="new-password" required>' +
+    '<ul id="requirements" aria-live="polite"></ul>' +
     '<button type="submit">Set new password</button></form>' +
     '<p id="status" role="status"></p></main>' +
     '<script>(()=>{' +
     'const form=document.getElementById("reset-form");' +
     'const password=document.getElementById("new-password");' +
     'const status=document.getElementById("status");' +
+    'const requirements=document.getElementById("requirements");' +
     'const token=new URLSearchParams(window.location.search).get("token");' +
     'window.history.replaceState(null,"",window.location.pathname);' +
     'if(!token){status.textContent="This password-reset link is invalid or has expired.";status.className="error";form.remove();return;}' +
+    'let policy=null;' +
+    'const renderPolicy=()=>{if(!policy)return;password.minLength=policy.minLength;password.maxLength=policy.maxLength;requirements.innerHTML="";' +
+    'const rules=[`Use at least ${policy.minLength} characters`,`Use no more than ${policy.maxLength} characters`];' +
+    'if(policy.minUppercase>0)rules.push(`Use at least ${policy.minUppercase} uppercase letter(s)`);' +
+    'if(policy.minLowercase>0)rules.push(`Use at least ${policy.minLowercase} lowercase letter(s)`);' +
+    'if(policy.minDigits>0)rules.push(`Use at least ${policy.minDigits} digit(s)`);' +
+    'if(policy.minSymbols>0)rules.push(`Use at least ${policy.minSymbols} symbol(s)`);' +
+    'for(const rule of rules){const item=document.createElement("li");item.textContent=rule;requirements.append(item);}};' +
+    'fetch("/v1/auth/config").then((response)=>response.ok?response.json():null).then((config)=>{policy=config?.passwordPolicy??null;renderPolicy();}).catch(()=>{});' +
     'form.addEventListener("submit",async(event)=>{' +
     'event.preventDefault();' +
+    'if(policy){const points=[...password.value];const upper=points.filter((value)=>/\\p{Lu}/u.test(value)).length;const lower=points.filter((value)=>/\\p{Ll}/u.test(value)).length;const digits=points.filter((value)=>/\\p{Nd}/u.test(value)).length;const symbols=points.filter((value)=>!/[\\p{L}\\p{N}]/u.test(value)&&!/\\s/u.test(value)).length;if(points.length<policy.minLength||points.length>policy.maxLength||upper<policy.minUppercase||lower<policy.minLowercase||digits<policy.minDigits||symbols<policy.minSymbols){status.textContent="Your password does not meet the current requirements.";status.className="error";return;}}' +
     'status.textContent="Setting your new password.";status.className="";' +
     'try{' +
     'const res=await fetch("/v1/auth/reset-password",{method:"POST",' +

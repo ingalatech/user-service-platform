@@ -109,7 +109,7 @@ async function registerVerifiedUser(name: string, email: string): Promise<void> 
   const registerRes = await post('/v1/auth/register', {
     name,
     email,
-    password: 'correct-horse-41',
+    password: 'Correct-horse-41',
   });
   expect(registerRes.status).toBe(201);
   await verifyEmailAddress(email);
@@ -129,13 +129,13 @@ async function bootstrapVerifiedAdmin(
   const bootstrapRes = await post('/v1/auth/admin/bootstrap', {
     name: 'Ada Admin',
     email,
-    password: 'correct-horse-41',
+    password: 'Correct-horse-41',
   });
   expect(bootstrapRes.status).toBe(201);
   await verifyEmailAddress(email);
   const loginRes = await post('/v1/auth/login', {
     email,
-    password: 'correct-horse-41',
+    password: 'Correct-horse-41',
   });
   expect(loginRes.status).toBe(200);
   const cookie = sessionCookieFrom(loginRes);
@@ -152,7 +152,7 @@ async function verifiedRegularCookie(
   await registerVerifiedUser('Ordinary User', email);
   const loginRes = await post('/v1/auth/login', {
     email,
-    password: 'correct-horse-41',
+    password: 'Correct-horse-41',
   });
   expect(loginRes.status).toBe(200);
   const cookie = sessionCookieFrom(loginRes);

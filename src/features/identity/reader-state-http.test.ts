@@ -102,10 +102,10 @@ async function registerVerifyLogin(email: string): Promise<string> {
   await post('/v1/auth/register', {
     name: 'Token User',
     email,
-    password: 'correct-horse-41',
+    password: 'Correct-horse-41',
   });
   await post('/v1/auth/verify-email', { token: await tokenFromLastMessage() });
-  const loginRes = await post('/v1/auth/login', { email, password: 'correct-horse-41' });
+  const loginRes = await post('/v1/auth/login', { email, password: 'Correct-horse-41' });
   expect(loginRes.status).toBe(200);
   const cookie = sessionCookieFrom(loginRes);
   if (cookie === null) {
@@ -329,7 +329,7 @@ describe('POST /v1/auth/reader-state tracer bullet', () => {
     // The Reader State response carries no credential or engine internals.
     const raw = JSON.stringify(issued);
     expect(raw).not.toContain('better-auth.session_token');
-    expect(raw).not.toContain('correct-horse-41');
+    expect(raw).not.toContain('Correct-horse-41');
   });
 
   it('renews from the live session and denies issuance after sign-out', async () => {
@@ -356,7 +356,7 @@ describe('POST /v1/auth/reader-state tracer bullet', () => {
     await post('/v1/auth/request-password-reset', { email: 'reset-stop@example.com' });
     const resetRes = await post('/v1/auth/reset-password', {
       token: resetTokenFromLastMessage(),
-      newPassword: 'brand-new-horse-42',
+      newPassword: 'Brand-new-horse-42',
     });
     expect(resetRes.status).toBe(200);
 
@@ -379,11 +379,11 @@ describe('POST /v1/auth/reader-state tracer bullet', () => {
     await post('/v1/auth/register', {
       name: 'Unverified',
       email: 'unverified@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
     const blocked = await post('/v1/auth/login', {
       email: 'unverified@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
     expect(blocked.status).toBe(403);
     expect(sessionCookieFrom(blocked)).toBeNull();
@@ -678,7 +678,7 @@ describe('Reader State observability redaction', () => {
     const transcript = seen.join('\n');
     expect(captured.readerState.length).toBeGreaterThan(0);
     expect(transcript).not.toContain(captured.readerState);
-    expect(transcript).not.toContain('correct-horse-41');
+    expect(transcript).not.toContain('Correct-horse-41');
     expect(transcript).not.toContain('better-auth.session_token=');
     if (captured.cookieValue.length > 0) {
       expect(transcript).not.toContain(captured.cookieValue);

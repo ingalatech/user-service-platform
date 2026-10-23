@@ -25,6 +25,7 @@ The initial policy supports these capabilities:
 - email change must be verified before replacing the canonical email address;
 - OAuth support is available, with enabled providers supplied by deployment configuration;
 - session lifetime and relevant auth-token lifetimes are configuration-owned values rather than constants hidden inside feature code.
+- password creation requirements (length and Unicode character-category counts) are deployment-owned and publicly discoverable through the application-owned auth configuration contract. Existing passwords are not revalidated during login.
 
 For the first deployment, `requireEmailVerification` is enabled.
 
@@ -52,6 +53,7 @@ These are future capabilities, not placeholders that must be implemented in the 
 - Feature slices depend on a small `AuthenticatedUser`/`SessionContext` contract rather than Better Auth internals.
 - Changing auth providers or replacing Better Auth remains materially easier than if its types/configuration leaked through the application.
 - Transactional email delivery becomes a separate infrastructure decision because verification, reset and email-change flows require outbound email.
+- Consumer applications can discover the effective password policy without receiving secrets or Better Auth configuration; administrative editing of that deployment policy remains a separate follow-up.
 
 ## Decision record
 

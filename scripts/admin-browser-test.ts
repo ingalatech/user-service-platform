@@ -162,7 +162,7 @@ export async function runAdminBrowserTest(): Promise<void> {
       await pause(250);
     }
     assert(ready, 'Worker readiness within 60 seconds');
-    const password = 'isolated-browser-credential-41';
+    const password = 'Isolated-browser-credential-41';
     const admin = 'qa-admin@example.com';
     const regular = 'qa-user@example.com';
     const unverified = 'qa-unverified@example.com';

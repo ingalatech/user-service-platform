@@ -115,6 +115,36 @@ function validateProfile(config: NonSecretProfile): void {
       'Configuration error: AUTH_EMAIL_VERIFICATION_TTL_SECONDS must be a positive integer.',
     );
   }
+  for (const [name, value] of [
+    ['AUTH_PASSWORD_MIN_LENGTH', config.AUTH_PASSWORD_MIN_LENGTH],
+    ['AUTH_PASSWORD_MAX_LENGTH', config.AUTH_PASSWORD_MAX_LENGTH],
+    ['AUTH_PASSWORD_MIN_UPPERCASE', config.AUTH_PASSWORD_MIN_UPPERCASE],
+    ['AUTH_PASSWORD_MIN_LOWERCASE', config.AUTH_PASSWORD_MIN_LOWERCASE],
+    ['AUTH_PASSWORD_MIN_DIGITS', config.AUTH_PASSWORD_MIN_DIGITS],
+    ['AUTH_PASSWORD_MIN_SYMBOLS', config.AUTH_PASSWORD_MIN_SYMBOLS],
+  ] as const) {
+    const parsed = Number(value.trim());
+    if (!Number.isSafeInteger(parsed) || parsed < 0 || parsed > 128) {
+      throw new Error(`Configuration error: ${name} must be an integer from 0 to 128.`);
+    }
+  }
+  const passwordMinLength = Number(config.AUTH_PASSWORD_MIN_LENGTH.trim());
+  const passwordMaxLength = Number(config.AUTH_PASSWORD_MAX_LENGTH.trim());
+  if (passwordMinLength < 1 || passwordMaxLength < passwordMinLength) {
+    throw new Error(
+      'Configuration error: AUTH_PASSWORD_MIN_LENGTH and AUTH_PASSWORD_MAX_LENGTH are invalid.',
+    );
+  }
+  for (const [name, value] of [
+    ['AUTH_PASSWORD_MIN_UPPERCASE', config.AUTH_PASSWORD_MIN_UPPERCASE],
+    ['AUTH_PASSWORD_MIN_LOWERCASE', config.AUTH_PASSWORD_MIN_LOWERCASE],
+    ['AUTH_PASSWORD_MIN_DIGITS', config.AUTH_PASSWORD_MIN_DIGITS],
+    ['AUTH_PASSWORD_MIN_SYMBOLS', config.AUTH_PASSWORD_MIN_SYMBOLS],
+  ] as const) {
+    if (Number(value) > passwordMaxLength) {
+      throw new Error(`Configuration error: ${name} cannot exceed AUTH_PASSWORD_MAX_LENGTH.`);
+    }
+  }
   const transport = config.AUTH_MAIL_TRANSPORT.trim().toLowerCase();
   if (
     transport !== '' &&

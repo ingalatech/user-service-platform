@@ -17,11 +17,13 @@ import {
   resolveGatewayOrigins,
 } from './origin-guard.js';
 import { resolveAuthPolicy, type AuthPolicy } from './policy.js';
+import { evaluatePasswordPolicy } from './password-policy.js';
 import {
   adminBootstrapRoute,
   adminMeRoute,
   adminUserDetailRoute,
   adminUsersRoute,
+  authConfigRoute,
   consumerJwksRoute,
   readerStateRoute,
   currentUserRoute,
@@ -236,6 +238,24 @@ function problem(
   );
 }
 
+function passwordPolicyProblem(c: IdentityContext, password: string, policy: AuthPolicy) {
+  const evaluation = evaluatePasswordPolicy(password, policy.passwordPolicy);
+  if (evaluation.valid) return null;
+  return c.json(
+    createProblem({
+      status: 400,
+      code: 'password-policy-violation',
+      title: 'Password does not meet policy',
+      detail: 'The password does not meet the effective password policy.',
+      instance: new URL(c.req.url).pathname,
+      failedRules: evaluation.failedRules,
+      passwordPolicy: evaluation.policy,
+    }),
+    400,
+    { 'Content-Type': PROBLEM_JSON, 'Cache-Control': 'no-store' },
+  );
+}
+
 // Explicit Origin/Fetch Metadata protection for cookie-auth mutation
 // operations (spec #150, ADR-0013). Returns a rejection response when the
 // request must not mutate cookie-authenticated state, null when it may
@@ -317,6 +337,8 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     }
 
     const input = c.req.valid('json');
+    const passwordFailure = passwordPolicyProblem(c, input.password, policy);
+    if (passwordFailure !== null) return passwordFailure;
     const outcome = await callEngine(() =>
       auth.api.signUpEmail({
         body: {
@@ -503,6 +525,8 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     }
 
     const input = c.req.valid('json');
+    const passwordFailure = passwordPolicyProblem(c, input.newPassword, policy);
+    if (passwordFailure !== null) return passwordFailure;
     const outcome = await callEngine(() =>
       auth.api.resetPassword({
         body: { newPassword: input.newPassword, token: input.token },
@@ -702,6 +726,27 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     return problem(c, 500, 'internal-error', 'Internal Server Error', undefined, 'no-store');
   });
 
+  router.openapi(authConfigRoute, (c) => {
+    const effective = resolveEffectiveConfig({
+      environment: c.env.ENVIRONMENT,
+      runtime: { ...c.env },
+    });
+    const policy = resolveAuthPolicy(effective.config);
+    return c.json(
+      {
+        capabilities: {
+          registration: policy.registrationEnabled,
+          emailPassword: policy.emailPasswordEnabled,
+          emailVerification: policy.requireEmailVerification,
+          passwordReset: policy.emailPasswordEnabled,
+        },
+        passwordPolicy: policy.passwordPolicy,
+      },
+      200,
+      { 'Cache-Control': 'no-store' },
+    );
+  });
+
   router.openapi(adminMeRoute, async (c) => {
     const session = await resolveSessionContext({
       env: c.env,
@@ -806,6 +851,8 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     }
 
     const input = c.req.valid('json');
+    const passwordFailure = passwordPolicyProblem(c, input.password, policy);
+    if (passwordFailure !== null) return passwordFailure;
     const outcome = await bootstrapAdminUser({
       auth,
       db: c.env.DB,

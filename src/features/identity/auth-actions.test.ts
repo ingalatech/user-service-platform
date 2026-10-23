@@ -72,7 +72,7 @@ describe('application-owned mail action URLs', () => {
     const res = await post('/v1/auth/register', {
       name: 'Action Page',
       email: 'action-page@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
     expect(res.status).toBe(201);
     await waitForVerificationMessages(1);
@@ -92,7 +92,7 @@ describe('application-owned mail action URLs', () => {
     await post('/v1/auth/register', {
       name: 'Reset Page',
       email: 'reset-page@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
     await waitForVerificationMessages(1);
     const token = new URL(mailer.sent[mailer.sent.length - 1]?.url ?? '').searchParams.get('token');
@@ -123,7 +123,7 @@ describe('application-owned mail action URLs', () => {
     };
     await post(
       '/v1/auth/register',
-      { name: 'Custom Page', email: 'custom-page@example.com', password: 'correct-horse-41' },
+      { name: 'Custom Page', email: 'custom-page@example.com', password: 'Correct-horse-41' },
       overrides,
     );
     await waitForVerificationMessages(1);
@@ -156,7 +156,7 @@ describe('service-owned fallback browser pages', () => {
     await post('/v1/auth/register', {
       name: 'Browser Verify',
       email: 'browser-verify@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
     await waitForVerificationMessages(1);
     const token = new URL(mailer.sent[mailer.sent.length - 1]?.url ?? '').searchParams.get('token');
@@ -166,7 +166,7 @@ describe('service-owned fallback browser pages', () => {
     expect(verifyRes.status).toBe(200);
     const loginRes = await post('/v1/auth/login', {
       email: 'browser-verify@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
     expect(loginRes.status).toBe(200);
   });
@@ -179,7 +179,7 @@ describe('service-owned fallback browser pages', () => {
     await post('/v1/auth/register', {
       name: 'Browser Reset',
       email: 'browser-reset@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
     await waitForVerificationMessages(1);
     const verifyToken = new URL(mailer.sent[mailer.sent.length - 1]?.url ?? '').searchParams.get(
@@ -193,12 +193,12 @@ describe('service-owned fallback browser pages', () => {
 
     const resetRes = await post('/v1/auth/reset-password', {
       token: resetToken,
-      newPassword: 'brand-new-horse-42',
+      newPassword: 'Brand-new-horse-42',
     });
     expect(resetRes.status).toBe(200);
     const loginRes = await post('/v1/auth/login', {
       email: 'browser-reset@example.com',
-      password: 'brand-new-horse-42',
+      password: 'Brand-new-horse-42',
     });
     expect(loginRes.status).toBe(200);
   });

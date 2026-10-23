@@ -12,7 +12,7 @@
 // npm run db:local:reset
 // npm run dev:local
 // ADMIN_NAME="Site Admin" ADMIN_EMAIL="admin@example.com" \
-//   ADMIN_PASSWORD="correct-horse-41" npm run admin:bootstrap
+//   ADMIN_PASSWORD="Correct-horse-41" npm run admin:bootstrap
 // ```
 //
 // Redaction (ADR-0009): this script logs only HTTP method, path, status and

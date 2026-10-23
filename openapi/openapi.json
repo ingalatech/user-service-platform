@@ -64,6 +64,54 @@
           "instance": {
             "type": "string",
             "example": "/v1/does-not-exist"
+          },
+          "failedRules": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "min-length",
+                "max-length",
+                "min-uppercase",
+                "min-lowercase",
+                "min-digits",
+                "min-symbols"
+              ]
+            },
+            "example": [
+              "min-uppercase"
+            ]
+          },
+          "passwordPolicy": {
+            "type": "object",
+            "properties": {
+              "minLength": {
+                "type": "integer"
+              },
+              "maxLength": {
+                "type": "integer"
+              },
+              "minUppercase": {
+                "type": "integer"
+              },
+              "minLowercase": {
+                "type": "integer"
+              },
+              "minDigits": {
+                "type": "integer"
+              },
+              "minSymbols": {
+                "type": "integer"
+              }
+            },
+            "required": [
+              "minLength",
+              "maxLength",
+              "minUppercase",
+              "minLowercase",
+              "minDigits",
+              "minSymbols"
+            ]
           }
         },
         "required": [
@@ -115,9 +163,9 @@
           },
           "password": {
             "type": "string",
-            "minLength": 8,
+            "minLength": 1,
             "maxLength": 128,
-            "example": "correct-horse-41"
+            "example": "Correct-horse-41"
           }
         },
         "required": [
@@ -162,7 +210,7 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 128,
-            "example": "correct-horse-41"
+            "example": "Correct-horse-41"
           }
         },
         "required": [
@@ -283,9 +331,9 @@
           },
           "newPassword": {
             "type": "string",
-            "minLength": 8,
+            "minLength": 1,
             "maxLength": 128,
-            "example": "correct-horse-41"
+            "example": "Correct-horse-41"
           }
         },
         "required": [
@@ -422,6 +470,93 @@
           "alg"
         ]
       },
+      "AuthConfig": {
+        "type": "object",
+        "properties": {
+          "capabilities": {
+            "$ref": "#/components/schemas/AuthCapabilities"
+          },
+          "passwordPolicy": {
+            "$ref": "#/components/schemas/PasswordPolicy"
+          }
+        },
+        "required": [
+          "capabilities",
+          "passwordPolicy"
+        ]
+      },
+      "AuthCapabilities": {
+        "type": "object",
+        "properties": {
+          "registration": {
+            "type": "boolean"
+          },
+          "emailPassword": {
+            "type": "boolean"
+          },
+          "emailVerification": {
+            "type": "boolean"
+          },
+          "passwordReset": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "registration",
+          "emailPassword",
+          "emailVerification",
+          "passwordReset"
+        ]
+      },
+      "PasswordPolicy": {
+        "type": "object",
+        "properties": {
+          "minLength": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 128,
+            "example": 8
+          },
+          "maxLength": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 128,
+            "example": 128
+          },
+          "minUppercase": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 128,
+            "example": 1
+          },
+          "minLowercase": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 128,
+            "example": 1
+          },
+          "minDigits": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 128,
+            "example": 1
+          },
+          "minSymbols": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 128,
+            "example": 0
+          }
+        },
+        "required": [
+          "minLength",
+          "maxLength",
+          "minUppercase",
+          "minLowercase",
+          "minDigits",
+          "minSymbols"
+        ]
+      },
       "AdminMe": {
         "type": "object",
         "properties": {
@@ -551,9 +686,9 @@
           },
           "password": {
             "type": "string",
-            "minLength": 8,
+            "minLength": 1,
             "maxLength": 128,
-            "example": "correct-horse-41"
+            "example": "Correct-horse-41"
           }
         },
         "required": [
@@ -961,6 +1096,38 @@
           },
           "default": {
             "description": "Publication failure as RFC 9457 Problem Details.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/config": {
+      "get": {
+        "operationId": "getAuthConfig",
+        "summary": "Publish effective authentication capabilities and password policy",
+        "description": "Returns deployment-owned authentication capabilities and password creation policy. No secrets or provider configuration are included; the response is never cached.",
+        "tags": [
+          "identity"
+        ],
+        "responses": {
+          "200": {
+            "description": "The effective public authentication configuration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthConfig"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Configuration failure as RFC 9457 Problem Details.",
             "content": {
               "application/problem+json": {
                 "schema": {

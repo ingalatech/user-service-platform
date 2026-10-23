@@ -245,7 +245,7 @@ export default {
     assert(ready, 'Worker readiness within 60 seconds');
 
     const email = 'consumer-browser@example.com';
-    const password = 'isolated-consumer-credential-41';
+    const password = 'Isolated-consumer-credential-41';
 
     phase = 'frontend origin';
     frontend = await startFrontend(frontendPort);
@@ -285,6 +285,30 @@ export default {
     assert(editorial !== null && editorial.status() === 200, 'editorial document served');
 
     phase = 'direct-browser registration';
+    const httpRegistration = await http('/v1/auth/register', {
+      method: 'POST',
+      headers: {
+        origin: frontendBase,
+        'content-type': 'application/json',
+        'sec-fetch-site': 'same-site',
+      },
+      body: JSON.stringify({
+        name: 'HTTP CORS Regression',
+        email: 'http-cors-regression@example.com',
+        password: 'Isolated-consumer-credential-41',
+      }),
+    });
+    await httpRegistration.text();
+    assert(httpRegistration.status === 201, 'HTTP registration succeeds');
+    assert(
+      httpRegistration.headers.get('access-control-allow-origin') === frontendBase,
+      'HTTP registration grants the exact origin',
+    );
+    assert(
+      httpRegistration.headers.get('access-control-allow-credentials') === 'true',
+      'HTTP registration grants credentials',
+    );
+
     const registered = await page.evaluate<RegisterResult>(`(async () => {
       const service = ${JSON.stringify(serviceBase)};
       const email = ${JSON.stringify(email)};

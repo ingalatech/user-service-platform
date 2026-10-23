@@ -1,4 +1,5 @@
 import type { Env } from '../../env.js';
+import type { PasswordPolicy } from './password-policy.js';
 
 // Application-owned authentication policy (ADR-0005). Deployment-level
 // configuration that controls supported authentication behaviour without
@@ -15,6 +16,7 @@ export interface AuthPolicy {
   readonly requireEmailVerification: boolean;
   // Lifetime of Better Auth verification tokens, in seconds.
   readonly emailVerificationTTLSeconds: number;
+  readonly passwordPolicy: PasswordPolicy;
 }
 
 // Deployment defaults for the initial single-client release: open
@@ -24,6 +26,14 @@ export const DEFAULT_AUTH_POLICY: AuthPolicy = {
   emailPasswordEnabled: true,
   requireEmailVerification: true,
   emailVerificationTTLSeconds: 3600,
+  passwordPolicy: {
+    minLength: 8,
+    maxLength: 128,
+    minUppercase: 1,
+    minLowercase: 1,
+    minDigits: 1,
+    minSymbols: 0,
+  },
 };
 
 function parseFlag(value: string | undefined, fallback: boolean, name: string): boolean {
@@ -62,8 +72,27 @@ export function resolveAuthPolicy(
     | 'AUTH_EMAIL_PASSWORD_ENABLED'
     | 'AUTH_REQUIRE_EMAIL_VERIFICATION'
     | 'AUTH_EMAIL_VERIFICATION_TTL_SECONDS'
+    | 'AUTH_PASSWORD_MIN_LENGTH'
+    | 'AUTH_PASSWORD_MAX_LENGTH'
+    | 'AUTH_PASSWORD_MIN_UPPERCASE'
+    | 'AUTH_PASSWORD_MIN_LOWERCASE'
+    | 'AUTH_PASSWORD_MIN_DIGITS'
+    | 'AUTH_PASSWORD_MIN_SYMBOLS'
   >,
 ): AuthPolicy {
+  const number = (
+    name:
+      | 'AUTH_PASSWORD_MIN_LENGTH'
+      | 'AUTH_PASSWORD_MAX_LENGTH'
+      | 'AUTH_PASSWORD_MIN_UPPERCASE'
+      | 'AUTH_PASSWORD_MIN_LOWERCASE'
+      | 'AUTH_PASSWORD_MIN_DIGITS'
+      | 'AUTH_PASSWORD_MIN_SYMBOLS',
+    fallback: number,
+  ): number => {
+    const value = env[name];
+    return value === undefined ? fallback : Number(value);
+  };
   return {
     registrationEnabled: parseFlag(
       env.AUTH_REGISTRATION_ENABLED,
@@ -85,5 +114,22 @@ export function resolveAuthPolicy(
       DEFAULT_AUTH_POLICY.emailVerificationTTLSeconds,
       'AUTH_EMAIL_VERIFICATION_TTL_SECONDS',
     ),
+    passwordPolicy: {
+      minLength: number('AUTH_PASSWORD_MIN_LENGTH', DEFAULT_AUTH_POLICY.passwordPolicy.minLength),
+      maxLength: number('AUTH_PASSWORD_MAX_LENGTH', DEFAULT_AUTH_POLICY.passwordPolicy.maxLength),
+      minUppercase: number(
+        'AUTH_PASSWORD_MIN_UPPERCASE',
+        DEFAULT_AUTH_POLICY.passwordPolicy.minUppercase,
+      ),
+      minLowercase: number(
+        'AUTH_PASSWORD_MIN_LOWERCASE',
+        DEFAULT_AUTH_POLICY.passwordPolicy.minLowercase,
+      ),
+      minDigits: number('AUTH_PASSWORD_MIN_DIGITS', DEFAULT_AUTH_POLICY.passwordPolicy.minDigits),
+      minSymbols: number(
+        'AUTH_PASSWORD_MIN_SYMBOLS',
+        DEFAULT_AUTH_POLICY.passwordPolicy.minSymbols,
+      ),
+    },
   };
 }

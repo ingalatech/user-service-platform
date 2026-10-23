@@ -14,6 +14,7 @@ const restoredSnapshot: ConsumerReaderState = {
 
 function clientWith(snapshot: ConsumerReaderState | null): ConsumerClient {
   return {
+    getAuthConfig: () => Promise.reject(new Error('Not used.')),
     login: () => Promise.reject(new Error('Not used.')),
     getSnapshot: () => Promise.resolve(snapshot),
     refreshReaderState: () =>

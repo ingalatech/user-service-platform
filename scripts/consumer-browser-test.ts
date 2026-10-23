@@ -311,7 +311,7 @@ export default {
 
     phase = 'register and login';
     const email = 'fixture-reader@example.com';
-    const password = 'isolated-consumer-credential-41';
+    const password = 'Isolated-consumer-credential-41';
     await page.goto(`${base}${DOC_A}`);
     await installClient(page, bundle);
     const registered = await browserJson(

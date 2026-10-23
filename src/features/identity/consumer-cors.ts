@@ -74,6 +74,7 @@ export const CONSUMER_CORS_PATHS = [
   '/auth/sign-out',
   '/auth/reader-state',
   '/auth/jwks',
+  '/auth/config',
   '/me',
 ] as const;
 
@@ -145,10 +146,12 @@ export function createConsumerCorsMiddleware() {
     await next();
     // Always vary on Origin so shared caches never reuse a granted response
     // for an unapproved origin (and vice versa).
-    c.res.headers.set('Vary', 'Origin');
+    // Use Hono's context API: after a route returns, the Worker response may be
+    // finalized with immutable headers and `c.res.headers.set()` is not safe.
+    c.header('Vary', 'Origin');
     if (allowedOrigin !== null) {
-      c.res.headers.set('Access-Control-Allow-Origin', allowedOrigin);
-      c.res.headers.set('Access-Control-Allow-Credentials', 'true');
+      c.header('Access-Control-Allow-Origin', allowedOrigin);
+      c.header('Access-Control-Allow-Credentials', 'true');
     }
   });
 }

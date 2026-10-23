@@ -11,9 +11,34 @@ const emailField = z
 
 const passwordField = z
   .string()
-  .min(8, { error: 'Password must be at least 8 characters.' })
+  .min(1, { error: 'Password must not be empty.' })
   .max(128, { error: 'Password must be at most 128 characters.' })
-  .openapi({ example: 'correct-horse-41' });
+  .openapi({ example: 'Correct-horse-41' });
+
+export const PasswordPolicySchema = z
+  .object({
+    minLength: z.number().int().min(1).max(128).openapi({ example: 8 }),
+    maxLength: z.number().int().min(1).max(128).openapi({ example: 128 }),
+    minUppercase: z.number().int().min(0).max(128).openapi({ example: 1 }),
+    minLowercase: z.number().int().min(0).max(128).openapi({ example: 1 }),
+    minDigits: z.number().int().min(0).max(128).openapi({ example: 1 }),
+    minSymbols: z.number().int().min(0).max(128).openapi({ example: 0 }),
+  })
+  .openapi('PasswordPolicy');
+
+export const AuthConfigSchema = z
+  .object({
+    capabilities: z
+      .object({
+        registration: z.boolean(),
+        emailPassword: z.boolean(),
+        emailVerification: z.boolean(),
+        passwordReset: z.boolean(),
+      })
+      .openapi('AuthCapabilities'),
+    passwordPolicy: PasswordPolicySchema,
+  })
+  .openapi('AuthConfig');
 
 export const RegisterRequestSchema = z
   .object({
@@ -49,7 +74,7 @@ export const RegisteredUserSchema = z
 export const LoginRequestSchema = z
   .object({
     email: emailField,
-    password: z.string().min(1).max(128).openapi({ example: 'correct-horse-41' }),
+    password: z.string().min(1).max(128).openapi({ example: 'Correct-horse-41' }),
   })
   .openapi('LoginRequest');
 
@@ -265,6 +290,8 @@ export const ConsumerJwksResponseSchema = z
   .openapi('ConsumerJwks');
 
 export type ReaderStateResponse = z.infer<typeof ReaderStateResponseSchema>;
+export type PasswordPolicy = z.infer<typeof PasswordPolicySchema>;
+export type AuthConfig = z.infer<typeof AuthConfigSchema>;
 export type ConsumerJsonWebKey = z.infer<typeof ConsumerJsonWebKeySchema>;
 export type ConsumerJwksResponse = z.infer<typeof ConsumerJwksResponseSchema>;
 

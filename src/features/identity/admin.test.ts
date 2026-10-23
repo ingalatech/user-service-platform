@@ -4,6 +4,11 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../../app.js';
 import type { Env } from '../../env.js';
 import { InMemoryAuthMailer } from './mailer.js';
+import {
+  PASSWORD_POLICY_BOUNDARY_PASSWORDS,
+  PASSWORD_POLICY_VIOLATIONS,
+  TEST_PASSWORD_POLICY,
+} from './password-policy.test-data.js';
 
 // Seam under test (ticket #59, ADR-0011): the public HTTP boundary of the
 // built Worker, executed inside the Cloudflare Workers runtime with the
@@ -93,7 +98,7 @@ const ADMIN_BOOTSTRAP_PATH = '/v1/auth/admin/bootstrap';
 const adminInput = {
   name: 'Ada Admin',
   email: 'admin@example.com',
-  password: 'correct-horse-41',
+  password: 'Correct-horse-41',
 };
 
 beforeAll(async () => {
@@ -137,7 +142,7 @@ describe('POST /v1/auth/admin/bootstrap', () => {
 
     // Bootstrap itself schedules no mail and leaks no credential material.
     expect(mailer.sent).toHaveLength(0);
-    expect(JSON.stringify(body)).not.toContain('correct-horse-41');
+    expect(JSON.stringify(body)).not.toContain('Correct-horse-41');
   });
 
   it('keeps the verification gate for the bootstrapped admin, then admits them after verification', async () => {
@@ -145,7 +150,7 @@ describe('POST /v1/auth/admin/bootstrap', () => {
 
     const gated = await post('/v1/auth/login', {
       email: 'admin@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
     expect(gated.status).toBe(403);
     expect(await gated.json()).toMatchObject({
@@ -167,7 +172,7 @@ describe('POST /v1/auth/admin/bootstrap', () => {
 
     const loginRes = await post('/v1/auth/login', {
       email: 'admin@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
     expect(loginRes.status).toBe(200);
     const cookie = sessionCookieFrom(loginRes);
@@ -188,7 +193,7 @@ describe('POST /v1/auth/admin/bootstrap', () => {
     const second = await post(ADMIN_BOOTSTRAP_PATH, {
       name: 'Second Admin',
       email: 'second-admin@example.com',
-      password: 'another-horse-42',
+      password: 'Another-horse-42',
     });
 
     expect(second.status).toBe(409);
@@ -206,14 +211,14 @@ describe('POST /v1/auth/admin/bootstrap', () => {
     const registerRes = await post('/v1/auth/register', {
       name: 'Ordinary User',
       email: 'ordinary@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
     expect(registerRes.status).toBe(201);
 
     const res = await post(ADMIN_BOOTSTRAP_PATH, {
       name: 'Claimant',
       email: 'ordinary@example.com',
-      password: 'another-horse-42',
+      password: 'Another-horse-42',
     });
 
     expect(res.status).toBe(409);
@@ -228,7 +233,7 @@ describe('POST /v1/auth/admin/bootstrap', () => {
     await post('/v1/auth/register', {
       name: 'Ordinary User',
       email: 'ordinary@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
 
     const res = await post(ADMIN_BOOTSTRAP_PATH, adminInput);
@@ -249,6 +254,51 @@ describe('POST /v1/auth/admin/bootstrap', () => {
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({ code: 'bad-request', status: 400 });
     expect(await userCount()).toBe(0);
+  });
+
+  it('enforces every configured password rule and both length boundaries', async () => {
+    const policyEnv = {
+      AUTH_PASSWORD_MIN_LENGTH: String(TEST_PASSWORD_POLICY.minLength),
+      AUTH_PASSWORD_MAX_LENGTH: String(TEST_PASSWORD_POLICY.maxLength),
+      AUTH_PASSWORD_MIN_UPPERCASE: String(TEST_PASSWORD_POLICY.minUppercase),
+      AUTH_PASSWORD_MIN_LOWERCASE: String(TEST_PASSWORD_POLICY.minLowercase),
+      AUTH_PASSWORD_MIN_DIGITS: String(TEST_PASSWORD_POLICY.minDigits),
+      AUTH_PASSWORD_MIN_SYMBOLS: String(TEST_PASSWORD_POLICY.minSymbols),
+    };
+
+    for (const [index, violation] of PASSWORD_POLICY_VIOLATIONS.entries()) {
+      const res = await post(
+        ADMIN_BOOTSTRAP_PATH,
+        {
+          name: `Policy Admin ${String(index)}`,
+          email: `policy-admin-${String(index)}@example.com`,
+          password: violation.password,
+        },
+        policyEnv,
+      );
+
+      expect(res.status).toBe(400);
+      expect(res.headers.get('cache-control')).toBe('no-store');
+      expect(await res.json()).toMatchObject({
+        code: 'password-policy-violation',
+        failedRules: [violation.rule],
+        passwordPolicy: TEST_PASSWORD_POLICY,
+      });
+    }
+
+    for (const [index, password] of PASSWORD_POLICY_BOUNDARY_PASSWORDS.entries()) {
+      const res = await post(
+        ADMIN_BOOTSTRAP_PATH,
+        {
+          name: `Boundary Admin ${String(index)}`,
+          email: `boundary-admin-${String(index)}@example.com`,
+          password,
+        },
+        policyEnv,
+      );
+      expect(res.status).toBe(201);
+      await workerEnv.DB.prepare('DELETE FROM "user"').run();
+    }
   });
 
   it('rejects bootstrap with a stable error when email/password is disabled', async () => {
@@ -272,7 +322,7 @@ describe('POST /v1/auth/admin/bootstrap', () => {
       await post(ADMIN_BOOTSTRAP_PATH, {
         name: 'Second Admin',
         email: 'second-admin@example.com',
-        password: 'another-horse-42',
+        password: 'Another-horse-42',
       });
       await post(ADMIN_BOOTSTRAP_PATH, {
         name: '',
@@ -284,8 +334,8 @@ describe('POST /v1/auth/admin/bootstrap', () => {
     }
 
     const transcript = seen.join('\n');
-    expect(transcript).not.toContain('correct-horse-41');
-    expect(transcript).not.toContain('another-horse-42');
+    expect(transcript).not.toContain('Correct-horse-41');
+    expect(transcript).not.toContain('Another-horse-42');
     expect(transcript).not.toContain('admin@example.com');
     expect(transcript).not.toContain('second-admin@example.com');
   });
