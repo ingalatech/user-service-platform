@@ -305,6 +305,32 @@
           "email"
         ]
       },
+      "CheckPasswordResetResult": {
+        "type": "object",
+        "properties": {
+          "valid": {
+            "type": "boolean",
+            "example": true
+          }
+        },
+        "required": [
+          "valid"
+        ]
+      },
+      "CheckPasswordResetRequest": {
+        "type": "object",
+        "properties": {
+          "token": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 4096,
+            "description": "Password-reset token from the action URL."
+          }
+        },
+        "required": [
+          "token"
+        ]
+      },
       "ResetPasswordResult": {
         "type": "object",
         "properties": {
@@ -927,6 +953,47 @@
           },
           "default": {
             "description": "Request failure as RFC 9457 Problem Details.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/check-password-reset": {
+      "post": {
+        "operationId": "checkPasswordReset",
+        "summary": "Check a password-reset action",
+        "description": "Checks whether a password-reset token is current without consuming or mutating it. Unknown, expired, and already consumed actions return `valid: false`. Responses never include token material and are never cached.",
+        "tags": [
+          "identity"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CheckPasswordResetRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Whether the password-reset action is current.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckPasswordResetResult"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Check failure as RFC 9457 Problem Details.",
             "content": {
               "application/problem+json": {
                 "schema": {

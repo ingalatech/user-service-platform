@@ -70,6 +70,7 @@ export const CONSUMER_CORS_PATHS = [
   '/auth/verify-email',
   '/auth/request-verification',
   '/auth/request-password-reset',
+  '/auth/check-password-reset',
   '/auth/reset-password',
   '/auth/sign-out',
   '/auth/reader-state',

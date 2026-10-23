@@ -219,6 +219,7 @@ export interface ConsumerClient {
   verifyEmail(token: string): Promise<void>;
   requestVerification(email: string): Promise<void>;
   requestPasswordReset(email: string): Promise<void>;
+  checkPasswordReset(token: string): Promise<boolean>;
   resetPassword(token: string, newPassword: string): Promise<void>;
   observeReaderState(listener: (state: ConsumerReaderState | null) => void): () => void;
 }
@@ -749,6 +750,15 @@ export function createConsumerClient(options: ConsumerClientOptions): ConsumerCl
         }
       } catch (error) {
         throw toTransportError(error, 'requesting password reset');
+      }
+    },
+    checkPasswordReset: async (token) => {
+      try {
+        const response = await api.POST('/v1/auth/check-password-reset', { body: { token } });
+        if (response.data !== undefined) return response.data.valid;
+        throw toClientError(response.error, response.response.status, 'checking password reset');
+      } catch (error) {
+        throw toTransportError(error, 'checking password reset');
       }
     },
     resetPassword: async (token, newPassword) => {

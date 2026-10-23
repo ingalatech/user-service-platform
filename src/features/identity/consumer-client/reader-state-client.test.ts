@@ -303,6 +303,7 @@ describe('Reader State consumer client', () => {
       () => client.verifyEmail('verification-token'),
       () => client.requestVerification('ada@example.com'),
       () => client.requestPasswordReset('ada@example.com'),
+      () => client.checkPasswordReset('reset-token'),
       () => client.resetPassword('reset-token', 'new-password-41'),
     ];
 
@@ -312,6 +313,24 @@ describe('Reader State consumer client', () => {
         code: 'network-unavailable',
       });
     }
+  });
+
+  it('projects the reset-action check response to a boolean', async () => {
+    const requests: string[] = [];
+    const client = createConsumerClient({
+      baseUrl: scope.service,
+      issuer: scope.issuer,
+      audience: scope.audience,
+      broadcast: null,
+      fetchImpl: async (input) => {
+        const request = input as Request;
+        requests.push(await request.text());
+        return Response.json({ valid: true }, { status: 200 });
+      },
+    });
+
+    await expect(client.checkPasswordReset('reset-token')).resolves.toBe(true);
+    expect(requests).toEqual([JSON.stringify({ token: 'reset-token' })]);
   });
 
   it('maps storage failures after construction to unsupported-browser', async () => {

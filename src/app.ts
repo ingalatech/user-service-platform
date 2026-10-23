@@ -122,7 +122,7 @@ export function createApp(identityOptions: IdentityRouterOptions = {}) {
             instance: new URL(c.req.url).pathname,
           }),
           400,
-          { 'Content-Type': PROBLEM_JSON },
+          { 'Content-Type': PROBLEM_JSON, 'Cache-Control': 'no-store' },
         );
       }
       return undefined;

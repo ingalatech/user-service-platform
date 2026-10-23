@@ -138,6 +138,22 @@ export const RequestPasswordResetResultSchema = z
   })
   .openapi('RequestPasswordResetResult');
 
+export const CheckPasswordResetRequestSchema = z
+  .object({
+    token: z
+      .string()
+      .min(1)
+      .max(4096)
+      .openapi({ description: 'Password-reset token from the action URL.' }),
+  })
+  .openapi('CheckPasswordResetRequest');
+
+export const CheckPasswordResetResultSchema = z
+  .object({
+    valid: z.boolean().openapi({ example: true }),
+  })
+  .openapi('CheckPasswordResetResult');
+
 export const ResetPasswordRequestSchema = z
   .object({
     token: z
@@ -303,6 +319,8 @@ export type VerifyEmailRequest = z.infer<typeof VerifyEmailRequestSchema>;
 export type VerifyEmailResult = z.infer<typeof VerifyEmailResultSchema>;
 export type RequestPasswordResetRequest = z.infer<typeof RequestPasswordResetRequestSchema>;
 export type RequestPasswordResetResult = z.infer<typeof RequestPasswordResetResultSchema>;
+export type CheckPasswordResetRequest = z.infer<typeof CheckPasswordResetRequestSchema>;
+export type CheckPasswordResetResult = z.infer<typeof CheckPasswordResetResultSchema>;
 export type ResetPasswordRequest = z.infer<typeof ResetPasswordRequestSchema>;
 export type ResetPasswordResult = z.infer<typeof ResetPasswordResultSchema>;
 export type CurrentUser = z.infer<typeof CurrentUserSchema>;

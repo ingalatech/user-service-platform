@@ -17,6 +17,8 @@ export type {
   AdminUserDetailParams,
   AdminUserList,
   AdminUserListQuery,
+  CheckPasswordResetRequest,
+  CheckPasswordResetResult,
   ConsumerJwksResponse,
   ConsumerJsonWebKey,
   ReaderStateResponse,

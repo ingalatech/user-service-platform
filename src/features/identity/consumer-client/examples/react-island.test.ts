@@ -25,6 +25,7 @@ function clientWith(snapshot: ConsumerReaderState | null): ConsumerClient {
     verifyEmail: () => Promise.reject(new Error('Not used.')),
     requestVerification: () => Promise.reject(new Error('Not used.')),
     requestPasswordReset: () => Promise.reject(new Error('Not used.')),
+    checkPasswordReset: () => Promise.reject(new Error('Not used.')),
     resetPassword: () => Promise.reject(new Error('Not used.')),
     observeReaderState: () => () => undefined,
   };

@@ -163,6 +163,11 @@ credential-free on the in-memory transport, and the full scripted acceptance
 (`npm run acceptance:local`, `docs/operations/local-acceptance.md`,
 ticket #60) is the local release gate before sandbox promotion.
 
+Password-reset mail targets the consumer action page configured by
+`AUTH_RESET_PASSWORD_ACTION_URL`. Local development uses
+`http://localhost:4321/usuario/restablecer`; the versioned sandbox and
+production environment files point to their deployed RCH action page.
+
 SMTP notes:
 
 - Host, port, implicit-TLS (`SMTP_SECURE=true`, typically 465) versus

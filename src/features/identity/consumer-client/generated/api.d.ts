@@ -119,6 +119,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/auth/check-password-reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Check a password-reset action
+         * @description Checks whether a password-reset token is current without consuming or mutating it. Unknown, expired, and already consumed actions return `valid: false`. Responses never include token material and are never cached.
+         */
+        post: operations["checkPasswordReset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/auth/reset-password": {
         parameters: {
             query?: never;
@@ -447,6 +467,14 @@ export interface components {
              * @example ada@example.com
              */
             email: string;
+        };
+        CheckPasswordResetResult: {
+            /** @example true */
+            valid: boolean;
+        };
+        CheckPasswordResetRequest: {
+            /** @description Password-reset token from the action URL. */
+            token: string;
         };
         ResetPasswordResult: {
             /**
@@ -809,6 +837,39 @@ export interface operations {
                 };
             };
             /** @description Request failure as RFC 9457 Problem Details. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    checkPasswordReset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["CheckPasswordResetRequest"];
+            };
+        };
+        responses: {
+            /** @description Whether the password-reset action is current. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CheckPasswordResetResult"];
+                };
+            };
+            /** @description Check failure as RFC 9457 Problem Details. */
             default: {
                 headers: {
                     [name: string]: unknown;

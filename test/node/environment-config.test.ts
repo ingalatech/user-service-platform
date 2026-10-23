@@ -21,6 +21,22 @@ describe('release environment files', () => {
     expect(production.workerName).toContain('-production');
     expect(sandbox.applicationConfig.SMTP_HOST).toBe('smtp.gmail.com');
     expect(production.applicationConfig.SMTP_HOST).toBe('smtp.gmail.com');
+    expect(sandbox.applicationConfig.AUTH_RESET_PASSWORD_ACTION_URL).toBe(
+      'https://rch-rugbychampagneweb-sandbox.rch-evolucion.workers.dev/usuario/restablecer',
+    );
+    expect(production.applicationConfig.AUTH_RESET_PASSWORD_ACTION_URL).toBe(
+      'https://www.rugbychampagneweb.com/usuario/restablecer',
+    );
+    expect(sandbox.applicationConfig.AUTH_VERIFY_EMAIL_ACTION_URL).toBe('');
+    expect(production.applicationConfig.AUTH_VERIFY_EMAIL_ACTION_URL).toBe('');
+  });
+
+  it('documents the local Astro password-reset action without credentials', () => {
+    const example = readFileSync('.env.example', 'utf8');
+    expect(example).toContain(
+      'AUTH_RESET_PASSWORD_ACTION_URL=http://localhost:4321/usuario/restablecer',
+    );
+    expect(example).not.toContain('AUTH_VERIFY_EMAIL_ACTION_URL=http://localhost:4321');
   });
 
   it('resolves promotion identity without re-validating current application configuration', () => {

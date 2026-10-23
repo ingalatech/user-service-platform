@@ -9,6 +9,8 @@ import {
   AdminUserListSchema,
   AdminUserSchema,
   AuthConfigSchema,
+  CheckPasswordResetRequestSchema,
+  CheckPasswordResetResultSchema,
   ConsumerJwksResponseSchema,
   ReaderStateResponseSchema,
   CurrentUserSchema,
@@ -256,6 +258,28 @@ export const requestPasswordResetRoute = createRoute({
       description: 'The request was accepted.',
     },
     ...problemResponses('Request failure as RFC 9457 Problem Details.'),
+  },
+});
+
+export const checkPasswordResetRoute = createRoute({
+  method: 'post',
+  path: '/auth/check-password-reset',
+  operationId: 'checkPasswordReset',
+  summary: 'Check a password-reset action',
+  description:
+    'Checks whether a password-reset token is current without consuming or mutating it. ' +
+    'Unknown, expired, and already consumed actions return `valid: false`. Responses never ' +
+    'include token material and are never cached.',
+  tags: ['identity'],
+  request: {
+    body: { content: { 'application/json': { schema: CheckPasswordResetRequestSchema } } },
+  },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: CheckPasswordResetResultSchema } },
+      description: 'Whether the password-reset action is current.',
+    },
+    ...problemResponses('Check failure as RFC 9457 Problem Details.'),
   },
 });
 

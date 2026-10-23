@@ -18,12 +18,14 @@ import {
 } from './origin-guard.js';
 import { resolveAuthPolicy, type AuthPolicy } from './policy.js';
 import { evaluatePasswordPolicy } from './password-policy.js';
+import { isCurrentPasswordResetToken } from './password-reset-token.js';
 import {
   adminBootstrapRoute,
   adminMeRoute,
   adminUserDetailRoute,
   adminUsersRoute,
   authConfigRoute,
+  checkPasswordResetRoute,
   consumerJwksRoute,
   readerStateRoute,
   currentUserRoute,
@@ -516,6 +518,17 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
       return c.json({ status: 'ok' as const }, 202);
     }
     return problem(c, 500, 'internal-error', 'Internal Server Error');
+  });
+
+  router.openapi(checkPasswordResetRoute, async (c) => {
+    const input = c.req.valid('json');
+    let valid: boolean;
+    try {
+      valid = await isCurrentPasswordResetToken({ db: c.env.DB, token: input.token });
+    } catch {
+      return problem(c, 500, 'internal-error', 'Internal Server Error', undefined, 'no-store');
+    }
+    return c.json({ valid }, 200, { 'Cache-Control': 'no-store' });
   });
 
   router.openapi(resetPasswordRoute, async (c) => {

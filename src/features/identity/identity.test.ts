@@ -762,6 +762,96 @@ describe('password recovery', () => {
     expect(mailer.passwordResets).toHaveLength(0);
   });
 
+  it('checks a current reset action without consuming or exposing it', async () => {
+    await post('/v1/auth/register', {
+      name: 'Check Reset',
+      email: 'check-reset@example.com',
+      password: 'Correct-horse-41',
+    });
+    await post('/v1/auth/verify-email', { token: await tokenFromLastMessage() });
+    mailer.clear();
+    await post('/v1/auth/request-password-reset', { email: 'check-reset@example.com' });
+    const token = resetTokenFromLastMessage();
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const checked = await post('/v1/auth/check-password-reset', { token });
+      expect(checked.status).toBe(200);
+      expect(checked.headers.get('cache-control')).toBe('no-store');
+      const raw = await checked.text();
+      expect(raw).not.toContain(token);
+      expect(JSON.parse(raw)).toEqual({ valid: true });
+    }
+
+    const concurrentChecks = await Promise.all(
+      Array.from({ length: 8 }, () => post('/v1/auth/check-password-reset', { token })),
+    );
+    expect(concurrentChecks.every((response) => response.status === 200)).toBe(true);
+    expect(await Promise.all(concurrentChecks.map((response) => response.json()))).toEqual(
+      Array.from({ length: 8 }, () => ({ valid: true })),
+    );
+
+    const reset = await post('/v1/auth/reset-password', {
+      token,
+      newPassword: 'Brand-new-horse-42',
+    });
+    expect(reset.status).toBe(200);
+  });
+
+  it('returns false for expired, consumed, and unknown reset actions', async () => {
+    await post('/v1/auth/register', {
+      name: 'Invalid Check Reset',
+      email: 'invalid-check-reset@example.com',
+      password: 'Correct-horse-41',
+    });
+    await post('/v1/auth/verify-email', { token: await tokenFromLastMessage() });
+    mailer.clear();
+    await post('/v1/auth/request-password-reset', { email: 'invalid-check-reset@example.com' });
+    const token = resetTokenFromLastMessage();
+
+    const stored = await workerEnv.DB.prepare(
+      'SELECT expires_at FROM "verification" WHERE identifier = ?',
+    )
+      .bind(`reset-password:${token}`)
+      .first<{ expires_at: number }>();
+    expect(stored?.expires_at).toBeGreaterThan(Math.floor(Date.now() / 1000));
+    expect(stored?.expires_at).toBeLessThan(Date.now());
+    const expiredAt = Math.floor(Date.now() / 1000) - 1;
+    await workerEnv.DB.prepare('UPDATE "verification" SET expires_at = ? WHERE identifier = ?')
+      .bind(expiredAt, `reset-password:${token}`)
+      .run();
+    const expired = await post('/v1/auth/check-password-reset', { token });
+    expect(expired.status).toBe(200);
+    expect(expired.headers.get('cache-control')).toBe('no-store');
+    expect(await expired.json()).toEqual({ valid: false });
+
+    await post('/v1/auth/request-password-reset', { email: 'invalid-check-reset@example.com' });
+    const currentToken = resetTokenFromLastMessage();
+    const consumed = await post('/v1/auth/reset-password', {
+      token: currentToken,
+      newPassword: 'Brand-new-horse-42',
+    });
+    expect(consumed.status).toBe(200);
+
+    for (const candidate of [currentToken, 'unknown-reset-token']) {
+      const checked = await post('/v1/auth/check-password-reset', { token: candidate });
+      expect(checked.status).toBe(200);
+      expect(checked.headers.get('cache-control')).toBe('no-store');
+      const raw = await checked.text();
+      expect(raw).not.toContain(candidate);
+      expect(JSON.parse(raw)).toEqual({ valid: false });
+    }
+  });
+
+  it('rejects malformed reset checks at the public contract', async () => {
+    for (const token of ['', 'x'.repeat(4097)]) {
+      const res = await post('/v1/auth/check-password-reset', { token });
+      expect(res.status).toBe(400);
+      expect(res.headers.get('cache-control')).toBe('no-store');
+      expect(res.headers.get('content-type')).toContain('application/problem+json');
+      expect(await res.json()).toMatchObject({ code: 'bad-request', status: 400 });
+    }
+  });
+
   it('completes a valid reset, revokes sessions, and rotates credentials', async () => {
     await post('/v1/auth/register', {
       name: 'Rotate Me',
@@ -879,8 +969,9 @@ describe('password recovery', () => {
     const token = resetTokenFromLastMessage();
 
     // Expire the stored reset action directly; the public reset must then fail.
-    await workerEnv.DB.prepare('UPDATE "verification" SET expires_at = 0 WHERE identifier = ?')
-      .bind(`reset-password:${token}`)
+    const expiredAt = Math.floor(Date.now() / 1000) - 1;
+    await workerEnv.DB.prepare('UPDATE "verification" SET expires_at = ? WHERE identifier = ?')
+      .bind(expiredAt, `reset-password:${token}`)
       .run();
 
     const res = await post('/v1/auth/reset-password', {
@@ -898,6 +989,36 @@ describe('password recovery', () => {
       password: 'Correct-horse-41',
     });
     expect(loginRes.status).toBe(200);
+  });
+
+  it('consumes one concurrent reset action exactly once', async () => {
+    await post('/v1/auth/register', {
+      name: 'Concurrent Reset',
+      email: 'concurrent-reset@example.com',
+      password: 'Correct-horse-41',
+    });
+    await post('/v1/auth/verify-email', { token: await tokenFromLastMessage() });
+    mailer.clear();
+    await post('/v1/auth/request-password-reset', { email: 'concurrent-reset@example.com' });
+    const token = resetTokenFromLastMessage();
+
+    const [first, second] = await Promise.all([
+      post('/v1/auth/reset-password', { token, newPassword: 'First-reset-horse-42' }),
+      post('/v1/auth/reset-password', { token, newPassword: 'Second-reset-horse-43' }),
+    ]);
+    expect([first.status, second.status].sort()).toEqual([200, 400]);
+    const invalid = first.status === 400 ? first : second;
+    expect(await invalid.json()).toMatchObject({ code: 'reset-invalid', status: 400 });
+
+    const firstLogin = await post('/v1/auth/login', {
+      email: 'concurrent-reset@example.com',
+      password: 'First-reset-horse-42',
+    });
+    const secondLogin = await post('/v1/auth/login', {
+      email: 'concurrent-reset@example.com',
+      password: 'Second-reset-horse-43',
+    });
+    expect([firstLogin.status, secondLogin.status].sort()).toEqual([200, 401]);
   });
 
   it('enforces every configured password rule and both length boundaries', async () => {
@@ -997,6 +1118,8 @@ describe('password recovery', () => {
       captured.token = last?.token ?? '';
       captured.url = last?.url ?? '';
       expect(captured.token.length).toBeGreaterThan(0);
+      await post('/v1/auth/check-password-reset', { token: captured.token });
+      await post('/v1/auth/check-password-reset', { token: 'unknown-reset-token' });
       await post('/v1/auth/reset-password', {
         token: captured.token,
         newPassword: 'Brand-new-horse-42',

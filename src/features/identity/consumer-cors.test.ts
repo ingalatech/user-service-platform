@@ -203,6 +203,24 @@ describe('consumer CORS origin resolution', () => {
 });
 
 describe('public consumer operation CORS responses', () => {
+  it('grants reset-action checks to the exact configured consumer origin', async () => {
+    const res = await post(
+      '/v1/auth/check-password-reset',
+      { token: 'unknown-reset-token' },
+      {
+        headers: { origin: CONSUMER_ORIGIN },
+        overrides: { AUTH_CONSUMER_ORIGINS: CONSUMER_ORIGIN },
+      },
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ valid: false });
+    expect(res.headers.get('cache-control')).toBe('no-store');
+    expect(res.headers.get('access-control-allow-origin')).toBe(CONSUMER_ORIGIN);
+    expect(res.headers.get('access-control-allow-credentials')).toBe('true');
+    expect(res.headers.get('vary')).toContain('Origin');
+  });
+
   it('publishes the effective auth config without secrets and with no-store CORS', async () => {
     const res = await get('/v1/auth/config', {
       headers: { origin: CONSUMER_ORIGIN },
