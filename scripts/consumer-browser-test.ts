@@ -306,6 +306,19 @@ export default {
     const page = await context.newPage();
     diagnosticPage = page;
     page.setDefaultTimeout(15_000);
+    // The shipped consumer client is injected by this harness after each
+    // navigation. Strip only the document CSP in this test fixture so that
+    // this harness injection does not become a production CSP exception.
+    await context.route('**/*', async (route) => {
+      if (route.request().resourceType() !== 'document') {
+        await route.continue();
+        return;
+      }
+      const response = await route.fetch();
+      const headers = { ...response.headers() };
+      delete headers['content-security-policy'];
+      await route.fulfill({ response, headers });
+    });
     const tracker = createTracker();
     tracker.watch(page);
 

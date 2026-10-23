@@ -18,9 +18,25 @@ async function waitForCount(
 }
 
 export async function runAuthActionsBrowserTest(): Promise<void> {
-  const response = await createAuthActionsRouter().request(
-    'http://service.test/reset-password?token=browser-token',
+  const router = createAuthActionsRouter();
+  const verifyResponse = await router.request(
+    'http://service.test/verify-email?token=browser-verify-token',
   );
+  assert(verifyResponse.status === 200, 'verify action route responds');
+  assert(verifyResponse.headers.get('cache-control') === 'no-store', 'verify is not cached');
+  assert(
+    verifyResponse.headers.get('referrer-policy') === 'no-referrer',
+    'verify referrer is scrubbed',
+  );
+  assert(
+    verifyResponse.headers.get('content-security-policy')?.includes("'unsafe-inline'") === false,
+    'verify CSP rejects unsafe inline content',
+  );
+  const verifyDocument = (await verifyResponse.text()).replace(
+    '<head>',
+    '<head><base href="http://service.test/">',
+  );
+  const response = await router.request('http://service.test/reset-password?token=browser-token');
   assert(response.status === 200, 'reset action route responds');
   const source = await response.text();
   const document = source.replace('<head>', '<head><base href="http://service.test/">');
@@ -59,6 +75,13 @@ export async function runAuthActionsBrowserTest(): Promise<void> {
         }),
       }),
     );
+    await page.route('**/v1/auth/verify-email', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: '{"status":"ok"}',
+      });
+    });
     await page.route('**/v1/auth/reset-password', async (route) => {
       await route.fulfill({
         status: 200,
@@ -69,6 +92,12 @@ export async function runAuthActionsBrowserTest(): Promise<void> {
     await page.route('**/reset-password?token=browser-token', (route) =>
       route.fulfill({ status: 200, contentType: 'text/html', body: document }),
     );
+    await page.route('**/verify-email?token=browser-verify-token', (route) =>
+      route.fulfill({ status: 200, contentType: 'text/html', body: verifyDocument }),
+    );
+    await page.goto('http://service.test/verify-email?token=browser-verify-token');
+    await page.getByText('Your email address is verified.').waitFor();
+    assert(page.url() === 'http://service.test/verify-email', 'verify token is scrubbed from URL');
     await page.goto('http://service.test/reset-password?token=browser-token');
     await waitForCount(page.locator('#requirements li'), 6);
     assert(

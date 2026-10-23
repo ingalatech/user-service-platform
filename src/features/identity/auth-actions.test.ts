@@ -28,6 +28,23 @@ function testEnv(overrides: Partial<Env> = {}): Env {
 const mailer = new InMemoryAuthMailer();
 const app = createApp({ authMailer: mailer });
 
+async function sha256Base64(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value));
+  return btoa(String.fromCharCode(...new Uint8Array(digest)));
+}
+
+function contrastRatio(foreground: string, background: string): number {
+  const channel = (value: string, offset: number): number => {
+    const component = Number.parseInt(value.slice(offset, offset + 2), 16) / 255;
+    return component <= 0.03928 ? component / 12.92 : ((component + 0.055) / 1.055) ** 2.4;
+  };
+  const luminance = (value: string): number =>
+    0.2126 * channel(value, 1) + 0.7152 * channel(value, 3) + 0.0722 * channel(value, 5);
+  const lighter = Math.max(luminance(foreground), luminance(background));
+  const darker = Math.min(luminance(foreground), luminance(background));
+  return (lighter + 0.05) / (darker + 0.05);
+}
+
 async function waitForVerificationMessages(count: number): Promise<void> {
   for (let attempt = 0; attempt < 20 && mailer.sent.length < count; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -212,12 +229,51 @@ describe('service-owned fallback browser pages', () => {
       const csp = res.headers.get('content-security-policy') ?? '';
       expect(csp.length).toBeGreaterThan(0);
       expect(csp).toContain("frame-ancestors 'none'");
+      expect(csp).not.toContain("'unsafe-inline'");
 
       const html = await res.text();
+      const style = /<style>([\s\S]*?)<\/style>/.exec(html)?.[1];
+      const script = /<script>([\s\S]*?)<\/script>/.exec(html)?.[1];
+      expect(style).toBeDefined();
+      expect(script).toBeDefined();
+      expect(csp).toContain(`script-src 'sha256-${await sha256Base64(script ?? '')}'`);
+      expect(csp).toContain(`style-src 'sha256-${await sha256Base64(style ?? '')}'`);
+      expect(csp).not.toMatch(/(?:https?:)?\/\//);
+      expect(html).not.toMatch(/<(?:script[^>]+src|link\b)/i);
       expect(html).toMatch(/invalid|expired/i);
       expect(html).not.toContain('/api/auth');
       expect(html).not.toMatch(/better[\s_-]?auth/i);
+      expect(html).toContain('auth-screen');
+      expect(html).toContain('auth-card');
+      expect(html).toContain('--background:oklch(1 0 0)');
+      expect(html).toContain('--primary:oklch(.205 0 0)');
+      expect(html).toContain('prefers-color-scheme:dark');
+      expect(html).toContain('prefers-reduced-motion:reduce');
+      expect(html).not.toContain('linear-gradient');
+      expect(html).not.toContain('class="mark"');
+      expect(html).not.toContain('User Service');
+      expect(html).not.toContain('--accent');
+      expect(html).not.toContain('#1b75bb');
     }
+  });
+
+  it('keeps official action colors at WCAG AA for text and 3:1 for focus indicators', async () => {
+    const html = await (await get('/auth-actions/reset-password')).text();
+    expect(contrastRatio('#ffffff', '#2f2f2f')).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio('#2f2f2f', '#f4f4f4')).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio('#8f8f8f', '#ffffff')).toBeGreaterThanOrEqual(3);
+    expect(contrastRatio('#8f8f8f', '#252525')).toBeGreaterThanOrEqual(3);
+    expect(html).toContain('--primary-foreground:oklch(.985 0 0)');
+    expect(html).toContain('--ring:oklch(.708 0 0)');
+  });
+
+  it('renders the reset form with accessible policy and status hooks', async () => {
+    const html = await (await get('/auth-actions/reset-password?token=placeholder')).text();
+    expect(html).toContain('autocomplete="new-password"');
+    expect(html).toContain('aria-describedby="requirements"');
+    expect(html).toContain('id="requirements" aria-live="polite"');
+    expect(html).toContain('Your password does not meet the current requirements.');
+    expect(html).toContain('Your password was reset. You can now sign in.');
   });
 
   it('keeps the fallback pages out of the generated OpenAPI contract', async () => {
