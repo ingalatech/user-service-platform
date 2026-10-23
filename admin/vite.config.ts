@@ -15,7 +15,10 @@ export default defineConfig({
       '@tanstack/react-query',
       'react-hook-form',
     ],
-    alias: { '@': fileURLToPath(new URL('./src/kit', import.meta.url)) },
+    alias: {
+      '@': fileURLToPath(new URL('./src/kit', import.meta.url)),
+      'query-string': fileURLToPath(new URL('./src/query-string-compat.ts', import.meta.url)),
+    },
   },
   server: { proxy: { '/v1': 'http://127.0.0.1:8787', '/auth-actions': 'http://127.0.0.1:8787' } },
 });

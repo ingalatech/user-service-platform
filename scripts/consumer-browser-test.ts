@@ -494,7 +494,9 @@ export default {
     const replacementSubject = asRecord(asRecord(otherLogin)?.value)?.subject;
     assert(typeof replacementSubject === 'string', 'replacement subject is available');
     await second.waitForFunction(
-      `window.__replacementSubject === ${JSON.stringify(replacementSubject)}`,
+      (expected: string) =>
+        (globalThis as Record<string, unknown>).__replacementSubject === expected,
+      replacementSubject,
     );
     const liveReplacement = await browserJson(second, outcomeOf('client.getSnapshot()'));
     assert(
@@ -521,7 +523,9 @@ export default {
     const manualRefreshIssuedAt = asRecord(asRecord(manualRefresh)?.value)?.issuedAt;
     assert(typeof manualRefreshIssuedAt === 'number', 'manual refresh has a new issue time');
     await second.waitForFunction(
-      `window.__manualRefreshIssuedAt === ${String(manualRefreshIssuedAt)}`,
+      (expected: number) =>
+        (globalThis as Record<string, unknown>).__manualRefreshIssuedAt === expected,
+      manualRefreshIssuedAt,
     );
     assert(
       (await browserJson(second, 'return window.__manualRefreshIssuedAt;')) ===
@@ -563,7 +567,9 @@ export default {
     );
     await browserJson(second, 'window.__releaseReaderStateEvents(); return null;');
     await second.waitForFunction(
-      `window.__replacementSubject === ${JSON.stringify(newerCrossTabSubject)}`,
+      (expected: string) =>
+        (globalThis as Record<string, unknown>).__replacementSubject === expected,
+      newerCrossTabSubject,
     );
     await second.unroute('**/v1/auth/reader-state');
     const crossTabRefresh = await browserJson(second, outcomeOf('client.getSnapshot()'));
@@ -691,7 +697,11 @@ export default {
     });
     const delayedSignOut = browserJson(page, outcomeOf('client.logout()'));
     await delayedSignOutRequest;
-    await second.waitForFunction('window.__logoutRaceStates.includes(null)');
+    await second.waitForFunction(
+      () =>
+        (globalThis as Record<string, unknown>).__logoutRaceStates instanceof Array &&
+        ((globalThis as Record<string, unknown>).__logoutRaceStates as unknown[]).includes(null),
+    );
     const refreshBetweenMarkerAndSignOut = await browserJson(
       second,
       outcomeOf('client.refreshReaderState()'),
@@ -704,7 +714,10 @@ export default {
     const delayedSignOutOutcome = await delayedSignOut;
     assert(asRecord(delayedSignOutOutcome)?.ok === true, 'delayed server sign-out succeeds');
     await page.unroute('**/v1/auth/sign-out');
-    await second.waitForFunction('window.__logoutRaceStates.at(-1) === null');
+    await second.waitForFunction(() => {
+      const states = (globalThis as Record<string, unknown>).__logoutRaceStates;
+      return states instanceof Array && states.at(-1) === null;
+    });
     const stateAfterDelayedSignOut = await browserJson(
       second,
       outcomeOf(`
@@ -865,7 +878,9 @@ export default {
       'client.observeReaderState((state) => { if (state === null) window.__consumerLoggedOut = true; }); return null;',
     );
     await browserJson(page, outcomeOf('client.logout()'));
-    await second.waitForFunction('window.__consumerLoggedOut === true');
+    await second.waitForFunction(
+      () => (globalThis as Record<string, unknown>).__consumerLoggedOut === true,
+    );
     const propagated = await browserJson(second, outcomeOf('client.getSnapshot()'));
     assert(
       asRecord(propagated)?.ok === true && asRecord(propagated)?.value === null,
@@ -892,7 +907,10 @@ export default {
     const failedLogout = await browserJson(page, outcomeOf('client.logout()'));
     assert(asRecord(failedLogout)?.ok === false, 'failed logout surfaces');
     assert(asRecord(failedLogout)?.code === 'logout-failed', 'stable logout-failed code');
-    await second.waitForFunction('window.__logoutRaceStates.at(-1) === null');
+    await second.waitForFunction(() => {
+      const states = (globalThis as Record<string, unknown>).__logoutRaceStates;
+      return states instanceof Array && states.at(-1) === null;
+    });
     const stateAfterFailedLogout = await browserJson(second, outcomeOf('client.getSnapshot()'));
     assert(
       asRecord(stateAfterFailedLogout)?.ok === true &&
@@ -1070,7 +1088,10 @@ export default {
       `,
     );
     await browserJson(page, outcomeOf('client.logout()'));
-    await unsupported.waitForFunction('window.__crossTabStates.length > 0');
+    await unsupported.waitForFunction(() => {
+      const states = (globalThis as Record<string, unknown>).__crossTabStates;
+      return states instanceof Array && states.length > 0;
+    });
     const crossTabFailure = await browserJson(
       unsupported,
       'return { state: window.__crossTabStates.at(-1) ?? null, before: window.__crossTabBefore, errors: window.__crossTabErrors };',
