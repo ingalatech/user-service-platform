@@ -54,6 +54,7 @@ export type ProblemCode =
   | 'unauthenticated'
   | 'forbidden'
   | 'admin-already-bootstrapped'
+  | 'admin-bootstrap-in-progress'
   | 'admin-email-conflict'
   | 'password-policy-violation';
 

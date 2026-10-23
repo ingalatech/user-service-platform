@@ -330,7 +330,7 @@ export interface paths {
         put?: never;
         /**
          * Bootstrap the first administrator
-         * @description Creates the first administrative User through the auth engine after migrations, using explicit operator-supplied credentials. Succeeds only while no administrator exists; repeats and conflicting identities fail with stable machine codes instead of duplicating privileged accounts. The bootstrapped administrator remains subject to the deployment email verification policy before signing in.
+         * @description Creates the first administrative User through the auth engine after migrations, using explicit operator-supplied credentials. Succeeds only while no administrator exists; repeats and conflicting identities fail with stable machine codes instead of duplicating privileged accounts. The bootstrapped administrator remains subject to the deployment email verification policy before signing in. Creation schedules its first verification message; delivery failure does not undo the administrator. A concurrent active bootstrap may return a retryable 409 while its lease is still held.
          */
         post: operations["bootstrapAdmin"];
         delete?: never;
@@ -1166,7 +1166,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description The first administrator was created. */
+            /** @description The first administrator was created and verification was requested. */
             201: {
                 headers: {
                     [name: string]: unknown;

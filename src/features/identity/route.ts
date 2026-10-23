@@ -389,7 +389,10 @@ export const adminBootstrapRoute = createRoute({
     'while no administrator exists; repeats and conflicting identities fail ' +
     'with stable machine codes instead of duplicating privileged accounts. ' +
     'The bootstrapped administrator remains subject to the deployment email ' +
-    'verification policy before signing in.',
+    'verification policy before signing in. Creation schedules its first ' +
+    'verification message; delivery failure does not undo the administrator. ' +
+    'A concurrent active bootstrap may return a retryable 409 while its lease ' +
+    'is still held.',
   tags: ['identity'],
   request: {
     body: { content: { 'application/json': { schema: AdminBootstrapRequestSchema } } },
@@ -397,7 +400,7 @@ export const adminBootstrapRoute = createRoute({
   responses: {
     201: {
       content: { 'application/json': { schema: AdminBootstrapResultSchema } },
-      description: 'The first administrator was created.',
+      description: 'The first administrator was created and verification was requested.',
     },
     ...problemResponses('Bootstrap failure as RFC 9457 Problem Details.'),
   },

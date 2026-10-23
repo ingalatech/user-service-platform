@@ -82,8 +82,10 @@ npm run db:local:migrate
 npm run dev:local
 ```
 
-Open `http://localhost:8787/admin/`. Use `npm run admin:bootstrap` and the existing
-verification procedure to prepare a local administrator. Local mail is a
+Open `http://localhost:8787/admin/`. Use `npm run admin:bootstrap`; that one command
+creates the first administrator and requests its verification email. Complete the
+existing verification procedure to prepare a local administrator. If delivery
+fails, use the request-verification operation to resend. Local mail is a
 metadata-only sink; use the isolated browser test for automated fixture setup.
 For frontend live reload, run `npm run dev --workspace admin` alongside the
 Worker; Vite proxies `/v1` and `/auth-actions` to the local Worker.

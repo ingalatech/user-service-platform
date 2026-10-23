@@ -2,9 +2,9 @@
 //
 // Creates the first administrative User through the running Worker's public
 // HTTP boundary (`POST /v1/auth/admin/bootstrap`) after the versioned D1
-// migrations have been applied. Credentials travel only as explicit operator
-// inputs; the repository defines no default admin password and this script
-// stores none.
+// migrations have been applied. That one command also requests the first
+// verification email. Credentials travel only as explicit operator inputs;
+// the repository defines no default admin password and this script stores none.
 //
 // Typical local use against fresh local D1 (ticket #57 canonical path):
 //
@@ -122,7 +122,8 @@ async function main(): Promise<void> {
 
   if (res.status === 201 && outcome === 'admin') {
     // The created administrator still completes the deployment
-    // email-verification policy before signing in.
+    // email-verification policy before signing in. If delivery failed, rerun
+    // the supported request-verification operation to send a fresh message.
     return;
   }
   if (res.status === 409) {

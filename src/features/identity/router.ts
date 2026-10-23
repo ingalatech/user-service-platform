@@ -6,7 +6,7 @@ import { PROBLEM_JSON, createProblem, type ProblemCode } from '../../shared/prob
 import { createIdentityAuth, createReaderStateAuth } from './auth.js';
 import { resolveAdminIdentity } from './authorization.js';
 import { getAdminUserById, listAdminUsers } from './admin-users.js';
-import { bootstrapAdminUser } from './admin.js';
+import { bootstrapAdminUser, type BootstrapCreateUser } from './admin.js';
 import { CONSUMER_CORS_PATHS, createConsumerCorsMiddleware } from './consumer-cors.js';
 import { extractReaderStateExpiry, resolveReaderStateConfig } from './reader-state.js';
 import type { ConsumerJsonWebKey } from './contract.js';
@@ -45,6 +45,9 @@ export interface IdentityRouterOptions {
   // Test seam: an explicitly provided mailer (in-memory in tests) takes
   // precedence over environment resolution.
   readonly authMailer?: AuthMailer;
+  // Deterministic lease-clock and engine-failure seams for Worker-runtime tests.
+  readonly now?: () => number;
+  readonly bootstrapCreateUser?: BootstrapCreateUser;
 }
 
 type IdentityContext = Context<{ Bindings: Env; Variables: { requestId: string } }>;
@@ -872,6 +875,10 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
       name: input.name,
       email: input.email,
       password: input.password,
+      ...(options.now === undefined ? {} : { now: options.now }),
+      ...(options.bootstrapCreateUser === undefined
+        ? {}
+        : { createUser: options.bootstrapCreateUser }),
     });
     if (outcome.status === 'created') {
       return c.json(outcome.admin, 201);
@@ -883,6 +890,15 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
         'admin-already-bootstrapped',
         'Administrator already bootstrapped',
         'An administrative User already exists; bootstrap cannot create another.',
+      );
+    }
+    if (outcome.status === 'in-progress') {
+      return problem(
+        c,
+        409,
+        'admin-bootstrap-in-progress',
+        'Administrator bootstrap in progress',
+        'Another administrator bootstrap is still in progress; retry shortly.',
       );
     }
     return problem(
