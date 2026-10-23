@@ -346,7 +346,7 @@ export interface components {
         };
         RegisterRequest: {
             /** @example Ada Lovelace */
-            name: string;
+            name?: string;
             /**
              * Format: email
              * @example ada@example.com

@@ -319,7 +319,11 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     const input = c.req.valid('json');
     const outcome = await callEngine(() =>
       auth.api.signUpEmail({
-        body: { name: input.name, email: input.email, password: input.password },
+        body: {
+          name: input.name ?? input.email.slice(0, input.email.indexOf('@')),
+          email: input.email,
+          password: input.password,
+        },
         headers: c.req.raw.headers,
         asResponse: true,
       }),

@@ -90,13 +90,14 @@ async function userIdentity(
   binding: Env['DB'],
   email: string,
 ): Promise<{
+  readonly name: string;
   readonly email: string;
   readonly email_verified: number;
 }> {
   const row = await binding
-    .prepare('SELECT "email", "email_verified" FROM "user" WHERE "email" = ?')
+    .prepare('SELECT "name", "email", "email_verified" FROM "user" WHERE "email" = ?')
     .bind(email)
-    .first<{ email: string; email_verified: number }>();
+    .first<{ name: string; email: string; email_verified: number }>();
   if (row === null) throw new Error('Expected identity row.');
   return row;
 }
@@ -178,6 +179,74 @@ describe('POST /v1/auth/register', () => {
     expect(JSON.stringify(message)).not.toContain('correct-horse-41');
 
     expect(await userCount(workerEnv.DB)).toBe(1);
+  });
+
+  it('registers without a name using the email local-part for Better Auth', async () => {
+    const res = await post('/v1/auth/register', {
+      email: 'jperez@test.com',
+      password: 'correct-horse-41',
+    });
+
+    expect(res.status).toBe(201);
+    expect((await userIdentity(workerEnv.DB, 'jperez@test.com')).name).toBe('jperez');
+  });
+
+  it('preserves an explicitly provided name', async () => {
+    const res = await post('/v1/auth/register', {
+      name: 'Ada Lovelace',
+      email: 'ada-explicit@example.com',
+      password: 'correct-horse-41',
+    });
+
+    expect(res.status).toBe(201);
+    expect((await userIdentity(workerEnv.DB, 'ada-explicit@example.com')).name).toBe(
+      'Ada Lovelace',
+    );
+  });
+
+  it('rejects an explicitly empty name instead of treating it as omitted', async () => {
+    const res = await post('/v1/auth/register', {
+      name: '',
+      email: 'empty-name@example.com',
+      password: 'correct-horse-41',
+    });
+
+    expect(res.status).toBe(400);
+    expect(await userCount(workerEnv.DB)).toBe(0);
+  });
+
+  it('rejects an explicitly whitespace-only name', async () => {
+    const res = await post('/v1/auth/register', {
+      name: '   ',
+      email: 'whitespace-name@example.com',
+      password: 'correct-horse-41',
+    });
+
+    expect(res.status).toBe(400);
+    expect(await userCount(workerEnv.DB)).toBe(0);
+  });
+
+  it('accepts an omitted name when the derived local-part is exactly 200 characters', async () => {
+    const localPart = 'a'.repeat(200);
+    const email = `${localPart}@x.co`;
+    const res = await post('/v1/auth/register', {
+      email,
+      password: 'correct-horse-41',
+    });
+
+    expect(res.status).toBe(201);
+    expect((await userIdentity(workerEnv.DB, email)).name).toBe(localPart);
+  });
+
+  it('rejects an omitted name when the derived local-part exceeds 200 characters', async () => {
+    const email = `${'a'.repeat(201)}@x.co`;
+    const res = await post('/v1/auth/register', {
+      email,
+      password: 'correct-horse-41',
+    });
+
+    expect(res.status).toBe(400);
+    expect(await userCount(workerEnv.DB)).toBe(0);
   });
 
   it('rejects registration with a stable error when the policy disables it', async () => {
