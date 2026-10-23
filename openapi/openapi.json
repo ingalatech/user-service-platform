@@ -104,6 +104,7 @@
             "type": "string",
             "minLength": 1,
             "maxLength": 200,
+            "pattern": "\\S",
             "example": "Ada Lovelace"
           },
           "email": {
@@ -120,7 +121,6 @@
           }
         },
         "required": [
-          "name",
           "email",
           "password"
         ]

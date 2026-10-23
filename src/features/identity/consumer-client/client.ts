@@ -157,7 +157,7 @@ export interface ConsumerLoginInput {
 }
 
 export interface ConsumerRegisterInput {
-  readonly name: string;
+  readonly name?: string;
   readonly email: string;
   readonly password: string;
 }
@@ -632,7 +632,13 @@ export function createConsumerClient(options: ConsumerClientOptions): ConsumerCl
     },
     register: async (input) => {
       try {
-        const response = await api.POST('/v1/auth/register', { body: input });
+        const response = await api.POST('/v1/auth/register', {
+          body: {
+            email: input.email,
+            password: input.password,
+            ...(input.name === undefined ? {} : { name: input.name }),
+          },
+        });
         if (response.data === undefined) {
           throw toClientError(response.error, response.response.status, 'registering');
         }

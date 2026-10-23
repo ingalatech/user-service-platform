@@ -17,9 +17,24 @@ const passwordField = z
 
 export const RegisterRequestSchema = z
   .object({
-    name: z.string().min(1).max(200).openapi({ example: 'Ada Lovelace' }),
+    name: z
+      .string()
+      .min(1)
+      .max(200)
+      .regex(/\S/, { error: 'Name must contain a non-whitespace character.' })
+      .optional()
+      .openapi({ example: 'Ada Lovelace' }),
     email: emailField,
     password: passwordField,
+  })
+  .superRefine((input, context) => {
+    if (input.name === undefined && input.email.slice(0, input.email.indexOf('@')).length > 200) {
+      context.addIssue({
+        code: 'custom',
+        path: ['email'],
+        message: 'Email local-part is too long when name is omitted.',
+      });
+    }
   })
   .openapi('RegisterRequest');
 
