@@ -23,6 +23,8 @@ import {
   type DeployCommandRunner,
 } from './deploy/orchestrate.js';
 import { parseWorkerVersions, type WorkerVersionSummary } from './deploy/versions.js';
+import { selectWithKeys } from './deploy/prompt.js';
+import type { DeployableEnvironment } from './deploy/naming.js';
 
 const execFileAsync = promisify(execFile);
 const repoRoot = join(fileURLToPath(new URL('.', import.meta.url)), '..');
@@ -32,11 +34,12 @@ export function preparePromotionVersions(value: unknown): {
   readonly display: string[];
 } {
   const versions = parseWorkerVersions(value);
+  const latest = [...versions].sort((left, right) => right.createdOn.localeCompare(left.createdOn));
   return {
-    versions,
-    display: versions.map(
-      (version, index) =>
-        `${String(index + 1)}) ${version.id} ${version.createdOn} ${version.annotations}`,
+    versions: latest,
+    display: latest.map(
+      (version) =>
+        `${version.tag ?? 'untagged'} — ${version.id} — ${new Date(version.createdOn).toISOString()}`,
     ),
   };
 }
@@ -73,93 +76,132 @@ export function runPromotionSmoke(
 }
 
 async function main(): Promise<void> {
-  const readline = createInterface({ input: process.stdin, output: process.stdout });
   const args = process.argv.slice(2);
   const option = (name: string): string | undefined => {
     const index = args.indexOf(name);
     return index < 0 ? undefined : args[index + 1];
   };
+  const environments = [
+    'sandbox',
+    'production',
+  ] as const satisfies readonly DeployableEnvironment[];
+  const environmentOption = option('--env');
+  const environment =
+    environmentOption ??
+    environments[await selectPromotionChoice('Select promotion environment', environments)];
+  if (environment === undefined) throw new Error('No promotion environment selected.');
+  // Promotion intentionally resolves only target identity. The selected
+  // immutable version already contains its compiled application profile;
+  // current non-secret environment values must not be re-materialized here.
+  const resolved = resolveEnvironmentTarget(
+    loadEnvironmentFile(environmentFilePath(repoRoot, environment)),
+    { requireRemoteReady: true },
+  );
+  const directory = mkdtempSync(join(tmpdir(), 'user-service-promote-'));
+  let configPath = '';
   try {
-    const environment =
-      option('--env') ?? (await readline.question('Environment (sandbox/production): ')).trim();
-    // Promotion intentionally resolves only target identity. The selected
-    // immutable version already contains its compiled application profile;
-    // current non-secret environment values must not be re-materialized here.
-    const resolved = resolveEnvironmentTarget(
-      loadEnvironmentFile(environmentFilePath(repoRoot, environment)),
-      { requireRemoteReady: true },
-    );
-    const directory = mkdtempSync(join(tmpdir(), 'user-service-promote-'));
-    let configPath = '';
-    try {
-      configPath = writeTempPromotionWranglerConfig(resolved, directory);
-      const run: DeployCommandRunner = async (command, commandArgs) => {
-        try {
-          const { stdout } = await execFileAsync(command, commandArgs, {
-            env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: resolved.accountId },
-          });
-          return { exitCode: 0, stdout };
-        } catch {
-          return { exitCode: 1, stdout: '' };
-        }
-      };
-      const listed = await run('npx', [
-        'wrangler',
-        'versions',
-        'list',
-        '--json',
-        '--config',
-        configPath,
-      ]);
-      if (listed.exitCode !== 0) throw new Error('Unable to list Worker versions.');
-      const prepared = preparePromotionVersions(JSON.parse(listed.stdout ?? '[]') as unknown);
-      if (prepared.versions.length === 0) throw new Error('No Worker versions are available.');
-      prepared.display.forEach((line) => {
-        console.log(line);
-      });
-      const selected =
-        prepared.versions[Number(await readline.question('Select version number: ')) - 1];
-      if (selected === undefined) throw new Error('No immutable Version ID selected.');
-      let confirm = option('--confirm');
-      if (resolved.environment === 'production') {
-        confirm ??= await readline.question(
-          `Type exactly "${resolved.workerName}" to promote production: `,
-        );
+    configPath = writeTempPromotionWranglerConfig(resolved, directory);
+    const run: DeployCommandRunner = async (command, commandArgs) => {
+      try {
+        const { stdout } = await execFileAsync(command, commandArgs, {
+          env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: resolved.accountId },
+        });
+        return { exitCode: 0, stdout };
+      } catch {
+        return { exitCode: 1, stdout: '' };
       }
-      await runPromotion(
-        { resolved, versionId: selected.id, confirm },
-        {
-          materialize: () => configPath,
-          cleanup: removeTempWranglerConfig,
-          preflight: async (deployment) => {
-            const checks = await runPreflight(
-              { resolved: deployment },
-              {
-                nodeVersion: process.version,
-                commands: [],
-                run: async (command, commandArgs) => {
-                  try {
-                    const { stdout } = await execFileAsync(command, commandArgs, {
-                      env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: deployment.accountId },
-                    });
-                    return { exitCode: 0, stdout };
-                  } catch {
-                    return { exitCode: 1, stdout: '' };
-                  }
-                },
-              },
-            );
-            if (preflightFailed(checks)) throw formatPreflightError(checks);
-          },
-          log: console.log,
-          smoke: (_deployment, versionUrl) => runPromotionSmoke(resolved, versionUrl),
-        },
-        run,
-      );
-    } finally {
-      if (configPath) removeTempWranglerConfig(configPath);
-      rmSync(directory, { recursive: true, force: true });
+    };
+    const listed = await run('npx', [
+      'wrangler',
+      'versions',
+      'list',
+      '--json',
+      '--config',
+      configPath,
+    ]);
+    if (listed.exitCode !== 0) throw new Error('Unable to list Worker versions.');
+    const prepared = preparePromotionVersions(JSON.parse(listed.stdout ?? '[]') as unknown);
+    if (prepared.versions.length === 0) throw new Error('No Worker versions are available.');
+    const selectedIndex = await selectPromotionChoice(
+      'Select immutable Worker version',
+      prepared.display,
+    );
+    const selected = prepared.versions[selectedIndex];
+    if (selected === undefined) throw new Error('No immutable Version ID selected.');
+    let confirm = option('--confirm');
+    if (resolved.environment === 'production') {
+      if (confirm === undefined) {
+        const readline = createInterface({ input: process.stdin, output: process.stdout });
+        try {
+          confirm = await readline.question(
+            `Type exactly "${resolved.workerName}" to promote production: `,
+          );
+        } finally {
+          readline.close();
+        }
+      }
     }
+    await runPromotion(
+      { resolved, versionId: selected.id, confirm },
+      {
+        materialize: () => configPath,
+        cleanup: removeTempWranglerConfig,
+        preflight: async (deployment) => {
+          const checks = await runPreflight(
+            { resolved: deployment },
+            {
+              nodeVersion: process.version,
+              commands: [],
+              run: async (command, commandArgs) => {
+                try {
+                  const { stdout } = await execFileAsync(command, commandArgs, {
+                    env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: deployment.accountId },
+                  });
+                  return { exitCode: 0, stdout };
+                } catch {
+                  return { exitCode: 1, stdout: '' };
+                }
+              },
+            },
+          );
+          if (preflightFailed(checks)) throw formatPreflightError(checks);
+        },
+        log: console.log,
+        smoke: (_deployment, versionUrl) => runPromotionSmoke(resolved, versionUrl),
+      },
+      run,
+    );
+  } finally {
+    if (configPath) removeTempWranglerConfig(configPath);
+    rmSync(directory, { recursive: true, force: true });
+  }
+}
+
+function isInteractive(): boolean {
+  return (
+    process.stdin.isTTY && process.stdout.isTTY && typeof process.stdin.setRawMode === 'function'
+  );
+}
+
+async function selectPromotionChoice(
+  question: string,
+  choices: readonly string[],
+): Promise<number> {
+  if (isInteractive()) {
+    return selectWithKeys(process.stdin, process.stdout, question, choices);
+  }
+
+  const readline = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    choices.forEach((choice, index) => {
+      process.stdout.write(`${String(index + 1)}. ${choice}\n`);
+    });
+    const answer = (await readline.question(`${question} [1-${String(choices.length)}]: `)).trim();
+    const selected = Number(answer) - 1;
+    if (!Number.isInteger(selected) || selected < 0 || selected >= choices.length) {
+      throw new Error('No valid promotion selection was provided.');
+    }
+    return selected;
   } finally {
     readline.close();
   }

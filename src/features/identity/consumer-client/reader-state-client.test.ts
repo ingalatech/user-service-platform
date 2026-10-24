@@ -178,11 +178,11 @@ describe('Reader State consumer client', () => {
       fetchImpl: network.fetchImpl,
     });
 
-    await first.register({ name: 'Ada', email: 'ada@example.com', password: 'correct-horse-41' });
+    await first.register({ name: 'Ada', email: 'ada@example.com', password: 'Correct-horse-41' });
     await first.verifyEmail(await verificationToken());
     const authenticated = await first.login({
       email: 'ada@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
     expect(authenticated.sessionStatus).toBe('authenticated');
     expect(authenticated.entitlements).toEqual([]);
@@ -237,9 +237,9 @@ describe('Reader State consumer client', () => {
       fetchImpl,
       nowSeconds: () => nowSeconds,
     });
-    await client.register({ name: 'Ada', email: 'ada@example.com', password: 'correct-horse-41' });
+    await client.register({ name: 'Ada', email: 'ada@example.com', password: 'Correct-horse-41' });
     await client.verifyEmail(await verificationToken());
-    await client.login({ email: 'ada@example.com', password: 'correct-horse-41' });
+    await client.login({ email: 'ada@example.com', password: 'Correct-horse-41' });
 
     network.reset();
     expect((await client.refreshReaderState()).sessionStatus).toBe('authenticated');
@@ -271,9 +271,9 @@ describe('Reader State consumer client', () => {
       broadcast: null,
       fetchImpl: network.fetchImpl,
     });
-    await client.register({ name: 'Ada', email: 'ada@example.com', password: 'correct-horse-41' });
+    await client.register({ name: 'Ada', email: 'ada@example.com', password: 'Correct-horse-41' });
     await client.verifyEmail(await verificationToken());
-    await client.login({ email: 'ada@example.com', password: 'correct-horse-41' });
+    await client.login({ email: 'ada@example.com', password: 'Correct-horse-41' });
 
     const key = readerStateStorageKey(scope);
     const original = localStore.getItem(key);
@@ -303,6 +303,7 @@ describe('Reader State consumer client', () => {
       () => client.verifyEmail('verification-token'),
       () => client.requestVerification('ada@example.com'),
       () => client.requestPasswordReset('ada@example.com'),
+      () => client.checkPasswordReset('reset-token'),
       () => client.resetPassword('reset-token', 'new-password-41'),
     ];
 
@@ -312,6 +313,24 @@ describe('Reader State consumer client', () => {
         code: 'network-unavailable',
       });
     }
+  });
+
+  it('projects the reset-action check response to a boolean', async () => {
+    const requests: string[] = [];
+    const client = createConsumerClient({
+      baseUrl: scope.service,
+      issuer: scope.issuer,
+      audience: scope.audience,
+      broadcast: null,
+      fetchImpl: async (input) => {
+        const request = input as Request;
+        requests.push(await request.text());
+        return Response.json({ valid: true }, { status: 200 });
+      },
+    });
+
+    await expect(client.checkPasswordReset('reset-token')).resolves.toBe(true);
+    expect(requests).toEqual([JSON.stringify({ token: 'reset-token' })]);
   });
 
   it('maps storage failures after construction to unsupported-browser', async () => {
@@ -338,9 +357,9 @@ describe('Reader State consumer client', () => {
       broadcast: null,
       fetchImpl: network.fetchImpl,
     });
-    await client.register({ name: 'Ada', email: 'ada@example.com', password: 'correct-horse-41' });
+    await client.register({ name: 'Ada', email: 'ada@example.com', password: 'Correct-horse-41' });
     await client.verifyEmail(await verificationToken());
-    await client.login({ email: 'ada@example.com', password: 'correct-horse-41' });
+    await client.login({ email: 'ada@example.com', password: 'Correct-horse-41' });
 
     failSave = true;
     await expect(client.refreshReaderState()).rejects.toMatchObject({
@@ -510,11 +529,11 @@ describe('Reader State consumer client', () => {
         broadcast: null,
         fetchImpl: network.fetchImpl,
       });
-      await setup.register({ name: 'Ada', email: 'ada@example.com', password: 'correct-horse-41' });
+      await setup.register({ name: 'Ada', email: 'ada@example.com', password: 'Correct-horse-41' });
       await setup.verifyEmail(await verificationToken());
       const authenticated = await setup.login({
         email: 'ada@example.com',
-        password: 'correct-horse-41',
+        password: 'Correct-horse-41',
       });
       expect(values.get(readerStateStorageKey(scope))).not.toBeNull();
       failStateRemoval = true;
@@ -569,12 +588,12 @@ describe('Reader State consumer client', () => {
       broadcast,
       fetchImpl: network.fetchImpl,
     });
-    await setup.register({ name: 'Ada', email: 'ada@example.com', password: 'correct-horse-41' });
+    await setup.register({ name: 'Ada', email: 'ada@example.com', password: 'Correct-horse-41' });
     await setup.verifyEmail(await verificationToken());
     await setup.register({
       name: 'Grace',
       email: 'grace@example.com',
-      password: 'correct-horse-42',
+      password: 'Correct-horse-42',
     });
     await setup.verifyEmail(await verificationToken());
 
@@ -613,12 +632,12 @@ describe('Reader State consumer client', () => {
 
     const delayedLogin = delayedLoginClient.login({
       email: 'ada@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
     await loginResponseReady;
     const replacement = await replacementClient.login({
       email: 'grace@example.com',
-      password: 'correct-horse-42',
+      password: 'Correct-horse-42',
     });
     const issuesAfterReplacement = network.count('/v1/auth/reader-state');
     releaseLogin();
@@ -656,7 +675,7 @@ describe('Reader State consumer client', () => {
     await refreshResponseReady;
     const latest = await replacementClient.login({
       email: 'ada@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
     releaseRefresh();
     await expect(delayedRefresh).rejects.toMatchObject({ code: 'unauthenticated' });
@@ -685,9 +704,9 @@ describe('Reader State consumer client', () => {
       broadcast,
       fetchImpl: network.fetchImpl,
     });
-    await first.register({ name: 'Ada', email: 'ada@example.com', password: 'correct-horse-41' });
+    await first.register({ name: 'Ada', email: 'ada@example.com', password: 'Correct-horse-41' });
     await first.verifyEmail(await verificationToken());
-    await first.login({ email: 'ada@example.com', password: 'correct-horse-41' });
+    await first.login({ email: 'ada@example.com', password: 'Correct-horse-41' });
 
     const observed: (string | null)[] = [];
     second.observeReaderState((state) => observed.push(state?.subject ?? null));
@@ -770,9 +789,9 @@ describe('Reader State consumer client', () => {
       broadcast,
       fetchImpl: network.fetchImpl,
     });
-    await first.register({ name: 'Ada', email: 'ada@example.com', password: 'correct-horse-41' });
+    await first.register({ name: 'Ada', email: 'ada@example.com', password: 'Correct-horse-41' });
     await first.verifyEmail(await verificationToken());
-    await first.login({ email: 'ada@example.com', password: 'correct-horse-41' });
+    await first.login({ email: 'ada@example.com', password: 'Correct-horse-41' });
 
     let logoutMarkerObserved: () => void = () => undefined;
     const logoutMarker = new Promise<void>((resolve) => {

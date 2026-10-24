@@ -6,7 +6,7 @@ import { PROBLEM_JSON, createProblem, type ProblemCode } from '../../shared/prob
 import { createIdentityAuth, createReaderStateAuth } from './auth.js';
 import { resolveAdminIdentity } from './authorization.js';
 import { getAdminUserById, listAdminUsers } from './admin-users.js';
-import { bootstrapAdminUser } from './admin.js';
+import { bootstrapAdminUser, type BootstrapCreateUser } from './admin.js';
 import { CONSUMER_CORS_PATHS, createConsumerCorsMiddleware } from './consumer-cors.js';
 import { extractReaderStateExpiry, resolveReaderStateConfig } from './reader-state.js';
 import type { ConsumerJsonWebKey } from './contract.js';
@@ -17,11 +17,15 @@ import {
   resolveGatewayOrigins,
 } from './origin-guard.js';
 import { resolveAuthPolicy, type AuthPolicy } from './policy.js';
+import { evaluatePasswordPolicy } from './password-policy.js';
+import { isCurrentPasswordResetToken } from './password-reset-token.js';
 import {
   adminBootstrapRoute,
   adminMeRoute,
   adminUserDetailRoute,
   adminUsersRoute,
+  authConfigRoute,
+  checkPasswordResetRoute,
   consumerJwksRoute,
   readerStateRoute,
   currentUserRoute,
@@ -41,6 +45,10 @@ export interface IdentityRouterOptions {
   // Test seam: an explicitly provided mailer (in-memory in tests) takes
   // precedence over environment resolution.
   readonly authMailer?: AuthMailer;
+  // Deterministic lease-clock and engine-failure seams for Worker-runtime tests.
+  readonly now?: () => number;
+  readonly bootstrapLeaseTtlMs?: number;
+  readonly bootstrapCreateUser?: BootstrapCreateUser;
 }
 
 type IdentityContext = Context<{ Bindings: Env; Variables: { requestId: string } }>;
@@ -236,6 +244,24 @@ function problem(
   );
 }
 
+function passwordPolicyProblem(c: IdentityContext, password: string, policy: AuthPolicy) {
+  const evaluation = evaluatePasswordPolicy(password, policy.passwordPolicy);
+  if (evaluation.valid) return null;
+  return c.json(
+    createProblem({
+      status: 400,
+      code: 'password-policy-violation',
+      title: 'Password does not meet policy',
+      detail: 'The password does not meet the effective password policy.',
+      instance: new URL(c.req.url).pathname,
+      failedRules: evaluation.failedRules,
+      passwordPolicy: evaluation.policy,
+    }),
+    400,
+    { 'Content-Type': PROBLEM_JSON, 'Cache-Control': 'no-store' },
+  );
+}
+
 // Explicit Origin/Fetch Metadata protection for cookie-auth mutation
 // operations (spec #150, ADR-0013). Returns a rejection response when the
 // request must not mutate cookie-authenticated state, null when it may
@@ -317,9 +343,15 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     }
 
     const input = c.req.valid('json');
+    const passwordFailure = passwordPolicyProblem(c, input.password, policy);
+    if (passwordFailure !== null) return passwordFailure;
     const outcome = await callEngine(() =>
       auth.api.signUpEmail({
-        body: { name: input.name, email: input.email, password: input.password },
+        body: {
+          name: input.name ?? input.email.slice(0, input.email.indexOf('@')),
+          email: input.email,
+          password: input.password,
+        },
         headers: c.req.raw.headers,
         asResponse: true,
       }),
@@ -492,6 +524,21 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     return problem(c, 500, 'internal-error', 'Internal Server Error');
   });
 
+  router.openapi(checkPasswordResetRoute, async (c) => {
+    const { policy } = scopedAuth(c, override);
+    if (!policy.emailPasswordEnabled) {
+      return problem(c, 403, 'email-password-disabled', 'Email authentication is disabled');
+    }
+    const input = c.req.valid('json');
+    let valid: boolean;
+    try {
+      valid = await isCurrentPasswordResetToken({ db: c.env.DB, token: input.token });
+    } catch {
+      return problem(c, 500, 'internal-error', 'Internal Server Error', undefined, 'no-store');
+    }
+    return c.json({ valid }, 200, { 'Cache-Control': 'no-store' });
+  });
+
   router.openapi(resetPasswordRoute, async (c) => {
     const { auth, policy } = scopedAuth(c, override);
     if (!policy.emailPasswordEnabled) {
@@ -499,6 +546,8 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     }
 
     const input = c.req.valid('json');
+    const passwordFailure = passwordPolicyProblem(c, input.newPassword, policy);
+    if (passwordFailure !== null) return passwordFailure;
     const outcome = await callEngine(() =>
       auth.api.resetPassword({
         body: { newPassword: input.newPassword, token: input.token },
@@ -698,6 +747,27 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     return problem(c, 500, 'internal-error', 'Internal Server Error', undefined, 'no-store');
   });
 
+  router.openapi(authConfigRoute, (c) => {
+    const effective = resolveEffectiveConfig({
+      environment: c.env.ENVIRONMENT,
+      runtime: { ...c.env },
+    });
+    const policy = resolveAuthPolicy(effective.config);
+    return c.json(
+      {
+        capabilities: {
+          registration: policy.registrationEnabled,
+          emailPassword: policy.emailPasswordEnabled,
+          emailVerification: policy.requireEmailVerification,
+          passwordReset: policy.emailPasswordEnabled,
+        },
+        passwordPolicy: policy.passwordPolicy,
+      },
+      200,
+      { 'Cache-Control': 'no-store' },
+    );
+  });
+
   router.openapi(adminMeRoute, async (c) => {
     const session = await resolveSessionContext({
       env: c.env,
@@ -802,12 +872,21 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     }
 
     const input = c.req.valid('json');
+    const passwordFailure = passwordPolicyProblem(c, input.password, policy);
+    if (passwordFailure !== null) return passwordFailure;
     const outcome = await bootstrapAdminUser({
       auth,
       db: c.env.DB,
       name: input.name,
       email: input.email,
       password: input.password,
+      ...(options.now === undefined ? {} : { now: options.now }),
+      ...(options.bootstrapLeaseTtlMs === undefined
+        ? {}
+        : { leaseTtlMs: options.bootstrapLeaseTtlMs }),
+      ...(options.bootstrapCreateUser === undefined
+        ? {}
+        : { createUser: options.bootstrapCreateUser }),
     });
     if (outcome.status === 'created') {
       return c.json(outcome.admin, 201);
@@ -819,6 +898,15 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
         'admin-already-bootstrapped',
         'Administrator already bootstrapped',
         'An administrative User already exists; bootstrap cannot create another.',
+      );
+    }
+    if (outcome.status === 'in-progress') {
+      return problem(
+        c,
+        409,
+        'admin-bootstrap-in-progress',
+        'Administrator bootstrap in progress',
+        'Another administrator bootstrap is still in progress; retry shortly.',
       );
     }
     return problem(

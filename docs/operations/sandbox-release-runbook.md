@@ -96,10 +96,11 @@ target-only Wrangler config, constructs the documented URL from that exact ID,
 then queries the full Version metadata with
 `wrangler versions view <version-id> --json`. It requires the exact-version
 manifest in both supported Wrangler annotations (`workers/message` and
-`workers/tag`), validates their matching deterministic fingerprint and derives
-the required secret set from the manifest transport, never from the current
-application `.env`. It uses the returned Version URL when available (otherwise
-the documented format only after the full-ID and manifest match), and runs
+`workers/tag`), validates the new parseable release manifest and derives the
+required secret set from its transport, never from the current application
+`.env`. The human tag is not compared with the configuration fingerprint. It
+uses the returned Version URL when available (otherwise the documented format
+only after the full-ID and manifest match), and runs
 health followed by anonymous Identity (`GET /v1/me`) against it. This proves
 `BETTER_AUTH_SECRET` request wiring without reading secret values. It fails
 closed unless `BETTER_AUTH_SECRET` is present as `secret_text`, plus

@@ -119,6 +119,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/auth/check-password-reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Check a password-reset action
+         * @description Checks whether a password-reset token is current without consuming or mutating it. Unknown, expired, and already consumed actions return `valid: false`. Responses never include token material and are never cached.
+         */
+        post: operations["checkPasswordReset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/auth/reset-password": {
         parameters: {
             query?: never;
@@ -219,6 +239,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/auth/config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Publish effective authentication capabilities and password policy
+         * @description Returns deployment-owned authentication capabilities and password creation policy. No secrets or provider configuration are included; the response is never cached.
+         */
+        get: operations["getAuthConfig"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/admin/me": {
         parameters: {
             query?: never;
@@ -290,7 +330,7 @@ export interface paths {
         put?: never;
         /**
          * Bootstrap the first administrator
-         * @description Creates the first administrative User through the auth engine after migrations, using explicit operator-supplied credentials. Succeeds only while no administrator exists; repeats and conflicting identities fail with stable machine codes instead of duplicating privileged accounts. The bootstrapped administrator remains subject to the deployment email verification policy before signing in.
+         * @description Creates the first administrative User through the auth engine after migrations, using explicit operator-supplied credentials. Succeeds only while no administrator exists; repeats and conflicting identities fail with stable machine codes instead of duplicating privileged accounts. The bootstrapped administrator remains subject to the deployment email verification policy before signing in. Creation schedules its first verification message; delivery failure does not undo the administrator. A concurrent active bootstrap may return a retryable 409 while its lease is still held.
          */
         post: operations["bootstrapAdmin"];
         delete?: never;
@@ -332,6 +372,20 @@ export interface components {
             code: string;
             /** @example /v1/does-not-exist */
             instance?: string;
+            /**
+             * @example [
+             *       "min-uppercase"
+             *     ]
+             */
+            failedRules?: ("min-length" | "max-length" | "min-uppercase" | "min-lowercase" | "min-digits" | "min-symbols")[];
+            passwordPolicy?: {
+                minLength: number;
+                maxLength: number;
+                minUppercase: number;
+                minLowercase: number;
+                minDigits: number;
+                minSymbols: number;
+            };
         };
         RegisteredUser: {
             /** @example abc123 */
@@ -346,13 +400,13 @@ export interface components {
         };
         RegisterRequest: {
             /** @example Ada Lovelace */
-            name: string;
+            name?: string;
             /**
              * Format: email
              * @example ada@example.com
              */
             email: string;
-            /** @example correct-horse-41 */
+            /** @example Correct-horse-41 */
             password: string;
         };
         LoginResult: {
@@ -372,7 +426,7 @@ export interface components {
              * @example ada@example.com
              */
             email: string;
-            /** @example correct-horse-41 */
+            /** @example Correct-horse-41 */
             password: string;
         };
         VerifyEmailResult: {
@@ -414,6 +468,14 @@ export interface components {
              */
             email: string;
         };
+        CheckPasswordResetResult: {
+            /** @example true */
+            valid: boolean;
+        };
+        CheckPasswordResetRequest: {
+            /** @description Password-reset token from the action URL. */
+            token: string;
+        };
         ResetPasswordResult: {
             /**
              * @example ok
@@ -424,7 +486,7 @@ export interface components {
         ResetPasswordRequest: {
             /** @description Password-reset token from the action URL. */
             token: string;
-            /** @example correct-horse-41 */
+            /** @example Correct-horse-41 */
             newPassword: string;
         };
         CurrentUser: {
@@ -496,6 +558,30 @@ export interface components {
             /** @description Public RSA exponent. */
             e?: string;
         };
+        AuthConfig: {
+            capabilities: components["schemas"]["AuthCapabilities"];
+            passwordPolicy: components["schemas"]["PasswordPolicy"];
+        };
+        AuthCapabilities: {
+            registration: boolean;
+            emailPassword: boolean;
+            emailVerification: boolean;
+            passwordReset: boolean;
+        };
+        PasswordPolicy: {
+            /** @example 8 */
+            minLength: number;
+            /** @example 128 */
+            maxLength: number;
+            /** @example 1 */
+            minUppercase: number;
+            /** @example 1 */
+            minLowercase: number;
+            /** @example 1 */
+            minDigits: number;
+            /** @example 0 */
+            minSymbols: number;
+        };
         AdminMe: {
             /** @example abc123 */
             id: string;
@@ -555,7 +641,7 @@ export interface components {
              * @example ada@example.com
              */
             email: string;
-            /** @example correct-horse-41 */
+            /** @example Correct-horse-41 */
             password: string;
         };
     };
@@ -761,6 +847,39 @@ export interface operations {
             };
         };
     };
+    checkPasswordReset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["CheckPasswordResetRequest"];
+            };
+        };
+        responses: {
+            /** @description Whether the password-reset action is current. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CheckPasswordResetResult"];
+                };
+            };
+            /** @description Check failure as RFC 9457 Problem Details. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
     resetPassword: {
         parameters: {
             query?: never;
@@ -910,6 +1029,35 @@ export interface operations {
             };
         };
     };
+    getAuthConfig: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The effective public authentication configuration. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthConfig"];
+                };
+            };
+            /** @description Configuration failure as RFC 9457 Problem Details. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
     getAdminMe: {
         parameters: {
             query?: never;
@@ -1018,7 +1166,7 @@ export interface operations {
             };
         };
         responses: {
-            /** @description The first administrator was created. */
+            /** @description The first administrator was created and verification was requested. */
             201: {
                 headers: {
                     [name: string]: unknown;

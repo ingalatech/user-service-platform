@@ -12,7 +12,7 @@ import {
   type DeployIo,
 } from '../../scripts/deploy/orchestrate.js';
 import { parseWorkerVersionDetails } from '../../scripts/deploy/versions.js';
-import { buildVersionManifest } from '../../scripts/deploy/manifest.js';
+import { buildVersionManifest, parseVersionManifest } from '../../scripts/deploy/manifest.js';
 import type { ResolvedDeployment } from '../../scripts/deploy/environment-config.js';
 import {
   formatPreflightError,
@@ -52,7 +52,11 @@ const VERSION_URL_SANDBOX = {
   ...SANDBOX,
   workerUrl: 'https://rch-rugbychampagne-user-service-sandbox.rch-evolucion.workers.dev',
 };
-const VERSION_MANIFEST = buildVersionManifest(SANDBOX.applicationConfig);
+const VERSION_MANIFEST = buildVersionManifest(SANDBOX.applicationConfig, {
+  branch: 'test/branch',
+  commit: '0123456789abcdef0123456789abcdef01234567',
+  tag: '0123456-20261022T120000Z-test-branch',
+});
 const VERSION_DETAILS = JSON.stringify({
   id: 'immutable-v1',
   metadata: { created_on: '2026-10-20T12:00:00Z' },
@@ -117,6 +121,11 @@ function createHarness(failOn?: RegExp, failPreflight = false): Harness {
       log: (message) => {
         logs.push(message);
       },
+      sourceMetadata: () =>
+        Promise.resolve({
+          branch: 'test/branch',
+          commit: '0123456789abcdef0123456789abcdef01234567',
+        }),
     },
     runner: (command, args, options) => {
       commands.push({ command, args: [...args], env: options?.env });
@@ -240,8 +249,23 @@ describe('deployment orchestration', () => {
     expect(text.some((entry) => entry.includes('wrangler deploy --config'))).toBe(false);
     expect(text.some((entry) => entry.includes('smoke:health'))).toBe(false);
     const upload = harness.commands.find(({ args }) => args.includes('upload'));
-    expect(upload?.args.some((arg) => arg.startsWith(VERSION_MANIFEST.message))).toBe(true);
-    expect(upload?.args).toContain(VERSION_MANIFEST.tag);
+    const messageIndex = upload?.args.indexOf('--message') ?? -1;
+    const tagIndex = upload?.args.indexOf('--tag') ?? -1;
+    const message = messageIndex < 0 ? undefined : upload?.args[messageIndex + 1];
+    const tag = tagIndex < 0 ? undefined : upload?.args[tagIndex + 1];
+    expect(message).toBeDefined();
+    expect(tag).toMatch(/^0123456-\d{8}T\d{6}Z-test-branch$/);
+    expect(
+      parseVersionManifest({
+        'workers/message': message,
+        'workers/tag': tag,
+      }),
+    ).toMatchObject({
+      branch: 'test/branch',
+      commit: '0123456789abcdef0123456789abcdef01234567',
+      fingerprint: VERSION_MANIFEST.fingerprint,
+      mailTransport: 'resend',
+    });
     expect(harness.logs).toContain(
       'candidate uploaded; stable-origin smoke is deferred until promotion',
     );
@@ -268,6 +292,24 @@ describe('deployment orchestration', () => {
     expect(smoke?.env).toEqual({
       PATH: process.env.PATH,
       SMOKE_SANDBOX_BASE_URL: 'https://sandbox.example.test',
+    });
+    const deploy = harness.commands.find(({ args }) => args.includes('deploy'));
+    const messageIndex = deploy?.args.indexOf('--message') ?? -1;
+    const tagIndex = deploy?.args.indexOf('--tag') ?? -1;
+    const message = messageIndex < 0 ? undefined : deploy?.args[messageIndex + 1];
+    const tag = tagIndex < 0 ? undefined : deploy?.args[tagIndex + 1];
+    expect(message).toBeDefined();
+    expect(tag).toMatch(/^0123456-\d{8}T\d{6}Z-test-branch$/);
+    expect(
+      parseVersionManifest({
+        'workers/message': message,
+        'workers/tag': tag,
+      }),
+    ).toMatchObject({
+      branch: 'test/branch',
+      commit: '0123456789abcdef0123456789abcdef01234567',
+      fingerprint: VERSION_MANIFEST.fingerprint,
+      mailTransport: 'resend',
     });
   });
 

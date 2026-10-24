@@ -4,6 +4,11 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../../app.js';
 import type { Env } from '../../env.js';
 import { InMemoryAuthMailer } from './mailer.js';
+import {
+  PASSWORD_POLICY_BOUNDARY_PASSWORDS,
+  PASSWORD_POLICY_VIOLATIONS,
+  TEST_PASSWORD_POLICY,
+} from './password-policy.test-data.js';
 import { resolveAuthSecret } from './secret.js';
 
 // Seam under test (ticket #10, ADR-0011): the public HTTP boundary of the built
@@ -90,13 +95,14 @@ async function userIdentity(
   binding: Env['DB'],
   email: string,
 ): Promise<{
+  readonly name: string;
   readonly email: string;
   readonly email_verified: number;
 }> {
   const row = await binding
-    .prepare('SELECT "email", "email_verified" FROM "user" WHERE "email" = ?')
+    .prepare('SELECT "name", "email", "email_verified" FROM "user" WHERE "email" = ?')
     .bind(email)
-    .first<{ email: string; email_verified: number }>();
+    .first<{ name: string; email: string; email_verified: number }>();
   if (row === null) throw new Error('Expected identity row.');
   return row;
 }
@@ -156,7 +162,7 @@ describe('POST /v1/auth/register', () => {
     const res = await post('/v1/auth/register', {
       name: 'Ada Lovelace',
       email: 'ada@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
 
     expect(res.status).toBe(201);
@@ -175,15 +181,83 @@ describe('POST /v1/auth/register', () => {
     expect(message?.to).toBe('ada@example.com');
     expect(message?.url).toContain('token=');
     // The captured action must not carry credential material with it.
-    expect(JSON.stringify(message)).not.toContain('correct-horse-41');
+    expect(JSON.stringify(message)).not.toContain('Correct-horse-41');
 
     expect(await userCount(workerEnv.DB)).toBe(1);
+  });
+
+  it('registers without a name using the email local-part for Better Auth', async () => {
+    const res = await post('/v1/auth/register', {
+      email: 'jperez@test.com',
+      password: 'Correct-horse-41',
+    });
+
+    expect(res.status).toBe(201);
+    expect((await userIdentity(workerEnv.DB, 'jperez@test.com')).name).toBe('jperez');
+  });
+
+  it('preserves an explicitly provided name', async () => {
+    const res = await post('/v1/auth/register', {
+      name: 'Ada Lovelace',
+      email: 'ada-explicit@example.com',
+      password: 'Correct-horse-41',
+    });
+
+    expect(res.status).toBe(201);
+    expect((await userIdentity(workerEnv.DB, 'ada-explicit@example.com')).name).toBe(
+      'Ada Lovelace',
+    );
+  });
+
+  it('rejects an explicitly empty name instead of treating it as omitted', async () => {
+    const res = await post('/v1/auth/register', {
+      name: '',
+      email: 'empty-name@example.com',
+      password: 'Correct-horse-41',
+    });
+
+    expect(res.status).toBe(400);
+    expect(await userCount(workerEnv.DB)).toBe(0);
+  });
+
+  it('rejects an explicitly whitespace-only name', async () => {
+    const res = await post('/v1/auth/register', {
+      name: '   ',
+      email: 'whitespace-name@example.com',
+      password: 'Correct-horse-41',
+    });
+
+    expect(res.status).toBe(400);
+    expect(await userCount(workerEnv.DB)).toBe(0);
+  });
+
+  it('accepts an omitted name when the derived local-part is exactly 200 characters', async () => {
+    const localPart = 'a'.repeat(200);
+    const email = `${localPart}@x.co`;
+    const res = await post('/v1/auth/register', {
+      email,
+      password: 'Correct-horse-41',
+    });
+
+    expect(res.status).toBe(201);
+    expect((await userIdentity(workerEnv.DB, email)).name).toBe(localPart);
+  });
+
+  it('rejects an omitted name when the derived local-part exceeds 200 characters', async () => {
+    const email = `${'a'.repeat(201)}@x.co`;
+    const res = await post('/v1/auth/register', {
+      email,
+      password: 'Correct-horse-41',
+    });
+
+    expect(res.status).toBe(400);
+    expect(await userCount(workerEnv.DB)).toBe(0);
   });
 
   it('rejects registration with a stable error when the policy disables it', async () => {
     const res = await post(
       '/v1/auth/register',
-      { name: 'Grace Hopper', email: 'grace@example.com', password: 'correct-horse-41' },
+      { name: 'Grace Hopper', email: 'grace@example.com', password: 'Correct-horse-41' },
       { AUTH_REGISTRATION_ENABLED: 'false' },
     );
 
@@ -211,11 +285,55 @@ describe('POST /v1/auth/register', () => {
     expect(await userCount(workerEnv.DB)).toBe(0);
   });
 
+  it('enforces every configured password rule and both length boundaries', async () => {
+    const policyEnv = {
+      AUTH_PASSWORD_MIN_LENGTH: String(TEST_PASSWORD_POLICY.minLength),
+      AUTH_PASSWORD_MAX_LENGTH: String(TEST_PASSWORD_POLICY.maxLength),
+      AUTH_PASSWORD_MIN_UPPERCASE: String(TEST_PASSWORD_POLICY.minUppercase),
+      AUTH_PASSWORD_MIN_LOWERCASE: String(TEST_PASSWORD_POLICY.minLowercase),
+      AUTH_PASSWORD_MIN_DIGITS: String(TEST_PASSWORD_POLICY.minDigits),
+      AUTH_PASSWORD_MIN_SYMBOLS: String(TEST_PASSWORD_POLICY.minSymbols),
+    };
+
+    for (const [index, violation] of PASSWORD_POLICY_VIOLATIONS.entries()) {
+      const res = await post(
+        '/v1/auth/register',
+        {
+          name: `Policy ${String(index)}`,
+          email: `policy-${String(index)}@example.com`,
+          password: violation.password,
+        },
+        policyEnv,
+      );
+
+      expect(res.status).toBe(400);
+      expect(res.headers.get('cache-control')).toBe('no-store');
+      expect(await res.json()).toMatchObject({
+        code: 'password-policy-violation',
+        failedRules: [violation.rule],
+        passwordPolicy: TEST_PASSWORD_POLICY,
+      });
+    }
+
+    for (const [index, password] of PASSWORD_POLICY_BOUNDARY_PASSWORDS.entries()) {
+      const res = await post(
+        '/v1/auth/register',
+        {
+          name: `Boundary ${String(index)}`,
+          email: `boundary-${String(index)}@example.com`,
+          password,
+        },
+        policyEnv,
+      );
+      expect(res.status).toBe(201);
+    }
+  });
+
   it('answers duplicate registration generically without duplicating identities', async () => {
     const payload = {
       name: 'Ada Lovelace',
       email: 'ada@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     };
     const first = await post('/v1/auth/register', payload);
     const second = await post('/v1/auth/register', payload);
@@ -234,12 +352,12 @@ describe('POST /v1/auth/register', () => {
 
     const registerRes = await post(
       '/v1/auth/register',
-      { name: 'No Auth', email: 'noauth@example.com', password: 'correct-horse-41' },
+      { name: 'No Auth', email: 'noauth@example.com', password: 'Correct-horse-41' },
       disabled,
     );
     const loginRes = await post(
       '/v1/auth/login',
-      { email: 'noauth@example.com', password: 'correct-horse-41' },
+      { email: 'noauth@example.com', password: 'Correct-horse-41' },
       disabled,
     );
 
@@ -256,12 +374,12 @@ describe('verified-email login gate', () => {
     await post('/v1/auth/register', {
       name: 'Alan Turing',
       email: 'alan@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
 
     const res = await post('/v1/auth/login', {
       email: 'alan@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
 
     expect(res.status).toBe(403);
@@ -276,7 +394,7 @@ describe('verified-email login gate', () => {
     await post('/v1/auth/register', {
       name: 'Alan Turing',
       email: 'alan@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
 
     const verifyRes = await post('/v1/auth/verify-email', {
@@ -288,7 +406,7 @@ describe('verified-email login gate', () => {
 
     const loginRes = await post('/v1/auth/login', {
       email: 'alan@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
     expect(loginRes.status).toBe(200);
     const sessionCookie = loginRes.headers.get('set-cookie');
@@ -314,7 +432,7 @@ describe('verified-email login gate', () => {
     await post('/v1/auth/register', {
       name: 'Expired Token',
       email: 'expired@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
 
     const res = await post('/v1/auth/verify-email', {
@@ -328,7 +446,7 @@ describe('verified-email login gate', () => {
     // The account is still unverified, so login stays blocked.
     const loginRes = await post('/v1/auth/login', {
       email: 'expired@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
     expect(loginRes.status).toBe(403);
   });
@@ -337,7 +455,7 @@ describe('verified-email login gate', () => {
     await post('/v1/auth/register', {
       name: 'Known User',
       email: 'known@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
     await post('/v1/auth/verify-email', { token: await tokenFromLastMessage() });
 
@@ -366,7 +484,7 @@ describe('POST /v1/auth/request-verification', () => {
     await post('/v1/auth/register', {
       name: 'Latest Token',
       email: 'latest-token@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
     const token1 = await tokenFromLastMessage();
 
@@ -395,7 +513,7 @@ describe('POST /v1/auth/request-verification', () => {
     await post('/v1/auth/register', {
       name: 'Engine Failure',
       email: 'engine-failure@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
     const token = await tokenFromLastMessage();
     await workerEnv.DB.prepare('DELETE FROM "user" WHERE "email" = ?')
@@ -414,7 +532,7 @@ describe('POST /v1/auth/request-verification', () => {
     await post('/v1/auth/register', {
       name: 'Race Token',
       email: 'race-token@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
     const token = await tokenFromLastMessage();
 
@@ -430,7 +548,7 @@ describe('POST /v1/auth/request-verification', () => {
     await post('/v1/auth/register', {
       name: 'Resend Race',
       email: 'resend-race@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
     const token = await tokenFromLastMessage();
 
@@ -448,7 +566,7 @@ describe('POST /v1/auth/request-verification', () => {
     await post('/v1/auth/register', {
       name: 'Resend Me',
       email: 'resend@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
     await waitForVerificationMessages(1);
     expect(mailer.sent).toHaveLength(1);
@@ -475,7 +593,7 @@ describe('POST /v1/auth/request-verification', () => {
     await post('/v1/auth/register', {
       name: 'Already Verified',
       email: 'already-verified@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
     await post('/v1/auth/verify-email', { token: await tokenFromLastMessage() });
 
@@ -494,12 +612,12 @@ describe('GET /v1/me', () => {
     await post('/v1/auth/register', {
       name: 'Ada Lovelace',
       email: 'ada-me@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
     await post('/v1/auth/verify-email', { token: await tokenFromLastMessage() });
     const loginRes = await post('/v1/auth/login', {
       email: 'ada-me@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
     expect(loginRes.status).toBe(200);
     const cookie = sessionCookieFrom(loginRes);
@@ -547,12 +665,12 @@ describe('POST /v1/auth/sign-out', () => {
     await post('/v1/auth/register', {
       name: 'Grace Hopper',
       email: 'grace-me@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
     await post('/v1/auth/verify-email', { token: await tokenFromLastMessage() });
     const loginRes = await post('/v1/auth/login', {
       email: 'grace-me@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
     const cookie = sessionCookieFrom(loginRes);
     expect(cookie).not.toBeNull();
@@ -573,12 +691,12 @@ describe('POST /v1/auth/sign-out', () => {
     await post('/v1/auth/register', {
       name: 'Cookie Check',
       email: 'cookie@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
     await post('/v1/auth/verify-email', { token: await tokenFromLastMessage() });
     const loginRes = await post('/v1/auth/login', {
       email: 'cookie@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
 
     const setCookie = loginRes.headers.get('set-cookie') ?? '';
@@ -593,7 +711,7 @@ describe('password recovery', () => {
     await post('/v1/auth/register', {
       name: 'Recover Me',
       email: 'recover@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
     await post('/v1/auth/verify-email', { token: await tokenFromLastMessage() });
     mailer.clear();
@@ -613,14 +731,14 @@ describe('password recovery', () => {
     expect(message?.token.length).toBeGreaterThan(0);
     expect(message?.url).toContain(message?.token ?? 'missing-token');
     // The captured action must not carry credential material with it.
-    expect(JSON.stringify(message)).not.toContain('correct-horse-41');
+    expect(JSON.stringify(message)).not.toContain('Correct-horse-41');
   });
 
   it('answers identically for unknown emails to resist enumeration', async () => {
     await post('/v1/auth/register', {
       name: 'Known Recover',
       email: 'known-recover@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
     await post('/v1/auth/verify-email', { token: await tokenFromLastMessage() });
     mailer.clear();
@@ -644,16 +762,106 @@ describe('password recovery', () => {
     expect(mailer.passwordResets).toHaveLength(0);
   });
 
+  it('checks a current reset action without consuming or exposing it', async () => {
+    await post('/v1/auth/register', {
+      name: 'Check Reset',
+      email: 'check-reset@example.com',
+      password: 'Correct-horse-41',
+    });
+    await post('/v1/auth/verify-email', { token: await tokenFromLastMessage() });
+    mailer.clear();
+    await post('/v1/auth/request-password-reset', { email: 'check-reset@example.com' });
+    const token = resetTokenFromLastMessage();
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const checked = await post('/v1/auth/check-password-reset', { token });
+      expect(checked.status).toBe(200);
+      expect(checked.headers.get('cache-control')).toBe('no-store');
+      const raw = await checked.text();
+      expect(raw).not.toContain(token);
+      expect(JSON.parse(raw)).toEqual({ valid: true });
+    }
+
+    const concurrentChecks = await Promise.all(
+      Array.from({ length: 8 }, () => post('/v1/auth/check-password-reset', { token })),
+    );
+    expect(concurrentChecks.every((response) => response.status === 200)).toBe(true);
+    expect(await Promise.all(concurrentChecks.map((response) => response.json()))).toEqual(
+      Array.from({ length: 8 }, () => ({ valid: true })),
+    );
+
+    const reset = await post('/v1/auth/reset-password', {
+      token,
+      newPassword: 'Brand-new-horse-42',
+    });
+    expect(reset.status).toBe(200);
+  });
+
+  it('returns false for expired, consumed, and unknown reset actions', async () => {
+    await post('/v1/auth/register', {
+      name: 'Invalid Check Reset',
+      email: 'invalid-check-reset@example.com',
+      password: 'Correct-horse-41',
+    });
+    await post('/v1/auth/verify-email', { token: await tokenFromLastMessage() });
+    mailer.clear();
+    await post('/v1/auth/request-password-reset', { email: 'invalid-check-reset@example.com' });
+    const token = resetTokenFromLastMessage();
+
+    const stored = await workerEnv.DB.prepare(
+      'SELECT expires_at FROM "verification" WHERE identifier = ?',
+    )
+      .bind(`reset-password:${token}`)
+      .first<{ expires_at: number }>();
+    expect(stored?.expires_at).toBeGreaterThan(Math.floor(Date.now() / 1000));
+    expect(stored?.expires_at).toBeLessThan(Date.now());
+    const expiredAt = Math.floor(Date.now() / 1000) - 1;
+    await workerEnv.DB.prepare('UPDATE "verification" SET expires_at = ? WHERE identifier = ?')
+      .bind(expiredAt, `reset-password:${token}`)
+      .run();
+    const expired = await post('/v1/auth/check-password-reset', { token });
+    expect(expired.status).toBe(200);
+    expect(expired.headers.get('cache-control')).toBe('no-store');
+    expect(await expired.json()).toEqual({ valid: false });
+
+    await post('/v1/auth/request-password-reset', { email: 'invalid-check-reset@example.com' });
+    const currentToken = resetTokenFromLastMessage();
+    const consumed = await post('/v1/auth/reset-password', {
+      token: currentToken,
+      newPassword: 'Brand-new-horse-42',
+    });
+    expect(consumed.status).toBe(200);
+
+    for (const candidate of [currentToken, 'unknown-reset-token']) {
+      const checked = await post('/v1/auth/check-password-reset', { token: candidate });
+      expect(checked.status).toBe(200);
+      expect(checked.headers.get('cache-control')).toBe('no-store');
+      const raw = await checked.text();
+      expect(raw).not.toContain(candidate);
+      expect(JSON.parse(raw)).toEqual({ valid: false });
+    }
+  });
+
+  it('rejects malformed reset checks at the public contract', async () => {
+    for (const token of ['', 'x'.repeat(4097)]) {
+      const res = await post('/v1/auth/check-password-reset', { token });
+      expect(res.status).toBe(400);
+      expect(res.headers.get('cache-control')).toBe('no-store');
+      expect(res.headers.get('content-type')).toContain('application/problem+json');
+      expect(await res.json()).toMatchObject({ code: 'bad-request', status: 400 });
+    }
+  });
+
   it('completes a valid reset, revokes sessions, and rotates credentials', async () => {
     await post('/v1/auth/register', {
       name: 'Rotate Me',
       email: 'rotate@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
     await post('/v1/auth/verify-email', { token: await tokenFromLastMessage() });
     const loginRes = await post('/v1/auth/login', {
       email: 'rotate@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
     expect(loginRes.status).toBe(200);
     const cookie = sessionCookieFrom(loginRes);
@@ -664,7 +872,7 @@ describe('password recovery', () => {
     await post('/v1/auth/request-password-reset', { email: 'rotate@example.com' });
     const resetRes = await post('/v1/auth/reset-password', {
       token: resetTokenFromLastMessage(),
-      newPassword: 'brand-new-horse-42',
+      newPassword: 'Brand-new-horse-42',
     });
 
     expect(resetRes.status).toBe(200);
@@ -679,14 +887,14 @@ describe('password recovery', () => {
     // The old password no longer establishes a session; the new one does.
     const oldLogin = await post('/v1/auth/login', {
       email: 'rotate@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
     expect(oldLogin.status).toBe(401);
     expect(await oldLogin.json()).toMatchObject({ code: 'invalid-credentials', status: 401 });
 
     const newLogin = await post('/v1/auth/login', {
       email: 'rotate@example.com',
-      password: 'brand-new-horse-42',
+      password: 'Brand-new-horse-42',
     });
     expect(newLogin.status).toBe(200);
     const newCookie = sessionCookieFrom(newLogin);
@@ -703,7 +911,7 @@ describe('password recovery', () => {
     await post('/v1/auth/register', {
       name: 'Reset Safety',
       email: 'reset-safety@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
     await post('/v1/auth/verify-email', { token: await tokenFromLastMessage() });
     mailer.clear();
@@ -712,7 +920,7 @@ describe('password recovery', () => {
 
     const invalid = await post('/v1/auth/reset-password', {
       token: 'not-a-real-token',
-      newPassword: 'brand-new-horse-42',
+      newPassword: 'Brand-new-horse-42',
     });
     expect(invalid.status).toBe(400);
     expect(invalid.headers.get('content-type')).toContain('application/problem+json');
@@ -722,14 +930,14 @@ describe('password recovery', () => {
 
     const first = await post('/v1/auth/reset-password', {
       token,
-      newPassword: 'brand-new-horse-42',
+      newPassword: 'Brand-new-horse-42',
     });
     expect(first.status).toBe(200);
 
     // Reset actions are single use.
     const reuse = await post('/v1/auth/reset-password', {
       token,
-      newPassword: 'another-horse-43',
+      newPassword: 'Another-horse-43',
     });
     expect(reuse.status).toBe(400);
     const reuseRaw = await reuse.text();
@@ -739,12 +947,12 @@ describe('password recovery', () => {
     // The first reset won; the reused action changed nothing further.
     const staleLogin = await post('/v1/auth/login', {
       email: 'reset-safety@example.com',
-      password: 'another-horse-43',
+      password: 'Another-horse-43',
     });
     expect(staleLogin.status).toBe(401);
     const currentLogin = await post('/v1/auth/login', {
       email: 'reset-safety@example.com',
-      password: 'brand-new-horse-42',
+      password: 'Brand-new-horse-42',
     });
     expect(currentLogin.status).toBe(200);
   });
@@ -753,7 +961,7 @@ describe('password recovery', () => {
     await post('/v1/auth/register', {
       name: 'Expired Reset',
       email: 'expired-reset@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
     await post('/v1/auth/verify-email', { token: await tokenFromLastMessage() });
     mailer.clear();
@@ -761,13 +969,14 @@ describe('password recovery', () => {
     const token = resetTokenFromLastMessage();
 
     // Expire the stored reset action directly; the public reset must then fail.
-    await workerEnv.DB.prepare('UPDATE "verification" SET expires_at = 0 WHERE identifier = ?')
-      .bind(`reset-password:${token}`)
+    const expiredAt = Math.floor(Date.now() / 1000) - 1;
+    await workerEnv.DB.prepare('UPDATE "verification" SET expires_at = ? WHERE identifier = ?')
+      .bind(expiredAt, `reset-password:${token}`)
       .run();
 
     const res = await post('/v1/auth/reset-password', {
       token,
-      newPassword: 'brand-new-horse-42',
+      newPassword: 'Brand-new-horse-42',
     });
     expect(res.status).toBe(400);
     const raw = await res.text();
@@ -777,26 +986,96 @@ describe('password recovery', () => {
     // The expired action rotated nothing: the original password still works.
     const loginRes = await post('/v1/auth/login', {
       email: 'expired-reset@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
     expect(loginRes.status).toBe(200);
   });
 
-  it('rejects weak new passwords through the public contract', async () => {
+  it('consumes one concurrent reset action exactly once', async () => {
     await post('/v1/auth/register', {
-      name: 'Weak Reset',
-      email: 'weak-reset@example.com',
-      password: 'correct-horse-41',
+      name: 'Concurrent Reset',
+      email: 'concurrent-reset@example.com',
+      password: 'Correct-horse-41',
     });
     await post('/v1/auth/verify-email', { token: await tokenFromLastMessage() });
     mailer.clear();
-    await post('/v1/auth/request-password-reset', { email: 'weak-reset@example.com' });
+    await post('/v1/auth/request-password-reset', { email: 'concurrent-reset@example.com' });
     const token = resetTokenFromLastMessage();
 
-    const res = await post('/v1/auth/reset-password', { token, newPassword: 'short' });
+    const [first, second] = await Promise.all([
+      post('/v1/auth/reset-password', { token, newPassword: 'First-reset-horse-42' }),
+      post('/v1/auth/reset-password', { token, newPassword: 'Second-reset-horse-43' }),
+    ]);
+    expect([first.status, second.status].sort()).toEqual([200, 400]);
+    const invalid = first.status === 400 ? first : second;
+    expect(await invalid.json()).toMatchObject({ code: 'reset-invalid', status: 400 });
 
-    expect(res.status).toBe(400);
-    expect(await res.json()).toMatchObject({ code: 'bad-request', status: 400 });
+    const firstLogin = await post('/v1/auth/login', {
+      email: 'concurrent-reset@example.com',
+      password: 'First-reset-horse-42',
+    });
+    const secondLogin = await post('/v1/auth/login', {
+      email: 'concurrent-reset@example.com',
+      password: 'Second-reset-horse-43',
+    });
+    expect([firstLogin.status, secondLogin.status].sort()).toEqual([200, 401]);
+  });
+
+  it('enforces every configured password rule and both length boundaries', async () => {
+    const policyEnv = {
+      AUTH_PASSWORD_MIN_LENGTH: String(TEST_PASSWORD_POLICY.minLength),
+      AUTH_PASSWORD_MAX_LENGTH: String(TEST_PASSWORD_POLICY.maxLength),
+      AUTH_PASSWORD_MIN_UPPERCASE: String(TEST_PASSWORD_POLICY.minUppercase),
+      AUTH_PASSWORD_MIN_LOWERCASE: String(TEST_PASSWORD_POLICY.minLowercase),
+      AUTH_PASSWORD_MIN_DIGITS: String(TEST_PASSWORD_POLICY.minDigits),
+      AUTH_PASSWORD_MIN_SYMBOLS: String(TEST_PASSWORD_POLICY.minSymbols),
+    };
+
+    for (const [index, violation] of PASSWORD_POLICY_VIOLATIONS.entries()) {
+      const email = `reset-policy-${String(index)}@example.com`;
+      await post(
+        '/v1/auth/register',
+        { name: `Reset Policy ${String(index)}`, email, password: 'Abcdef1!' },
+        policyEnv,
+      );
+      await post('/v1/auth/verify-email', { token: await tokenFromLastMessage() }, policyEnv);
+      mailer.clear();
+      await post('/v1/auth/request-password-reset', { email }, policyEnv);
+
+      const res = await post(
+        '/v1/auth/reset-password',
+        { token: resetTokenFromLastMessage(), newPassword: violation.password },
+        policyEnv,
+      );
+
+      expect(res.status).toBe(400);
+      expect(res.headers.get('cache-control')).toBe('no-store');
+      expect(await res.json()).toMatchObject({
+        code: 'password-policy-violation',
+        failedRules: [violation.rule],
+        passwordPolicy: TEST_PASSWORD_POLICY,
+      });
+      mailer.clear();
+    }
+
+    for (const [index, password] of PASSWORD_POLICY_BOUNDARY_PASSWORDS.entries()) {
+      const email = `reset-boundary-${String(index)}@example.com`;
+      await post(
+        '/v1/auth/register',
+        { name: `Reset Boundary ${String(index)}`, email, password: 'Abcdef1!' },
+        policyEnv,
+      );
+      await post('/v1/auth/verify-email', { token: await tokenFromLastMessage() }, policyEnv);
+      mailer.clear();
+      await post('/v1/auth/request-password-reset', { email }, policyEnv);
+      const res = await post(
+        '/v1/auth/reset-password',
+        { token: resetTokenFromLastMessage(), newPassword: password },
+        policyEnv,
+      );
+      expect(res.status).toBe(200);
+      mailer.clear();
+    }
   });
 
   it('rejects recovery operations when email/password is disabled', async () => {
@@ -809,11 +1088,16 @@ describe('password recovery', () => {
     );
     const resetRes = await post(
       '/v1/auth/reset-password',
-      { token: 'not-a-real-token', newPassword: 'brand-new-horse-42' },
+      { token: 'not-a-real-token', newPassword: 'Brand-new-horse-42' },
+      disabled,
+    );
+    const checkRes = await post(
+      '/v1/auth/check-password-reset',
+      { token: 'not-a-real-token' },
       disabled,
     );
 
-    for (const res of [requestRes, resetRes]) {
+    for (const res of [requestRes, resetRes, checkRes]) {
       expect(res.status).toBe(403);
       expect(await res.json()).toMatchObject({ code: 'email-password-disabled', status: 403 });
     }
@@ -831,7 +1115,7 @@ describe('password recovery', () => {
       await post('/v1/auth/register', {
         name: 'Reset Log Check',
         email: 'reset-logs@example.com',
-        password: 'correct-horse-41',
+        password: 'Correct-horse-41',
       });
       await post('/v1/auth/verify-email', { token: await tokenFromLastMessage() });
       await post('/v1/auth/request-password-reset', { email: 'reset-logs@example.com' });
@@ -839,21 +1123,23 @@ describe('password recovery', () => {
       captured.token = last?.token ?? '';
       captured.url = last?.url ?? '';
       expect(captured.token.length).toBeGreaterThan(0);
+      await post('/v1/auth/check-password-reset', { token: captured.token });
+      await post('/v1/auth/check-password-reset', { token: 'unknown-reset-token' });
       await post('/v1/auth/reset-password', {
         token: captured.token,
-        newPassword: 'brand-new-horse-42',
+        newPassword: 'Brand-new-horse-42',
       });
       await post('/v1/auth/reset-password', {
         token: 'not-a-real-token',
-        newPassword: 'brand-new-horse-42',
+        newPassword: 'Brand-new-horse-42',
       });
     } finally {
       spy.mockRestore();
     }
 
     const transcript = seen.join('\n');
-    expect(transcript).not.toContain('correct-horse-41');
-    expect(transcript).not.toContain('brand-new-horse-42');
+    expect(transcript).not.toContain('Correct-horse-41');
+    expect(transcript).not.toContain('Brand-new-horse-42');
     expect(transcript).not.toContain(captured.token);
     expect(transcript).not.toContain(captured.url);
     expect(transcript).not.toContain('token=');
@@ -873,14 +1159,14 @@ describe('identity observability redaction', () => {
       await post('/v1/auth/register', {
         name: 'Log Check',
         email: 'logs@example.com',
-        password: 'correct-horse-41',
+        password: 'Correct-horse-41',
       });
       const token = await tokenFromLastMessage();
-      await post('/v1/auth/login', { email: 'logs@example.com', password: 'correct-horse-41' });
+      await post('/v1/auth/login', { email: 'logs@example.com', password: 'Correct-horse-41' });
       await post('/v1/auth/verify-email', { token });
       const loginRes = await post('/v1/auth/login', {
         email: 'logs@example.com',
-        password: 'correct-horse-41',
+        password: 'Correct-horse-41',
       });
       const cookie = sessionCookieFrom(loginRes) ?? '';
       captured.value = cookie.split('=')[1] ?? '';
@@ -893,7 +1179,7 @@ describe('identity observability redaction', () => {
     }
 
     const transcript = seen.join('\n');
-    expect(transcript).not.toContain('correct-horse-41');
+    expect(transcript).not.toContain('Correct-horse-41');
     expect(transcript).not.toContain(await tokenFromLastMessage());
     // No action URLs, tokens or query strings: request logs carry the matched
     // route pattern (`/v1/auth/verify-email`) but never `?token=...`.

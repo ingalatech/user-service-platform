@@ -13,13 +13,13 @@ describe('admin bootstrap operator inputs', () => {
       resolveBootstrapConfig({
         ADMIN_NAME: 'Site Admin',
         ADMIN_EMAIL: 'admin@example.com',
-        ADMIN_PASSWORD: 'correct-horse-41',
+        ADMIN_PASSWORD: 'Correct-horse-41',
       }),
     ).toEqual({
       baseUrl: 'http://localhost:8787',
       name: 'Site Admin',
       email: 'admin@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
   });
 
@@ -28,7 +28,7 @@ describe('admin bootstrap operator inputs', () => {
       ADMIN_BOOTSTRAP_BASE_URL: 'https://sandbox.example.com',
       ADMIN_NAME: 'Site Admin',
       ADMIN_EMAIL: 'admin@example.com',
-      ADMIN_PASSWORD: 'correct-horse-41',
+      ADMIN_PASSWORD: 'Correct-horse-41',
     });
     expect(config.baseUrl).toBe('https://sandbox.example.com');
   });
@@ -39,7 +39,7 @@ describe('admin bootstrap operator inputs', () => {
       const env = {
         ADMIN_NAME: 'Site Admin',
         ADMIN_EMAIL: 'admin@example.com',
-        ADMIN_PASSWORD: 'correct-horse-41',
+        ADMIN_PASSWORD: 'Correct-horse-41',
         [missing]: '',
       };
       let message = '';
@@ -49,7 +49,7 @@ describe('admin bootstrap operator inputs', () => {
         message = error instanceof Error ? error.message : '';
       }
       expect(message).toContain(missing);
-      expect(message).not.toContain('correct-horse-41');
+      expect(message).not.toContain('Correct-horse-41');
       expect(message).not.toContain('admin@example.com');
     },
   );

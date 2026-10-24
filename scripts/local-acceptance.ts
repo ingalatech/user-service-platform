@@ -23,7 +23,7 @@
 //   ACCEPTANCE_PASSWORD="correct-horse-60" \
 //   ACCEPTANCE_NEW_PASSWORD="correct-horse-61" \
 //   ADMIN_NAME="Site Admin" ADMIN_EMAIL="admin@example.com" \
-//   ADMIN_PASSWORD="correct-horse-41" \
+//   ADMIN_PASSWORD="Correct-horse-41" \
 //   npm run acceptance:local
 // ```
 //

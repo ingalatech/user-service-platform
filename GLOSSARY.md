@@ -16,12 +16,9 @@ Authentication identity, credentials, linked providers, account recovery, email 
 
 ### Administrator
 
-An Identity User authorized by the supported Better Auth administrative
-permission API to read/list Users. The first administrator is bootstrapped
-explicitly, verifies email and uses the same login and HttpOnly session as any
-User. This service-owned permission is separate from editorial CMS roles.
-`GET /v1/admin/me` exposes only id, email, emailVerified and role; public
-`GET /v1/me` retains its three-field representation.
+An Identity User with service-owned administrative authority, separate from editorial CMS roles.
+An Administrator may bypass record access rules for Base Collections but cannot bypass the
+invariants or protected operations of System Collections.
 
 ### Administration UI
 
@@ -32,11 +29,68 @@ authorize access.
 
 ### Auth Policy
 
-Deployment-level configuration that controls supported authentication behaviour without exposing Better Auth configuration directly to feature code. It includes capabilities such as registration enablement, email/password enablement, required email verification, OAuth providers, and auth/session lifetimes. The initial deployment requires verified email before login succeeds.
+Deployment-level configuration that controls supported authentication behaviour without exposing Better Auth configuration directly to feature code. It includes capabilities such as registration enablement, email/password enablement, required email verification, password creation requirements, OAuth providers, and auth/session lifetimes. Password creation requirements apply to registration, reset and administrator bootstrap, not login. The initial deployment requires verified email before login succeeds.
 
 ### Profile
 
-User-facing account data such as display name, avatar reference, and preferences.
+User-facing account data governed by the deployment's Profile Schema. Profile is separate from
+Identity and from capabilities such as preferences, follows and subscriptions. It is a System
+Collection whose capability permits constrained schema administration; a User may edit
+self-editable Profile Fields, while an Administrator may manage Profile values for any User.
+
+### Profile Schema
+
+The single deployment-level definition of the Profile Fields shared by all Users of that site. It
+can evolve without an application deployment. Schema changes may make existing Profiles incomplete
+or invalid but do not silently rewrite their values.
+
+### Profile Field
+
+A typed attribute in the Profile Schema with stable identity, presentation metadata, validation
+constraints, lifecycle state and an access mode. Active fields may be self-editable or
+administrator-only. Deactivated fields are excluded from the User-facing Profile while their values
+remain administratively visible; deleting a field permanently deletes its values.
+
+### Profile Completeness
+
+An informational assessment that every active required Profile Field has a present, valid value. An
+incomplete Profile does not restrict authentication, site access or partial Profile updates.
+
+### Collection
+
+A deployment-owned record type whose schema and records can be managed at runtime. A Collection
+has one immutable class: Base Collection, View Collection or System Collection.
+
+### Collection Name
+
+The deployment-wide unique API identifier of a Collection, distinct from its stable identity. It may
+be renamed, but names reserved by service capabilities cannot be claimed by other Collections.
+
+### Base Collection
+
+An administrable Collection with stored records, typed Fields, validation, access rules and
+generated record operations. Creating or changing one does not require an application deployment.
+
+### View Collection
+
+An administrable, read-only Collection whose records are derived from other Collections. It permits
+listing and reading records but not record mutation or independent indexes.
+
+### Collection Field
+
+A typed attribute in a Collection schema. It has stable identity, type-specific settings and a
+lifecycle independent from its visible label. Schema evolution may preserve values that no longer
+validate; destructive deletion removes the Field and its stored values explicitly.
+
+### System Collection
+
+A Collection owned by a service capability with invariants beyond generic record validation. Its
+schema and record operations are controlled by that capability rather than generic administration.
+
+### Collection Parity
+
+Functional coverage inspired by PocketBase's observable collection capabilities, delivered as
+explicit cumulative stages. It does not imply compatibility with PocketBase APIs, SDKs or storage.
 
 ### Subscription
 

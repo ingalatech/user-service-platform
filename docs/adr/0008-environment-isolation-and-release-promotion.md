@@ -47,13 +47,16 @@ Smoke tests are required after sandbox and production deployment.
 Promotion selects and validates one immutable Version ID, then uses a
 target-only Wrangler config with `preview_urls: true` to construct that
 version's documented Version URL. Candidate uploads carry a versioned,
-secret-free release manifest in Wrangler's supported `--message` and `--tag`
-annotations. The manifest contains a deterministic SHA-256 fingerprint of the
-compiled non-secret profile plus `AUTH_MAIL_TRANSPORT`, and the exact-version
-view must return matching manifest annotations. Promotion uses the manifest's
-transport to choose required bindings; it never reads the current application
-`.env` profile. Readiness runs health followed by anonymous Identity against
-that URL, exercising `BETTER_AUTH_SECRET` behavior without reading or listing
+secret-free `user-service-manifest/v2` in Wrangler's supported `--message` and
+`--tag` annotations. The message carries the exact source commit and branch,
+the deterministic SHA-256 fingerprint of the compiled non-secret profile plus
+`AUTH_MAIL_TRANSPORT`, and the exact-version view must return that parseable
+manifest. The human tag is independent of the fingerprint and follows
+`<short-commit>-<UTC-compact-timestamp>-<sanitized-branch>`, matching the
+frontend deployer convention. Promotion uses the manifest's transport to
+choose required bindings; it never reads the current application `.env`
+profile. Readiness runs health followed by anonymous Identity against that
+URL, exercising `BETTER_AUTH_SECRET` behavior without reading or listing
 secret values. Exact-version metadata must also contain `BETTER_AUTH_SECRET`
 always, plus `SMTP_USER` and `SMTP_PASSWORD` for `smtp`, or `RESEND_API_KEY`
 for `resend`, as encrypted `secret_text` bindings. Extra encrypted bindings are

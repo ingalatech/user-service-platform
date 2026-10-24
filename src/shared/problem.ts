@@ -1,5 +1,15 @@
 import { z } from '@hono/zod-openapi';
 
+export const PasswordPolicyRuleSchema = z.enum([
+  'min-length',
+  'max-length',
+  'min-uppercase',
+  'min-lowercase',
+  'min-digits',
+  'min-symbols',
+]);
+export type PasswordPolicyRule = z.infer<typeof PasswordPolicyRuleSchema>;
+
 // RFC 9457-compatible Problem Details contract (ADR-0007). Every public API error
 // uses this envelope with a stable machine-readable `code`; human-readable
 // `detail` text is never a machine contract and clients must branch on HTTP
@@ -12,6 +22,20 @@ export const ProblemDetailsSchema = z
     detail: z.string().optional().openapi({ example: 'No such operation.' }),
     code: z.string().openapi({ example: 'not-found' }),
     instance: z.string().optional().openapi({ example: '/v1/does-not-exist' }),
+    failedRules: z
+      .array(PasswordPolicyRuleSchema)
+      .optional()
+      .openapi({ example: ['min-uppercase'] }),
+    passwordPolicy: z
+      .object({
+        minLength: z.number().int(),
+        maxLength: z.number().int(),
+        minUppercase: z.number().int(),
+        minLowercase: z.number().int(),
+        minDigits: z.number().int(),
+        minSymbols: z.number().int(),
+      })
+      .optional(),
   })
   .openapi('ProblemDetails');
 
@@ -30,7 +54,9 @@ export type ProblemCode =
   | 'unauthenticated'
   | 'forbidden'
   | 'admin-already-bootstrapped'
-  | 'admin-email-conflict';
+  | 'admin-bootstrap-in-progress'
+  | 'admin-email-conflict'
+  | 'password-policy-violation';
 
 interface CreateProblemInput {
   status: number;
@@ -38,6 +64,15 @@ interface CreateProblemInput {
   title: string;
   detail?: string;
   instance?: string;
+  failedRules?: readonly PasswordPolicyRule[];
+  passwordPolicy?: {
+    minLength: number;
+    maxLength: number;
+    minUppercase: number;
+    minLowercase: number;
+    minDigits: number;
+    minSymbols: number;
+  };
 }
 
 export function createProblem(input: CreateProblemInput): ProblemDetails {
@@ -48,6 +83,8 @@ export function createProblem(input: CreateProblemInput): ProblemDetails {
     ...(input.detail === undefined ? {} : { detail: input.detail }),
     code: input.code,
     ...(input.instance === undefined ? {} : { instance: input.instance }),
+    ...(input.failedRules === undefined ? {} : { failedRules: [...input.failedRules] }),
+    ...(input.passwordPolicy === undefined ? {} : { passwordPolicy: input.passwordPolicy }),
   };
 }
 

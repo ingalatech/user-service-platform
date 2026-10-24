@@ -153,6 +153,33 @@ describe('generated OpenAPI artifact', () => {
     expect(serialized).not.toContain('privateKey');
   });
 
+  it('describes the non-consuming password-reset check operation', async () => {
+    const raw = await readFile(artifactPath, 'utf8');
+    const document = JSON.parse(raw) as {
+      components: { schemas: Record<string, { required?: string[] }> };
+      paths: Record<
+        string,
+        Record<
+          string,
+          {
+            operationId?: string;
+            responses?: Record<
+              string,
+              { content?: Record<string, { schema?: { $ref?: string } }> }
+            >;
+          }
+        >
+      >;
+    };
+
+    const operation = document.paths['/v1/auth/check-password-reset']?.post;
+    expect(operation?.operationId).toBe('checkPasswordReset');
+    expect(operation?.responses?.['200']?.content?.['application/json']?.schema?.$ref).toBe(
+      '#/components/schemas/CheckPasswordResetResult',
+    );
+    expect(document.components.schemas.CheckPasswordResetResult?.required).toEqual(['valid']);
+  });
+
   it('regenerates byte-identically from source contracts', async () => {
     const raw = await readFile(artifactPath, 'utf8');
     const regenerated = `${JSON.stringify(createApp().getOpenAPI31Document(openApiConfig), null, 2)}\n`;

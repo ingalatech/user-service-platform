@@ -31,22 +31,47 @@ const PRODUCTION: ResolvedDeployment = {
 };
 
 describe('promotion CLI version selection', () => {
-  it('renders and selects the id from a Wrangler version record', () => {
-    const prepared = preparePromotionVersions([
-      {
-        id: 'immutable-v1',
-        metadata: { created_on: '2026-10-20T12:00:00Z' },
+  it('shows every version in descending order as one-line clean options', () => {
+    const prepared = preparePromotionVersions(
+      Array.from({ length: 12 }, (_, index) => ({
+        id: `immutable-v${String(index + 1)}`,
+        metadata: { created_on: `2026-10-${String(index + 1).padStart(2, '0')}T12:00:00Z` },
         annotations: {
-          'workers/message': 'commit=abc branch=main',
-          'workers/tag': 'candidate',
+          'workers/message': `very long technical annotation ${'x'.repeat(200)}`,
+          ...(index % 2 === 0 ? { 'workers/tag': `candidate-${String(index + 1)}` } : {}),
         },
-      },
-    ]);
+      })),
+    );
 
-    expect(prepared.display).toEqual([
-      '1) immutable-v1 2026-10-20T12:00:00Z workers/message=commit=abc branch=main workers/tag=candidate',
+    expect(prepared.versions.map((version) => version.id)).toEqual([
+      'immutable-v12',
+      'immutable-v11',
+      'immutable-v10',
+      'immutable-v9',
+      'immutable-v8',
+      'immutable-v7',
+      'immutable-v6',
+      'immutable-v5',
+      'immutable-v4',
+      'immutable-v3',
+      'immutable-v2',
+      'immutable-v1',
     ]);
-    expect(prepared.versions[0]?.id).toBe('immutable-v1');
+    expect(prepared.display).toEqual([
+      'untagged — immutable-v12 — 2026-10-12T12:00:00.000Z',
+      'candidate-11 — immutable-v11 — 2026-10-11T12:00:00.000Z',
+      'untagged — immutable-v10 — 2026-10-10T12:00:00.000Z',
+      'candidate-9 — immutable-v9 — 2026-10-09T12:00:00.000Z',
+      'untagged — immutable-v8 — 2026-10-08T12:00:00.000Z',
+      'candidate-7 — immutable-v7 — 2026-10-07T12:00:00.000Z',
+      'untagged — immutable-v6 — 2026-10-06T12:00:00.000Z',
+      'candidate-5 — immutable-v5 — 2026-10-05T12:00:00.000Z',
+      'untagged — immutable-v4 — 2026-10-04T12:00:00.000Z',
+      'candidate-3 — immutable-v3 — 2026-10-03T12:00:00.000Z',
+      'untagged — immutable-v2 — 2026-10-02T12:00:00.000Z',
+      'candidate-1 — immutable-v1 — 2026-10-01T12:00:00.000Z',
+    ]);
+    expect(prepared.display.every((choice) => !choice.includes('technical annotation'))).toBe(true);
   });
 
   it('spawns environment-specific promotion smokes with only versioned URLs', async () => {

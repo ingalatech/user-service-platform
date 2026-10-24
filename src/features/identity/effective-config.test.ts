@@ -79,7 +79,7 @@ describe('effective configuration as Identity source of truth', () => {
     const res = await postRegister({
       name: 'Profile Probe',
       email: 'profile-probe@example.com',
-      password: 'correct-horse-41',
+      password: 'Correct-horse-41',
     });
 
     expect(res.status).toBe(201);
@@ -99,7 +99,7 @@ describe('effective configuration as Identity source of truth', () => {
       {
         name: 'Override Probe',
         email: 'override-probe@example.com',
-        password: 'correct-horse-41',
+        password: 'Correct-horse-41',
       },
       { AUTH_REGISTRATION_ENABLED: 'false' },
     );

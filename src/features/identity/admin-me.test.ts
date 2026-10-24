@@ -107,13 +107,13 @@ async function verifiedAdminCookie(): Promise<string> {
   const bootstrapRes = await post('/v1/auth/admin/bootstrap', {
     name: 'Ada Admin',
     email: 'admin@example.com',
-    password: 'correct-horse-41',
+    password: 'Correct-horse-41',
   });
   expect(bootstrapRes.status).toBe(201);
   await verifyEmailAddress('admin@example.com');
   const loginRes = await post('/v1/auth/login', {
     email: 'admin@example.com',
-    password: 'correct-horse-41',
+    password: 'Correct-horse-41',
   });
   expect(loginRes.status).toBe(200);
   const cookie = sessionCookieFrom(loginRes);
@@ -128,13 +128,13 @@ async function verifiedRegularCookie(): Promise<string> {
   const registerRes = await post('/v1/auth/register', {
     name: 'Ordinary User',
     email: 'ordinary@example.com',
-    password: 'correct-horse-41',
+    password: 'Correct-horse-41',
   });
   expect(registerRes.status).toBe(201);
   await verifyEmailAddress('ordinary@example.com');
   const loginRes = await post('/v1/auth/login', {
     email: 'ordinary@example.com',
-    password: 'correct-horse-41',
+    password: 'Correct-horse-41',
   });
   expect(loginRes.status).toBe(200);
   const cookie = sessionCookieFrom(loginRes);
@@ -156,6 +156,7 @@ beforeEach(async () => {
     db.prepare('DELETE FROM "account"'),
     db.prepare('DELETE FROM "verification"'),
     db.prepare('DELETE FROM "email_verification_token"'),
+    db.prepare('DELETE FROM "admin_bootstrap_guard"'),
     db.prepare('DELETE FROM "user"'),
   ]);
   mailer.clear();

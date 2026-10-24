@@ -11,15 +11,55 @@ const emailField = z
 
 const passwordField = z
   .string()
-  .min(8, { error: 'Password must be at least 8 characters.' })
+  .min(1, { error: 'Password must not be empty.' })
   .max(128, { error: 'Password must be at most 128 characters.' })
-  .openapi({ example: 'correct-horse-41' });
+  .openapi({ example: 'Correct-horse-41' });
+
+export const PasswordPolicySchema = z
+  .object({
+    minLength: z.number().int().min(1).max(128).openapi({ example: 8 }),
+    maxLength: z.number().int().min(1).max(128).openapi({ example: 128 }),
+    minUppercase: z.number().int().min(0).max(128).openapi({ example: 1 }),
+    minLowercase: z.number().int().min(0).max(128).openapi({ example: 1 }),
+    minDigits: z.number().int().min(0).max(128).openapi({ example: 1 }),
+    minSymbols: z.number().int().min(0).max(128).openapi({ example: 0 }),
+  })
+  .openapi('PasswordPolicy');
+
+export const AuthConfigSchema = z
+  .object({
+    capabilities: z
+      .object({
+        registration: z.boolean(),
+        emailPassword: z.boolean(),
+        emailVerification: z.boolean(),
+        passwordReset: z.boolean(),
+      })
+      .openapi('AuthCapabilities'),
+    passwordPolicy: PasswordPolicySchema,
+  })
+  .openapi('AuthConfig');
 
 export const RegisterRequestSchema = z
   .object({
-    name: z.string().min(1).max(200).openapi({ example: 'Ada Lovelace' }),
+    name: z
+      .string()
+      .min(1)
+      .max(200)
+      .regex(/\S/, { error: 'Name must contain a non-whitespace character.' })
+      .optional()
+      .openapi({ example: 'Ada Lovelace' }),
     email: emailField,
     password: passwordField,
+  })
+  .superRefine((input, context) => {
+    if (input.name === undefined && input.email.slice(0, input.email.indexOf('@')).length > 200) {
+      context.addIssue({
+        code: 'custom',
+        path: ['email'],
+        message: 'Email local-part is too long when name is omitted.',
+      });
+    }
   })
   .openapi('RegisterRequest');
 
@@ -34,7 +74,7 @@ export const RegisteredUserSchema = z
 export const LoginRequestSchema = z
   .object({
     email: emailField,
-    password: z.string().min(1).max(128).openapi({ example: 'correct-horse-41' }),
+    password: z.string().min(1).max(128).openapi({ example: 'Correct-horse-41' }),
   })
   .openapi('LoginRequest');
 
@@ -97,6 +137,22 @@ export const RequestPasswordResetResultSchema = z
     status: z.literal('ok').openapi({ example: 'ok' }),
   })
   .openapi('RequestPasswordResetResult');
+
+export const CheckPasswordResetRequestSchema = z
+  .object({
+    token: z
+      .string()
+      .min(1)
+      .max(4096)
+      .openapi({ description: 'Password-reset token from the action URL.' }),
+  })
+  .openapi('CheckPasswordResetRequest');
+
+export const CheckPasswordResetResultSchema = z
+  .object({
+    valid: z.boolean().openapi({ example: true }),
+  })
+  .openapi('CheckPasswordResetResult');
 
 export const ResetPasswordRequestSchema = z
   .object({
@@ -250,6 +306,8 @@ export const ConsumerJwksResponseSchema = z
   .openapi('ConsumerJwks');
 
 export type ReaderStateResponse = z.infer<typeof ReaderStateResponseSchema>;
+export type PasswordPolicy = z.infer<typeof PasswordPolicySchema>;
+export type AuthConfig = z.infer<typeof AuthConfigSchema>;
 export type ConsumerJsonWebKey = z.infer<typeof ConsumerJsonWebKeySchema>;
 export type ConsumerJwksResponse = z.infer<typeof ConsumerJwksResponseSchema>;
 
@@ -261,6 +319,8 @@ export type VerifyEmailRequest = z.infer<typeof VerifyEmailRequestSchema>;
 export type VerifyEmailResult = z.infer<typeof VerifyEmailResultSchema>;
 export type RequestPasswordResetRequest = z.infer<typeof RequestPasswordResetRequestSchema>;
 export type RequestPasswordResetResult = z.infer<typeof RequestPasswordResetResultSchema>;
+export type CheckPasswordResetRequest = z.infer<typeof CheckPasswordResetRequestSchema>;
+export type CheckPasswordResetResult = z.infer<typeof CheckPasswordResetResultSchema>;
 export type ResetPasswordRequest = z.infer<typeof ResetPasswordRequestSchema>;
 export type ResetPasswordResult = z.infer<typeof ResetPasswordResultSchema>;
 export type CurrentUser = z.infer<typeof CurrentUserSchema>;

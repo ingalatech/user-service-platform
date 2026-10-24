@@ -178,8 +178,8 @@ function sharedOptions(input: IdentityAuthInput) {
       enabled: policy.emailPasswordEnabled,
       disableSignUp: !policy.registrationEnabled,
       requireEmailVerification: policy.requireEmailVerification,
-      minPasswordLength: 8,
-      maxPasswordLength: 128,
+      minPasswordLength: policy.passwordPolicy.minLength,
+      maxPasswordLength: policy.passwordPolicy.maxLength,
       // Password recovery goes through the application-owned AuthMailer like
       // verification does; provider SDK/types stay inside adapters (ADR-0010).
       // Successful resets revoke existing sessions so previously issued

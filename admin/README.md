@@ -14,7 +14,7 @@ is distributed as source registry components, not as the community npm package
 named `shadcn-admin-kit`. `src/kit` vendors the 38-file transitive closure used
 by Admin, Layout, TextInput and Button from upstream tag **v2.0.0**, commit
 [`11983abe4afc60a3904991820526aafe4d0588d3`](https://github.com/marmelab/shadcn-admin-kit/tree/11983abe4afc60a3904991820526aafe4d0588d3/src).
-The upstream MIT license is preserved in `src/kit/LICENSE`.
+The upstream Marmelab MIT license is preserved in `src/kit/LICENSE`.
 
 The kit's actual Admin, Layout, authProvider facilities, form/input and UI
 components are used. `src/login-page.tsx` adapts its login form for Spanish
@@ -31,6 +31,18 @@ excluded from repository formatter/lint rewriting; the complete imported code
 is still typechecked and bundled. All owned TS/TSX files have typed lint gates.
 Dependencies are pinned in `package.json` and the root lock. Tailwind/static CSS
 provides styling; no Emotion, MUI or other CSS-in-JS library is installed.
+The `src/kit/shadcn-tailwind.css` file vendors the complete `dist/tailwind.css`
+from `shadcn@4.22.1`; the vulnerable shadcn CLI is not needed at install time.
+Its complete upstream license and copyright attribution are preserved separately
+in `src/kit/SHADCN-LICENSE.md`; this does not replace the Marmelab license in
+`src/kit/LICENSE`. The upstream registry URL is
+`https://registry.npmjs.org/shadcn/-/shadcn-4.22.1.tgz`, the repository is
+`https://github.com/shadcn-ui/ui/tree/shadcn@4.22.1`, and the upstream file's
+SHA-256 is
+`4c371f7a1ff5d219ae2f7ff28bd256b4346fd546fe46fbae22092e57db2f0fae`.
+React Admin's named `query-string` imports are routed through the local Vite
+`src/query-string-compat.ts` adapter, backed by the fixed
+`query-string@9.5.1` package and preserving both named and default exports.
 
 ## Authentication
 
@@ -70,8 +82,10 @@ npm run db:local:migrate
 npm run dev:local
 ```
 
-Open `http://localhost:8787/admin/`. Use `npm run admin:bootstrap` and the existing
-verification procedure to prepare a local administrator. Local mail is a
+Open `http://localhost:8787/admin/`. Use `npm run admin:bootstrap`; that one command
+creates the first administrator and requests its verification email. Complete the
+existing verification procedure to prepare a local administrator. If delivery
+fails, use the request-verification operation to resend. Local mail is a
 metadata-only sink; use the isolated browser test for automated fixture setup.
 For frontend live reload, run `npm run dev --workspace admin` alongside the
 Worker; Vite proxies `/v1` and `/auth-actions` to the local Worker.

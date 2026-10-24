@@ -26,6 +26,7 @@ describe('resolveAuthPolicy', () => {
       emailPasswordEnabled: false,
       requireEmailVerification: false,
       emailVerificationTTLSeconds: 7200,
+      passwordPolicy: DEFAULT_AUTH_POLICY.passwordPolicy,
     });
   });
 
@@ -41,6 +42,7 @@ describe('resolveAuthPolicy', () => {
       emailPasswordEnabled: false,
       requireEmailVerification: true,
       emailVerificationTTLSeconds: 3600,
+      passwordPolicy: DEFAULT_AUTH_POLICY.passwordPolicy,
     });
   });
 
