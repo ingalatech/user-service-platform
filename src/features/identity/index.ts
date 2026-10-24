@@ -60,13 +60,10 @@ export type { BootstrapAdminInput, BootstrapAdminOutcome } from './admin.js';
 export { bootstrapAdminUser } from './admin.js';
 export type { GetAdminUserInput, ListAdminUsersInput } from './admin-users.js';
 export { getAdminUserById, listAdminUsers } from './admin-users.js';
-export type {
-  AuthenticatedUser,
-  ResolveSessionInput,
-  SessionContext,
-  SessionResolvePhase,
-} from './session.js';
-export { resolveSessionContext, toAuthenticatedUser, toSessionContext } from './session.js';
+export type { AuthenticatedUser, SessionContext, SessionResolvePhase } from './session.js';
+export type { ResolveSessionInput } from './session.js';
+export { toAuthenticatedUser, toSessionContext } from './session.js';
+export { resolveSessionContext } from './identity-runtime.js';
 // Framework-independent consumer Identity client (spec #150, ADR-0013,
 // ticket #152). Vendored by the consumer team through
 // `./consumer-client/index.js`; it depends only on generated contracts and

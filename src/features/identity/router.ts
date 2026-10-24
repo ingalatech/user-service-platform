@@ -1,9 +1,7 @@
 import { OpenAPIHono } from '@hono/zod-openapi';
 import type { Context } from 'hono';
-import { resolveEffectiveConfig, type EffectiveConfig } from '../../config/index.js';
 import type { Env } from '../../env.js';
 import { PROBLEM_JSON, createProblem, type ProblemCode } from '../../shared/problem.js';
-import { createBootstrapIdentityAuth, createIdentityAuth, createReaderStateAuth } from './auth.js';
 import { resolveAdminIdentity } from './authorization.js';
 import { getAdminUserById, listAdminUsers } from './admin-users.js';
 import {
@@ -13,15 +11,15 @@ import {
   type BootstrapSetRole,
 } from './admin.js';
 import { CONSUMER_CORS_PATHS, createConsumerCorsMiddleware } from './consumer-cors.js';
-import { extractReaderStateExpiry, resolveReaderStateConfig } from './reader-state.js';
+import { extractReaderStateExpiry } from './reader-state.js';
 import type { ConsumerJsonWebKey } from './contract.js';
-import { deferredAuthMailer, resolveAuthMailer, type AuthMailer } from './mailer.js';
+import type { AuthMailer } from './mailer.js';
+import { createIdentityRuntime } from './identity-runtime.js';
 import {
   evaluateCookieMutationOrigin,
   resolveConsumerOrigins,
   resolveGatewayOrigins,
 } from './origin-guard.js';
-import { resolveAuthPolicy, type AuthPolicy } from './policy.js';
 import { evaluatePasswordPolicy } from './password-policy.js';
 import { isCurrentPasswordResetToken } from './password-reset-token.js';
 import {
@@ -42,8 +40,7 @@ import {
   signOutRoute,
   verifyEmailRoute,
 } from './route.js';
-import { resolveAuthSecret } from './secret.js';
-import { resolveSessionContext, toAuthenticatedUser } from './session.js';
+import { toAuthenticatedUser } from './session.js';
 import { consumeLatestVerificationToken } from './verification-token.js';
 
 export interface IdentityRouterOptions {
@@ -59,12 +56,26 @@ export interface IdentityRouterOptions {
 }
 
 type IdentityContext = Context<{ Bindings: Env; Variables: { requestId: string } }>;
+type IdentityRuntime = ReturnType<typeof createIdentityRuntime>;
 
 // Bounded public cache lifetime for the consumer JWKS document, in seconds
 // (spec #150). Receiving verifiers may cache fetched keys this long;
 // verification keys themselves are retained in D1 through every outstanding
 // token lifetime plus the documented clock tolerance.
 const CONSUMER_JWKS_CACHE_MAX_AGE_SECONDS = 300;
+
+function requestIdentityRuntime(c: IdentityContext, authMailer?: AuthMailer): IdentityRuntime {
+  return createIdentityRuntime({
+    env: c.env,
+    requestUrl: c.req.url,
+    executionContext: {
+      waitUntil: (task) => {
+        c.executionCtx.waitUntil(task);
+      },
+    },
+    authMailer,
+  });
+}
 
 // Better Auth failure surfaced either as an error Response (asResponse mode)
 // or as a thrown APIError. Only the numeric status and string code cross
@@ -118,125 +129,6 @@ async function callEngine(call: () => Promise<Response>): Promise<Response | Eng
   }
 }
 
-function backgroundScheduler(c: IdentityContext): (task: Promise<unknown>) => void {
-  return (task) => {
-    try {
-      c.executionCtx.waitUntil(task);
-      return;
-    } catch {
-      // No execution context (contract generation, bare unit calls): the
-      // mailer transports used here complete their capture synchronously,
-      // so this only supervises already-settled work.
-    }
-    task.catch(() => {
-      console.log(JSON.stringify({ level: 'error', event: 'auth-mail.failed' }));
-    });
-  };
-}
-
-// Shared per-request wiring for both auth builders: one effective
-// non-secret configuration, policy, secrets/bindings and background
-// scheduler. Plugin selection stays at the call sites so endpoint inference
-// keeps the precise plugin type.
-function scopedBase(
-  c: IdentityContext,
-  override?: AuthMailer,
-  mailTransport: 'eager' | 'deferred' = 'eager',
-): {
-  readonly effective: EffectiveConfig;
-  readonly policy: AuthPolicy;
-  readonly mailer: AuthMailer;
-  readonly secret: string;
-  readonly baseURL: string;
-  readonly background: (task: Promise<unknown>) => void;
-} {
-  // Application boundary (ticket #57, PR #61 review): compose one effective
-  // non-secret configuration from the selected versioned profile + same-name
-  // runtime overrides, then make policy/mailer read those effective values.
-  // Secrets/bindings continue directly from runtime and never enter the
-  // versioned/effective non-secret config.
-  const effective = resolveEffectiveConfig({
-    environment: c.env.ENVIRONMENT,
-    runtime: { ...c.env },
-  });
-  const policy = resolveAuthPolicy(effective.config);
-  return {
-    effective,
-    policy,
-    mailer: (mailTransport === 'deferred' ? deferredAuthMailer : resolveAuthMailer)(
-      {
-        ...effective.config,
-        RESEND_API_KEY: c.env.RESEND_API_KEY,
-        SMTP_USER: c.env.SMTP_USER,
-        SMTP_PASSWORD: c.env.SMTP_PASSWORD,
-      },
-      override,
-    ),
-    secret: resolveAuthSecret({
-      ENVIRONMENT: effective.config.ENVIRONMENT,
-      BETTER_AUTH_SECRET: c.env.BETTER_AUTH_SECRET,
-    }),
-    baseURL: new URL(c.req.url).origin,
-    background: backgroundScheduler(c),
-  };
-}
-
-function scopedAuth(
-  c: IdentityContext,
-  override?: AuthMailer,
-  mailTransport: 'eager' | 'deferred' = 'eager',
-): {
-  auth: ReturnType<typeof createIdentityAuth>;
-  policy: AuthPolicy;
-  createBootstrapAuth: (userId: string) => ReturnType<typeof createBootstrapIdentityAuth>;
-} {
-  const base = scopedBase(c, override, mailTransport);
-  const identityAuthInput = {
-    db: c.env.DB,
-    policy: base.policy,
-    mailer: base.mailer,
-    secret: base.secret,
-    baseURL: base.baseURL,
-    verifyEmailActionURL: base.effective.config.AUTH_VERIFY_EMAIL_ACTION_URL,
-    resetPasswordActionURL: base.effective.config.AUTH_RESET_PASSWORD_ACTION_URL,
-    background: base.background,
-  };
-  const auth = createIdentityAuth(identityAuthInput);
-  return {
-    auth,
-    policy: base.policy,
-    createBootstrapAuth: (userId) => createBootstrapIdentityAuth(identityAuthInput, userId),
-  };
-}
-
-// JWT-capable per-request wiring for Reader State issue/refresh and public
-// JWKS publication (spec #195). Reader State configuration resolves here and
-// fails closed before any key or token handling; deployments without stable
-// values never reach issuance or publication.
-function scopedReaderStateAuth(
-  c: IdentityContext,
-  override?: AuthMailer,
-): ReturnType<typeof createReaderStateAuth> {
-  const base = scopedBase(c, override);
-  const readerState = resolveReaderStateConfig({
-    environment: base.effective.environment,
-    issuer: base.effective.config.AUTH_JWT_ISSUER,
-    audience: base.effective.config.AUTH_READER_STATE_AUDIENCE,
-    ttlSeconds: base.effective.config.AUTH_READER_STATE_TTL_SECONDS,
-  });
-  return createReaderStateAuth({
-    db: c.env.DB,
-    policy: base.policy,
-    mailer: base.mailer,
-    secret: base.secret,
-    baseURL: base.baseURL,
-    verifyEmailActionURL: base.effective.config.AUTH_VERIFY_EMAIL_ACTION_URL,
-    resetPasswordActionURL: base.effective.config.AUTH_RESET_PASSWORD_ACTION_URL,
-    background: base.background,
-    readerState,
-  });
-}
-
 function problem(
   c: IdentityContext,
   status: 400 | 401 | 403 | 404 | 409 | 500,
@@ -260,7 +152,11 @@ function problem(
   );
 }
 
-function passwordPolicyProblem(c: IdentityContext, password: string, policy: AuthPolicy) {
+function passwordPolicyProblem(
+  c: IdentityContext,
+  password: string,
+  policy: IdentityRuntime['policy'],
+) {
   const evaluation = evaluatePasswordPolicy(password, policy.passwordPolicy);
   if (evaluation.valid) return null;
   return c.json(
@@ -285,15 +181,13 @@ function passwordPolicyProblem(c: IdentityContext, password: string, policy: Aut
 // control keeps token-route rejections private, no-store.
 function guardCookieMutation(
   c: IdentityContext,
+  runtime: IdentityRuntime,
   cacheControl?: string,
 ): ReturnType<typeof problem> | null {
   let gatewayOrigins: string[];
   let consumerOrigins: string[];
   try {
-    const effective = resolveEffectiveConfig({
-      environment: c.env.ENVIRONMENT,
-      runtime: { ...c.env },
-    });
+    const effective = runtime.effective;
     gatewayOrigins = resolveGatewayOrigins(effective.config.AUTH_GATEWAY_ORIGINS);
     consumerOrigins = resolveConsumerOrigins(effective.config.AUTH_CONSUMER_ORIGINS);
   } catch {
@@ -346,11 +240,13 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
   }
 
   router.openapi(registerRoute, async (c) => {
-    const rejected = guardCookieMutation(c);
+    const runtime = requestIdentityRuntime(c, override);
+    const rejected = guardCookieMutation(c, runtime);
     if (rejected !== null) {
       return rejected;
     }
-    const { auth, policy } = scopedAuth(c, override);
+    const auth = runtime.auth();
+    const policy = runtime.policy;
     if (!policy.emailPasswordEnabled) {
       return problem(c, 403, 'email-password-disabled', 'Email authentication is disabled');
     }
@@ -386,11 +282,13 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
   });
 
   router.openapi(loginRoute, async (c) => {
-    const rejected = guardCookieMutation(c);
+    const runtime = requestIdentityRuntime(c, override);
+    const rejected = guardCookieMutation(c, runtime);
     if (rejected !== null) {
       return rejected;
     }
-    const { auth, policy } = scopedAuth(c, override);
+    const auth = runtime.auth();
+    const policy = runtime.policy;
     if (!policy.emailPasswordEnabled) {
       return problem(c, 403, 'email-password-disabled', 'Email authentication is disabled');
     }
@@ -450,7 +348,7 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
         'The verification action is invalid or has expired.',
       );
     }
-    const { auth } = scopedAuth(c, override);
+    const auth = requestIdentityRuntime(c, override).auth();
     const outcome = await callEngine(() =>
       auth.api.verifyEmail({
         query: { token: input.token },
@@ -478,7 +376,9 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
   });
 
   router.openapi(requestVerificationRoute, async (c) => {
-    const { auth, policy } = scopedAuth(c, override);
+    const runtime = requestIdentityRuntime(c, override);
+    const auth = runtime.auth();
+    const policy = runtime.policy;
     if (!policy.emailPasswordEnabled) {
       return problem(c, 403, 'email-password-disabled', 'Email authentication is disabled');
     }
@@ -511,7 +411,9 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
   });
 
   router.openapi(requestPasswordResetRoute, async (c) => {
-    const { auth, policy } = scopedAuth(c, override);
+    const runtime = requestIdentityRuntime(c, override);
+    const auth = runtime.auth();
+    const policy = runtime.policy;
     if (!policy.emailPasswordEnabled) {
       return problem(c, 403, 'email-password-disabled', 'Email authentication is disabled');
     }
@@ -541,7 +443,11 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
   });
 
   router.openapi(checkPasswordResetRoute, async (c) => {
-    const { policy } = scopedAuth(c, override);
+    const runtime = requestIdentityRuntime(c, override);
+    // Preserve the existing eager auth/mailer failure phase for this endpoint
+    // while exposing only the application policy to its password-token check.
+    runtime.auth();
+    const policy = runtime.policy;
     if (!policy.emailPasswordEnabled) {
       return problem(c, 403, 'email-password-disabled', 'Email authentication is disabled');
     }
@@ -556,7 +462,9 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
   });
 
   router.openapi(resetPasswordRoute, async (c) => {
-    const { auth, policy } = scopedAuth(c, override);
+    const runtime = requestIdentityRuntime(c, override);
+    const auth = runtime.auth();
+    const policy = runtime.policy;
     if (!policy.emailPasswordEnabled) {
       return problem(c, 403, 'email-password-disabled', 'Email authentication is disabled');
     }
@@ -594,14 +502,8 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
 
   router.openapi(currentUserRoute, async (c) => {
     c.header('Cache-Control', 'private, no-store');
-    const session = await resolveSessionContext({
-      env: c.env,
-      headers: c.req.raw.headers,
-      baseURL: new URL(c.req.url).origin,
-      authMailer: override,
-      background: backgroundScheduler(c),
-      requestId: c.get('requestId'),
-    });
+    const runtime = requestIdentityRuntime(c, override);
+    const session = await runtime.resolveSessionContext(c.req.raw.headers, c.get('requestId'));
     if (session === null) {
       return problem(c, 401, 'unauthenticated', 'Unauthenticated');
     }
@@ -609,11 +511,12 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
   });
 
   router.openapi(signOutRoute, async (c) => {
-    const rejected = guardCookieMutation(c);
+    const runtime = requestIdentityRuntime(c, override);
+    const rejected = guardCookieMutation(c, runtime);
     if (rejected !== null) {
       return rejected;
     }
-    const { auth } = scopedAuth(c, override);
+    const auth = runtime.auth();
     const outcome = await callEngine(() =>
       auth.api.signOut({
         headers: c.req.raw.headers,
@@ -647,24 +550,18 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
   // serves initial issue and renewal. All responses are private, no-store.
   router.openapi(readerStateRoute, async (c) => {
     const noStore = 'private, no-store';
-    const rejected = guardCookieMutation(c, noStore);
+    const runtime = requestIdentityRuntime(c, override);
+    const rejected = guardCookieMutation(c, runtime, noStore);
     if (rejected !== null) {
       return rejected;
     }
-    let tokenAuth: ReturnType<typeof scopedReaderStateAuth>;
+    let tokenAuth: ReturnType<typeof runtime.readerStateAuth>;
     try {
-      tokenAuth = scopedReaderStateAuth(c, override);
+      tokenAuth = runtime.readerStateAuth();
     } catch {
       return problem(c, 500, 'internal-error', 'Internal Server Error', undefined, noStore);
     }
-    const session = await resolveSessionContext({
-      env: c.env,
-      headers: c.req.raw.headers,
-      baseURL: new URL(c.req.url).origin,
-      authMailer: override,
-      background: backgroundScheduler(c),
-      requestId: c.get('requestId'),
-    });
+    const session = await runtime.resolveSessionContext(c.req.raw.headers, c.get('requestId'));
     if (session === null) {
       return problem(c, 401, 'unauthenticated', 'Unauthenticated', undefined, noStore);
     }
@@ -706,9 +603,10 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
   // behind the engine encryption facility. Successful responses carry bounded
   // public caching; failures are never cached.
   router.openapi(consumerJwksRoute, async (c) => {
-    let tokenAuth: ReturnType<typeof scopedReaderStateAuth>;
+    const runtime = requestIdentityRuntime(c, override);
+    let tokenAuth: ReturnType<typeof runtime.readerStateAuth>;
     try {
-      tokenAuth = scopedReaderStateAuth(c, override);
+      tokenAuth = runtime.readerStateAuth();
     } catch {
       return problem(c, 500, 'internal-error', 'Internal Server Error', undefined, 'no-store');
     }
@@ -764,11 +662,8 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
   });
 
   router.openapi(authConfigRoute, (c) => {
-    const effective = resolveEffectiveConfig({
-      environment: c.env.ENVIRONMENT,
-      runtime: { ...c.env },
-    });
-    const policy = resolveAuthPolicy(effective.config);
+    const runtime = requestIdentityRuntime(c, override);
+    const policy = runtime.policy;
     return c.json(
       {
         capabilities: {
@@ -785,18 +680,12 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
   });
 
   router.openapi(adminMeRoute, async (c) => {
-    const session = await resolveSessionContext({
-      env: c.env,
-      headers: c.req.raw.headers,
-      baseURL: new URL(c.req.url).origin,
-      authMailer: override,
-      background: backgroundScheduler(c),
-      requestId: c.get('requestId'),
-    });
+    const runtime = requestIdentityRuntime(c, override);
+    const session = await runtime.resolveSessionContext(c.req.raw.headers, c.get('requestId'));
     if (session === null) {
       return problem(c, 401, 'unauthenticated', 'Unauthenticated');
     }
-    const { auth } = scopedAuth(c, override, 'deferred');
+    const auth = runtime.auth('deferred');
     const admin = await resolveAdminIdentity({
       auth,
       db: c.env.DB,
@@ -810,18 +699,12 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
   });
 
   router.openapi(adminUsersRoute, async (c) => {
-    const session = await resolveSessionContext({
-      env: c.env,
-      headers: c.req.raw.headers,
-      baseURL: new URL(c.req.url).origin,
-      authMailer: override,
-      background: backgroundScheduler(c),
-      requestId: c.get('requestId'),
-    });
+    const runtime = requestIdentityRuntime(c, override);
+    const session = await runtime.resolveSessionContext(c.req.raw.headers, c.get('requestId'));
     if (session === null) {
       return problem(c, 401, 'unauthenticated', 'Unauthenticated');
     }
-    const { auth } = scopedAuth(c, override, 'deferred');
+    const auth = runtime.auth('deferred');
     const admin = await resolveAdminIdentity({
       auth,
       db: c.env.DB,
@@ -844,18 +727,12 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
   });
 
   router.openapi(adminUserDetailRoute, async (c) => {
-    const session = await resolveSessionContext({
-      env: c.env,
-      headers: c.req.raw.headers,
-      baseURL: new URL(c.req.url).origin,
-      authMailer: override,
-      background: backgroundScheduler(c),
-      requestId: c.get('requestId'),
-    });
+    const runtime = requestIdentityRuntime(c, override);
+    const session = await runtime.resolveSessionContext(c.req.raw.headers, c.get('requestId'));
     if (session === null) {
       return problem(c, 401, 'unauthenticated', 'Unauthenticated');
     }
-    const { auth } = scopedAuth(c, override, 'deferred');
+    const auth = runtime.auth('deferred');
     const admin = await resolveAdminIdentity({
       auth,
       db: c.env.DB,
@@ -878,7 +755,9 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
   });
 
   router.openapi(adminBootstrapRoute, async (c) => {
-    const { auth, policy, createBootstrapAuth } = scopedAuth(c, override);
+    const runtime = requestIdentityRuntime(c, override);
+    const auth = runtime.auth();
+    const policy = runtime.policy;
     // Bootstrap provisions an email/password credential, so it honors the
     // credential-mechanism switch. It stays independent of the public
     // registration switch: operators must be able to provision the first
@@ -892,7 +771,7 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     if (passwordFailure !== null) return passwordFailure;
     const outcome = await bootstrapAdminUser({
       auth,
-      createBootstrapAuth,
+      createBootstrapAuth: runtime.createBootstrapAuth,
       db: c.env.DB,
       name: input.name,
       email: input.email,

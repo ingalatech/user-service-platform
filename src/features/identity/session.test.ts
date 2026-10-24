@@ -3,6 +3,7 @@ import type { D1Migration } from 'cloudflare:test';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../../app.js';
 import type { Env } from '../../env.js';
+import { createIdentityRuntime } from './identity-runtime.js';
 import { InMemoryAuthMailer } from './mailer.js';
 
 // Seam under test (ticket #93, ADR-0011): the public HTTP boundary of the built
@@ -225,6 +226,99 @@ describe('sandbox-like anonymous session reads (ticket #93)', () => {
       expect(transcript).not.toContain('better-auth.session_token');
       expect(transcript).not.toContain('token=');
     } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('keeps lazy Better Auth initialization failures in the session phase', async () => {
+    const seen: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      seen.push(args.map((arg) => String(arg)).join(' '));
+    });
+
+    try {
+      await expect(
+        createIdentityRuntime({
+          env: sandboxLikeEnv(),
+          requestUrl: 'not-an-absolute-url',
+          authMailer: new InMemoryAuthMailer(),
+        }).resolveSessionContext(new Headers()),
+      ).rejects.toThrow();
+
+      const failures = failureRecords(seen);
+      expect(failures).toHaveLength(1);
+      expect(failures[0]?.phase).toBe('session');
+      expect(seen.join('\n')).not.toContain('not-an-absolute-url');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('keeps Better Auth D1 session-store failures in the session phase', async () => {
+    const seen: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+      seen.push(args.map((arg) => String(arg)).join(' '));
+    });
+    const mailer = new InMemoryAuthMailer();
+    const setupApp = createApp({ authMailer: mailer });
+    const register = await setupApp.request(
+      '/v1/auth/register',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Session Phase Probe',
+          email: 'session-phase@example.com',
+          password: 'Correct-horse-41',
+        }),
+      },
+      sandboxLikeEnv(),
+    );
+    expect(register.status).toBe(201);
+    await waitForVerificationMessage(mailer);
+    const verificationToken = new URL(mailer.sent[0]?.url ?? '').searchParams.get('token');
+    expect(verificationToken).not.toBeNull();
+    const verify = await setupApp.request(
+      '/v1/auth/verify-email',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ token: verificationToken }),
+      },
+      sandboxLikeEnv(),
+    );
+    expect(verify.status).toBe(200);
+    const login = await setupApp.request(
+      '/v1/auth/login',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email: 'session-phase@example.com', password: 'Correct-horse-41' }),
+      },
+      sandboxLikeEnv(),
+    );
+    expect(login.status).toBe(200);
+    const cookie = sessionCookieFrom(login);
+    expect(cookie).not.toBeNull();
+
+    const prepareSpy = vi.spyOn(workerEnv.DB, 'prepare').mockImplementation(() => {
+      throw new Error('session-store-probe-secret');
+    });
+    try {
+      await expect(
+        createIdentityRuntime({
+          env: sandboxLikeEnv(),
+          requestUrl: 'http://localhost',
+          authMailer: mailer,
+        }).resolveSessionContext(new Headers({ cookie: cookie ?? '' })),
+      ).rejects.toThrow();
+
+      const failures = failureRecords(seen);
+      expect(failures).toHaveLength(1);
+      expect(failures[0]?.phase).toBe('session');
+      expect(seen.join('\n')).not.toContain('session-store-probe-secret');
+    } finally {
+      prepareSpy.mockRestore();
       spy.mockRestore();
     }
   });
