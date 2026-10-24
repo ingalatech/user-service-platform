@@ -7,6 +7,11 @@ import type { Env } from '../../env.js';
 import { createBootstrapIdentityAuth, createIdentityAuth, createReaderStateAuth } from './auth.js';
 import type { IdentityAuthInput, ReaderStateOptions } from './auth.js';
 import { resolveReaderStateConfig } from './reader-state.js';
+import {
+  evaluateCookieMutationOrigin,
+  resolveConsumerOrigins,
+  resolveGatewayOrigins,
+} from './origin-guard.js';
 import type { AuthMailer } from './mailer.js';
 import { deferredAuthMailer, resolveAuthMailer } from './mailer.js';
 import { resolveAuthPolicy } from './policy.js';
@@ -17,7 +22,7 @@ import { toSessionContext } from './session.js';
 
 // A tagged mode describes the behavior the caller needs; mail transport
 // construction and execution-context scheduling remain implementation details.
-export type IdentityMailMode = 'eager' | 'deferred';
+type MailResolution = 'eager' | 'deferred';
 
 export interface IdentityRuntimeInput {
   readonly env: Env;
@@ -32,6 +37,16 @@ export interface IdentityRuntimeInput {
 interface ResolvedSettings {
   readonly effective: EffectiveConfig;
   readonly policy: AuthPolicy;
+}
+
+export interface IdentityRuntime {
+  readonly authPolicy: AuthPolicy;
+  authentication(): ReturnType<typeof createIdentityAuth>;
+  administration(): ReturnType<typeof createIdentityAuth>;
+  bootstrapAdministrator(userId: string): ReturnType<typeof createBootstrapIdentityAuth>;
+  readerState(): ReturnType<typeof createReaderStateAuth>;
+  cookieMutationAllowed(headers: Headers): boolean;
+  resolveSessionContext(headers: Headers, requestId?: string): Promise<SessionContext | null>;
 }
 
 class RuntimeBuildFailure extends Error {
@@ -110,8 +125,8 @@ function createBackgroundScheduler(input: IdentityRuntimeInput): (task: Promise<
 // slice and preserve their inferred plugin-specific types.
 export function createIdentityRuntime(input: IdentityRuntimeInput) {
   let settings: ResolvedSettings | undefined;
-  const authInputs = new Map<IdentityMailMode, IdentityAuthInput>();
-  const authInstances = new Map<IdentityMailMode, ReturnType<typeof createIdentityAuth>>();
+  const authInputs = new Map<MailResolution, IdentityAuthInput>();
+  const authInstances = new Map<MailResolution, ReturnType<typeof createIdentityAuth>>();
   let readerStateInstance: ReturnType<typeof createReaderStateAuth> | undefined;
   const background = createBackgroundScheduler(input);
 
@@ -129,8 +144,8 @@ export function createIdentityRuntime(input: IdentityRuntimeInput) {
     }
   }
 
-  function resolveAuthInput(mailMode: IdentityMailMode): IdentityAuthInput {
-    const cached = authInputs.get(mailMode);
+  function resolveAuthInput(mailResolution: MailResolution): IdentityAuthInput {
+    const cached = authInputs.get(mailResolution);
     if (cached !== undefined) return cached;
     const { effective, policy } = resolveSettings();
     let secret: string;
@@ -152,7 +167,7 @@ export function createIdentityRuntime(input: IdentityRuntimeInput) {
     let mailer: AuthMailer;
     try {
       mailer =
-        mailMode === 'deferred'
+        mailResolution === 'deferred'
           ? deferredAuthMailer(mailConfiguration, input.authMailer)
           : resolveAuthMailer(mailConfiguration, input.authMailer);
     } catch (error) {
@@ -168,16 +183,16 @@ export function createIdentityRuntime(input: IdentityRuntimeInput) {
       resetPasswordActionURL: effective.config.AUTH_RESET_PASSWORD_ACTION_URL,
       background,
     };
-    authInputs.set(mailMode, authInput);
+    authInputs.set(mailResolution, authInput);
     return authInput;
   }
 
-  function auth(mailMode: IdentityMailMode = 'eager'): ReturnType<typeof createIdentityAuth> {
-    const cached = authInstances.get(mailMode);
+  function auth(mailResolution: MailResolution): ReturnType<typeof createIdentityAuth> {
+    const cached = authInstances.get(mailResolution);
     if (cached !== undefined) return cached;
     try {
-      const instance = createIdentityAuth(resolveAuthInput(mailMode));
-      authInstances.set(mailMode, instance);
+      const instance = createIdentityAuth(resolveAuthInput(mailResolution));
+      authInstances.set(mailResolution, instance);
       return instance;
     } catch (error) {
       const environment = settings?.effective.environment ?? buildFailureEnvironment(input.env);
@@ -198,6 +213,10 @@ export function createIdentityRuntime(input: IdentityRuntimeInput) {
 
   function readerStateAuth(): ReturnType<typeof createReaderStateAuth> {
     if (readerStateInstance !== undefined) return readerStateInstance;
+    // Reader State is presentation output from an authoritative session; it
+    // never sends transactional mail, so an unrelated transport defect cannot
+    // block issuance. Its own issuer/audience/TTL configuration still fails closed.
+    const authInput = resolveAuthInput('deferred');
     const { effective } = resolveSettings();
     let readerState: ReaderStateOptions;
     try {
@@ -212,7 +231,7 @@ export function createIdentityRuntime(input: IdentityRuntimeInput) {
     }
     try {
       readerStateInstance = createReaderStateAuth({
-        ...resolveAuthInput('eager'),
+        ...authInput,
         readerState,
       });
       return readerStateInstance;
@@ -261,18 +280,31 @@ export function createIdentityRuntime(input: IdentityRuntimeInput) {
     return engineSession === null ? null : toSessionContext(engineSession);
   }
 
-  return {
-    get effective() {
-      return resolveSettings().effective;
-    },
-    get policy() {
+  function cookieMutationAllowed(headers: Headers): boolean {
+    const { effective } = resolveSettings();
+    const allowedGatewayOrigins = resolveGatewayOrigins(effective.config.AUTH_GATEWAY_ORIGINS);
+    const allowedConsumerOrigins = resolveConsumerOrigins(effective.config.AUTH_CONSUMER_ORIGINS);
+    return evaluateCookieMutationOrigin({
+      requestOrigin: requestOrigin(input.requestUrl),
+      origin: headers.get('origin'),
+      secFetchSite: headers.get('sec-fetch-site'),
+      gatewayOrigins: allowedGatewayOrigins,
+      consumerOrigins: allowedConsumerOrigins,
+    });
+  }
+
+  const runtime: IdentityRuntime = {
+    get authPolicy() {
       return resolveSettings().policy;
     },
-    auth,
-    createBootstrapAuth,
-    readerStateAuth,
+    authentication: () => auth('eager'),
+    administration: () => auth('deferred'),
+    bootstrapAdministrator: createBootstrapAuth,
+    readerState: readerStateAuth,
+    cookieMutationAllowed,
     resolveSessionContext,
   };
+  return runtime;
 }
 
 // Preserve the existing Identity-slice interface for non-router consumers;

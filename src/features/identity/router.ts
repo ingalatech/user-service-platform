@@ -15,11 +15,7 @@ import { extractReaderStateExpiry } from './reader-state.js';
 import type { ConsumerJsonWebKey } from './contract.js';
 import type { AuthMailer } from './mailer.js';
 import { createIdentityRuntime } from './identity-runtime.js';
-import {
-  evaluateCookieMutationOrigin,
-  resolveConsumerOrigins,
-  resolveGatewayOrigins,
-} from './origin-guard.js';
+import type { IdentityRuntime } from './identity-runtime.js';
 import { evaluatePasswordPolicy } from './password-policy.js';
 import { isCurrentPasswordResetToken } from './password-reset-token.js';
 import {
@@ -56,7 +52,6 @@ export interface IdentityRouterOptions {
 }
 
 type IdentityContext = Context<{ Bindings: Env; Variables: { requestId: string } }>;
-type IdentityRuntime = ReturnType<typeof createIdentityRuntime>;
 
 // Bounded public cache lifetime for the consumer JWKS document, in seconds
 // (spec #150). Receiving verifiers may cache fetched keys this long;
@@ -155,7 +150,7 @@ function problem(
 function passwordPolicyProblem(
   c: IdentityContext,
   password: string,
-  policy: IdentityRuntime['policy'],
+  policy: IdentityRuntime['authPolicy'],
 ) {
   const evaluation = evaluatePasswordPolicy(password, policy.passwordPolicy);
   if (evaluation.valid) return null;
@@ -184,22 +179,12 @@ function guardCookieMutation(
   runtime: IdentityRuntime,
   cacheControl?: string,
 ): ReturnType<typeof problem> | null {
-  let gatewayOrigins: string[];
-  let consumerOrigins: string[];
+  let allowed: boolean;
   try {
-    const effective = runtime.effective;
-    gatewayOrigins = resolveGatewayOrigins(effective.config.AUTH_GATEWAY_ORIGINS);
-    consumerOrigins = resolveConsumerOrigins(effective.config.AUTH_CONSUMER_ORIGINS);
+    allowed = runtime.cookieMutationAllowed(c.req.raw.headers);
   } catch {
     return problem(c, 500, 'internal-error', 'Internal Server Error', undefined, cacheControl);
   }
-  const allowed = evaluateCookieMutationOrigin({
-    requestOrigin: new URL(c.req.url).origin,
-    origin: c.req.header('origin') ?? null,
-    secFetchSite: c.req.header('sec-fetch-site') ?? null,
-    gatewayOrigins,
-    consumerOrigins,
-  });
   if (!allowed) {
     return problem(
       c,
@@ -245,8 +230,8 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     if (rejected !== null) {
       return rejected;
     }
-    const auth = runtime.auth();
-    const policy = runtime.policy;
+    const auth = runtime.authentication();
+    const policy = runtime.authPolicy;
     if (!policy.emailPasswordEnabled) {
       return problem(c, 403, 'email-password-disabled', 'Email authentication is disabled');
     }
@@ -287,8 +272,8 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     if (rejected !== null) {
       return rejected;
     }
-    const auth = runtime.auth();
-    const policy = runtime.policy;
+    const auth = runtime.authentication();
+    const policy = runtime.authPolicy;
     if (!policy.emailPasswordEnabled) {
       return problem(c, 403, 'email-password-disabled', 'Email authentication is disabled');
     }
@@ -348,7 +333,7 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
         'The verification action is invalid or has expired.',
       );
     }
-    const auth = requestIdentityRuntime(c, override).auth();
+    const auth = requestIdentityRuntime(c, override).authentication();
     const outcome = await callEngine(() =>
       auth.api.verifyEmail({
         query: { token: input.token },
@@ -377,8 +362,8 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
 
   router.openapi(requestVerificationRoute, async (c) => {
     const runtime = requestIdentityRuntime(c, override);
-    const auth = runtime.auth();
-    const policy = runtime.policy;
+    const auth = runtime.authentication();
+    const policy = runtime.authPolicy;
     if (!policy.emailPasswordEnabled) {
       return problem(c, 403, 'email-password-disabled', 'Email authentication is disabled');
     }
@@ -412,8 +397,8 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
 
   router.openapi(requestPasswordResetRoute, async (c) => {
     const runtime = requestIdentityRuntime(c, override);
-    const auth = runtime.auth();
-    const policy = runtime.policy;
+    const auth = runtime.authentication();
+    const policy = runtime.authPolicy;
     if (!policy.emailPasswordEnabled) {
       return problem(c, 403, 'email-password-disabled', 'Email authentication is disabled');
     }
@@ -444,10 +429,7 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
 
   router.openapi(checkPasswordResetRoute, async (c) => {
     const runtime = requestIdentityRuntime(c, override);
-    // Preserve the existing eager auth/mailer failure phase for this endpoint
-    // while exposing only the application policy to its password-token check.
-    runtime.auth();
-    const policy = runtime.policy;
+    const policy = runtime.authPolicy;
     if (!policy.emailPasswordEnabled) {
       return problem(c, 403, 'email-password-disabled', 'Email authentication is disabled');
     }
@@ -463,8 +445,8 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
 
   router.openapi(resetPasswordRoute, async (c) => {
     const runtime = requestIdentityRuntime(c, override);
-    const auth = runtime.auth();
-    const policy = runtime.policy;
+    const auth = runtime.authentication();
+    const policy = runtime.authPolicy;
     if (!policy.emailPasswordEnabled) {
       return problem(c, 403, 'email-password-disabled', 'Email authentication is disabled');
     }
@@ -516,7 +498,7 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     if (rejected !== null) {
       return rejected;
     }
-    const auth = runtime.auth();
+    const auth = runtime.authentication();
     const outcome = await callEngine(() =>
       auth.api.signOut({
         headers: c.req.raw.headers,
@@ -555,9 +537,9 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     if (rejected !== null) {
       return rejected;
     }
-    let tokenAuth: ReturnType<typeof runtime.readerStateAuth>;
+    let tokenAuth: ReturnType<typeof runtime.readerState>;
     try {
-      tokenAuth = runtime.readerStateAuth();
+      tokenAuth = runtime.readerState();
     } catch {
       return problem(c, 500, 'internal-error', 'Internal Server Error', undefined, noStore);
     }
@@ -604,9 +586,9 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
   // public caching; failures are never cached.
   router.openapi(consumerJwksRoute, async (c) => {
     const runtime = requestIdentityRuntime(c, override);
-    let tokenAuth: ReturnType<typeof runtime.readerStateAuth>;
+    let tokenAuth: ReturnType<typeof runtime.readerState>;
     try {
-      tokenAuth = runtime.readerStateAuth();
+      tokenAuth = runtime.readerState();
     } catch {
       return problem(c, 500, 'internal-error', 'Internal Server Error', undefined, 'no-store');
     }
@@ -663,7 +645,7 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
 
   router.openapi(authConfigRoute, (c) => {
     const runtime = requestIdentityRuntime(c, override);
-    const policy = runtime.policy;
+    const policy = runtime.authPolicy;
     return c.json(
       {
         capabilities: {
@@ -685,7 +667,7 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     if (session === null) {
       return problem(c, 401, 'unauthenticated', 'Unauthenticated');
     }
-    const auth = runtime.auth('deferred');
+    const auth = runtime.administration();
     const admin = await resolveAdminIdentity({
       auth,
       db: c.env.DB,
@@ -704,7 +686,7 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     if (session === null) {
       return problem(c, 401, 'unauthenticated', 'Unauthenticated');
     }
-    const auth = runtime.auth('deferred');
+    const auth = runtime.administration();
     const admin = await resolveAdminIdentity({
       auth,
       db: c.env.DB,
@@ -732,7 +714,7 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     if (session === null) {
       return problem(c, 401, 'unauthenticated', 'Unauthenticated');
     }
-    const auth = runtime.auth('deferred');
+    const auth = runtime.administration();
     const admin = await resolveAdminIdentity({
       auth,
       db: c.env.DB,
@@ -756,8 +738,8 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
 
   router.openapi(adminBootstrapRoute, async (c) => {
     const runtime = requestIdentityRuntime(c, override);
-    const auth = runtime.auth();
-    const policy = runtime.policy;
+    const auth = runtime.authentication();
+    const policy = runtime.authPolicy;
     // Bootstrap provisions an email/password credential, so it honors the
     // credential-mechanism switch. It stays independent of the public
     // registration switch: operators must be able to provision the first
@@ -771,7 +753,7 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     if (passwordFailure !== null) return passwordFailure;
     const outcome = await bootstrapAdminUser({
       auth,
-      createBootstrapAuth: runtime.createBootstrapAuth,
+      createBootstrapAuth: (userId) => runtime.bootstrapAdministrator(userId),
       db: c.env.DB,
       name: input.name,
       email: input.email,

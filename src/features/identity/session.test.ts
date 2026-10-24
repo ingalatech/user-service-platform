@@ -175,6 +175,85 @@ describe('sandbox-like anonymous session reads (ticket #93)', () => {
     expect(me.emailVerified).toBe(true);
   });
 
+  it('keeps session-backed administration and Reader State independent from mail configuration', async () => {
+    const mailer = new InMemoryAuthMailer();
+    const setupApp = createApp({ authMailer: mailer });
+    const environment = sandboxLikeEnv({
+      AUTH_JWT_ISSUER: 'https://identity.example.com',
+      AUTH_READER_STATE_AUDIENCE: 'identity-reader-state',
+      AUTH_READER_STATE_TTL_SECONDS: '900',
+    });
+    const bootstrap = await setupApp.request(
+      '/v1/auth/admin/bootstrap',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Runtime Administrator',
+          email: 'runtime-admin@example.com',
+          password: 'Correct-horse-41',
+        }),
+      },
+      environment,
+    );
+    expect(bootstrap.status).toBe(201);
+    const administrator = (await bootstrap.json()) as { id: string };
+    await waitForVerificationMessage(mailer);
+    const verificationToken = new URL(mailer.sent[0]?.url ?? '').searchParams.get('token');
+    expect(verificationToken).not.toBeNull();
+    const verify = await setupApp.request(
+      '/v1/auth/verify-email',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ token: verificationToken }),
+      },
+      environment,
+    );
+    expect(verify.status).toBe(200);
+    const login = await setupApp.request(
+      '/v1/auth/login',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          email: 'runtime-admin@example.com',
+          password: 'Correct-horse-41',
+        }),
+      },
+      environment,
+    );
+    expect(login.status).toBe(200);
+    const cookie = sessionCookieFrom(login);
+    expect(cookie).not.toBeNull();
+
+    const noMailRuntime = createApp();
+    const request = async (path: string): Promise<Response> =>
+      await noMailRuntime.request(
+        path,
+        { method: 'GET', headers: { cookie: cookie ?? '' } },
+        environment,
+      );
+    expect((await request('/v1/me')).status).toBe(200);
+    expect((await request('/v1/admin/me')).status).toBe(200);
+    expect((await request('/v1/admin/users')).status).toBe(200);
+    expect((await request(`/v1/admin/users/${administrator.id}`)).status).toBe(200);
+
+    const readerState = await noMailRuntime.request(
+      '/v1/auth/reader-state',
+      {
+        method: 'POST',
+        headers: { cookie: cookie ?? '', 'content-type': 'application/json' },
+        body: JSON.stringify({}),
+      },
+      environment,
+    );
+    expect(readerState.status).toBe(200);
+    expect(readerState.headers.get('cache-control')).toBe('private, no-store');
+    const readerStateBody = (await readerState.json()) as { readerState: string };
+    expect(typeof readerStateBody.readerState).toBe('string');
+  });
+
   it('keeps transactional-mail routes fail-closed without SMTP credentials', async () => {
     const app = createApp();
     const res = await app.request(
@@ -193,6 +272,22 @@ describe('sandbox-like anonymous session reads (ticket #93)', () => {
 
     expect(res.status).toBe(500);
     expect(await res.json()).toMatchObject({ code: 'internal-error', status: 500 });
+  });
+
+  it('checks a password-reset token without constructing the mail transport', async () => {
+    const app = createApp();
+    const res = await app.request(
+      '/v1/auth/check-password-reset',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ token: 'unknown-reset-token' }),
+      },
+      sandboxLikeEnv(),
+    );
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ valid: false });
   });
 
   it('logs a redacted config phase instead of converting session defects to 401', async () => {
