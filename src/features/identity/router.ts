@@ -15,7 +15,6 @@ import { createReaderStateOperations } from './reader-state-operations.js';
 import type { AuthMailer } from './mailer.js';
 import { createIdentityRuntime } from './identity-runtime.js';
 import type { IdentityRuntime } from './identity-runtime.js';
-import { evaluatePasswordPolicy } from './password-policy.js';
 import {
   adminBootstrapRoute,
   adminMeRoute,
@@ -148,28 +147,6 @@ function credentialProblem(c: IdentityContext, failure: CredentialFailure, cache
     case 'internal-error':
       return problem(c, 500, 'internal-error', 'Internal Server Error', undefined, cacheControl);
   }
-}
-
-function passwordPolicyProblem(
-  c: IdentityContext,
-  password: string,
-  policy: IdentityRuntime['authPolicy'],
-) {
-  const evaluation = evaluatePasswordPolicy(password, policy.passwordPolicy);
-  if (evaluation.valid) return null;
-  return c.json(
-    createProblem({
-      status: 400,
-      code: 'password-policy-violation',
-      title: 'Password does not meet policy',
-      detail: 'The password does not meet the effective password policy.',
-      instance: new URL(c.req.url).pathname,
-      failedRules: evaluation.failedRules,
-      passwordPolicy: evaluation.policy,
-    }),
-    400,
-    { 'Content-Type': PROBLEM_JSON, 'Cache-Control': 'no-store' },
-  );
 }
 
 // Explicit Origin/Fetch Metadata protection for cookie-auth mutation
@@ -472,18 +449,16 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
   router.openapi(adminBootstrapRoute, async (c) => {
     const runtime = requestIdentityRuntime(c, override);
     const auth = runtime.authentication();
-    const policy = runtime.authPolicy;
+    const credentialOperations = createCredentialOperations({ runtime, db: c.env.DB });
     // Bootstrap provisions an email/password credential, so it honors the
     // credential-mechanism switch. It stays independent of the public
     // registration switch: operators must be able to provision the first
     // administrator of a closed deployment.
-    if (!policy.emailPasswordEnabled) {
-      return problem(c, 403, 'email-password-disabled', 'Email authentication is disabled');
-    }
-
     const input = c.req.valid('json');
-    const passwordFailure = passwordPolicyProblem(c, input.password, policy);
-    if (passwordFailure !== null) return passwordFailure;
+    const validation = credentialOperations.validateBootstrapPassword(input.password);
+    if (validation.kind === 'failure') {
+      return credentialProblem(c, validation.failure);
+    }
     const outcome = await bootstrapAdminUser({
       auth,
       createBootstrapAuth: (userId) => runtime.bootstrapAdministrator(userId),

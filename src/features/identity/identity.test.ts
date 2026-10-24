@@ -329,6 +329,72 @@ describe('POST /v1/auth/register', () => {
     }
   });
 
+  it('returns the same password-policy problem for registration, reset, and bootstrap', async () => {
+    const policyEnv = {
+      AUTH_PASSWORD_MIN_LENGTH: String(TEST_PASSWORD_POLICY.minLength),
+      AUTH_PASSWORD_MAX_LENGTH: String(TEST_PASSWORD_POLICY.maxLength),
+      AUTH_PASSWORD_MIN_UPPERCASE: String(TEST_PASSWORD_POLICY.minUppercase),
+      AUTH_PASSWORD_MIN_LOWERCASE: String(TEST_PASSWORD_POLICY.minLowercase),
+      AUTH_PASSWORD_MIN_DIGITS: String(TEST_PASSWORD_POLICY.minDigits),
+      AUTH_PASSWORD_MIN_SYMBOLS: String(TEST_PASSWORD_POLICY.minSymbols),
+    };
+    const cases = [
+      {
+        path: '/v1/auth/register',
+        body: { name: 'Policy User', email: 'policy@example.com', password: 'Ab1!' },
+      },
+      {
+        path: '/v1/auth/reset-password',
+        body: { token: 'synthetic-reset-token', newPassword: 'Ab1!' },
+      },
+      {
+        path: '/v1/auth/admin/bootstrap',
+        body: { name: 'Policy Admin', email: 'policy-admin@example.com', password: 'Ab1!' },
+      },
+    ] as const;
+
+    const results = await Promise.all(
+      cases.map(async ({ path, body }) => {
+        const response = await post(path, body, policyEnv);
+        expect(response.status).toBe(400);
+        expect(response.headers.get('content-type')).toContain('application/problem+json');
+        expect(response.headers.get('cache-control')).toBe('no-store');
+        return (await response.json()) as Record<string, unknown>;
+      }),
+    );
+    const [registrationProblem, resetProblem, bootstrapProblem] = results;
+    if (
+      registrationProblem === undefined ||
+      resetProblem === undefined ||
+      bootstrapProblem === undefined
+    ) {
+      throw new Error('Expected a password-policy problem from each credential operation.');
+    }
+
+    const withoutInstance = (problem: Record<string, unknown>) => {
+      const details = { ...problem };
+      delete details.instance;
+      return details;
+    };
+    const registrationDetails = withoutInstance(registrationProblem);
+    const resetDetails = withoutInstance(resetProblem);
+    const bootstrapDetails = withoutInstance(bootstrapProblem);
+    expect(resetDetails).toEqual(registrationDetails);
+    expect(bootstrapDetails).toEqual(registrationDetails);
+    expect(registrationProblem.instance).toBe('/v1/auth/register');
+    expect(resetProblem.instance).toBe('/v1/auth/reset-password');
+    expect(bootstrapProblem.instance).toBe('/v1/auth/admin/bootstrap');
+    expect(registrationDetails).toEqual({
+      type: 'urn:problem:password-policy-violation',
+      title: 'Password does not meet policy',
+      status: 400,
+      detail: 'The password does not meet the effective password policy.',
+      code: 'password-policy-violation',
+      failedRules: ['min-length'],
+      passwordPolicy: TEST_PASSWORD_POLICY,
+    });
+  });
+
   it('answers duplicate registration generically without duplicating identities', async () => {
     const payload = {
       name: 'Ada Lovelace',

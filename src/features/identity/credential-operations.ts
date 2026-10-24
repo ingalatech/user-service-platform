@@ -39,6 +39,21 @@ export type CredentialFailure =
   | { readonly kind: 'reset-invalid' }
   | { readonly kind: 'internal-error' };
 
+type PasswordPolicyFailure = Extract<
+  CredentialFailure,
+  { readonly kind: 'password-policy-violation' }
+>;
+
+export type BootstrapCredentialValidation =
+  | { readonly kind: 'valid' }
+  | {
+      readonly kind: 'failure';
+      readonly failure: Extract<
+        CredentialFailure,
+        { readonly kind: 'email-password-disabled' | 'password-policy-violation' }
+      >;
+    };
+
 export type CredentialOperationOutcome<T> =
   | { readonly kind: 'success'; readonly value: T; readonly cookies: readonly string[] }
   | {
@@ -48,6 +63,7 @@ export type CredentialOperationOutcome<T> =
     };
 
 export interface CredentialOperations {
+  validateBootstrapPassword(password: string): BootstrapCredentialValidation;
   register(
     input: RegisterRequest,
     headers: Headers,
@@ -94,7 +110,7 @@ function failure<T = never>(
 function passwordPolicyFailure(
   password: string,
   passwordPolicy: PasswordPolicy,
-): CredentialFailure | null {
+): PasswordPolicyFailure | null {
   const evaluation = evaluatePasswordPolicy(password, passwordPolicy);
   if (evaluation.valid) return null;
   return {
@@ -115,6 +131,19 @@ export function createCredentialOperations(input: CredentialOperationsInput): Cr
   const { runtime, db } = input;
 
   return {
+    validateBootstrapPassword(password) {
+      if (!runtime.authPolicy.emailPasswordEnabled) {
+        return {
+          kind: 'failure',
+          failure: { kind: 'email-password-disabled' },
+        };
+      }
+      const invalidPassword = passwordPolicyFailure(password, runtime.authPolicy.passwordPolicy);
+      return invalidPassword === null
+        ? { kind: 'valid' }
+        : { kind: 'failure', failure: invalidPassword };
+    },
+
     async register(request, headers) {
       const auth = runtime.authentication();
       const policy = runtime.authPolicy;
