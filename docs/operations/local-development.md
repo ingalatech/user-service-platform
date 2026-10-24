@@ -167,6 +167,9 @@ Password-reset mail targets the consumer action page configured by
 `AUTH_RESET_PASSWORD_ACTION_URL`. Local development uses
 `http://localhost:4321/usuario/restablecer`; the versioned sandbox and
 production environment files point to their deployed RCH action page.
+Verification mail follows the same pattern through
+`AUTH_VERIFY_EMAIL_ACTION_URL`, using `http://localhost:4321/usuario/verificar`
+locally and the deployed RCH verification page in sandbox and production.
 
 SMTP notes:
 
