@@ -15,6 +15,7 @@ import { createReaderStateOperations } from './reader-state-operations.js';
 import type { AuthMailer } from './mailer.js';
 import { createIdentityRuntime } from './identity-runtime.js';
 import type { IdentityRuntime } from './identity-runtime.js';
+import { createPasswordPolicyProblemDetails } from './problem.js';
 import {
   adminBootstrapRoute,
   adminMeRoute,
@@ -103,19 +104,10 @@ function credentialProblem(c: IdentityContext, failure: CredentialFailure, cache
         'Registration is disabled.',
       );
     case 'password-policy-violation':
-      return c.json(
-        createProblem({
-          status: 400,
-          code: 'password-policy-violation',
-          title: 'Password does not meet policy',
-          detail: 'The password does not meet the effective password policy.',
-          instance: new URL(c.req.url).pathname,
-          failedRules: failure.failedRules,
-          passwordPolicy: failure.passwordPolicy,
-        }),
-        400,
-        { 'Content-Type': PROBLEM_JSON, 'Cache-Control': 'no-store' },
-      );
+      return c.json(createPasswordPolicyProblemDetails(failure, new URL(c.req.url).pathname), 400, {
+        'Content-Type': PROBLEM_JSON,
+        'Cache-Control': 'no-store',
+      });
     case 'email-verification-required':
       return problem(
         c,
