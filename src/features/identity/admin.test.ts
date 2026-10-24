@@ -317,12 +317,16 @@ describe('POST /v1/auth/admin/bootstrap', () => {
     expect(mailer.sent).toHaveLength(0);
   });
 
-  it('renews a lease while a slow creation is in progress', async () => {
+  it('fences a late create after a second attempt wins an expired lease', async () => {
     let currentNow = TEST_NOW;
     let firstCreate = true;
     let markFirstCreateStarted: () => void = () => undefined;
+    let releaseFirstCreate: () => void = () => undefined;
     const firstCreateStarted = new Promise<void>((resolve) => {
       markFirstCreateStarted = resolve;
+    });
+    const firstCreateMayFinish = new Promise<void>((resolve) => {
+      releaseFirstCreate = resolve;
     });
     const slowApp = createApp({
       authMailer: mailer,
@@ -332,8 +336,7 @@ describe('POST /v1/auth/admin/bootstrap', () => {
         if (firstCreate) {
           firstCreate = false;
           markFirstCreateStarted();
-          await new Promise((resolve) => setTimeout(resolve, 1_000));
-          return auth.api.createUser({ body });
+          await firstCreateMayFinish;
         }
         return auth.api.createUser({ body });
       },
@@ -349,24 +352,30 @@ describe('POST /v1/auth/admin/bootstrap', () => {
         testEnv(),
       );
 
-    const winner = request(adminInput);
+    const firstAttempt = request({ ...adminInput, email: 'late-admin@example.com' });
     await firstCreateStarted;
-    await new Promise((resolve) => setTimeout(resolve, 70));
     currentNow += 31;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-    const loser = await request({
+    const secondAttempt = await request({
       name: 'Grace Admin',
       email: 'grace-admin@example.com',
       password: 'Another-horse-42',
     });
 
-    expect(loser.status).toBe(409);
-    expect(await loser.json()).toMatchObject({
-      code: 'admin-bootstrap-in-progress',
+    expect(secondAttempt.status).toBe(201);
+    expect(await adminCount()).toBe(1);
+    releaseFirstCreate();
+    const firstResponse = await firstAttempt;
+    expect(firstResponse.status).toBe(409);
+    expect(await firstResponse.json()).toMatchObject({
+      code: 'admin-already-bootstrapped',
       status: 409,
     });
-    expect((await winner).status).toBe(201);
     expect(await adminCount()).toBe(1);
+    expect(await userCount()).toBe(1);
+    const lateUser = await workerEnv.DB.prepare('SELECT id FROM "user" WHERE email = ?')
+      .bind('late-admin@example.com')
+      .first();
+    expect(lateUser).toBeNull();
   });
 
   it('keeps a completed guard permanent even when no User row remains', async () => {

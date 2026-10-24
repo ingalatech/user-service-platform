@@ -6,11 +6,10 @@ import type { AdminBootstrapResult } from './contract.js';
 import { identitySchema, user } from './schema.js';
 
 // Explicit first-administrator bootstrap (ticket #59, spec #8). The first
-// administrative User is created through Better Auth's supported Admin API
-// (`auth.api.createUser` with the `admin` role), never through direct SQL,
-// persistence inserts, or migration-seeded credentials, so password hashing
-// and engine invariants stay intact. Credentials are explicit operator
-// inputs; this module defines no default password and logs nothing.
+// administrative User is created through Better Auth's supported Admin API as a
+// provisional ordinary User, then promoted through an atomic D1 fencing write.
+// Password hashing and engine invariants stay in Better Auth; credentials are
+// explicit operator inputs and this module defines no default password or logs.
 //
 // Bootstrap is first-admin-wins: once any `admin`-role User exists, every
 // further attempt fails closed with an explicit non-secret outcome instead
@@ -41,7 +40,7 @@ export interface BootstrapCreateUserBody {
   readonly name: string;
   readonly email: string;
   readonly password: string;
-  readonly role: 'admin';
+  readonly role: 'user';
 }
 
 export type BootstrapCreateUser = (
@@ -63,9 +62,8 @@ const ENGINE_DUPLICATE_EMAIL_CODES = new Set([
   'User already exists. Use another email.',
 ]);
 
-// Password hashing and D1 round trips normally complete well inside this
-// lease. A crashed invocation leaves the row recoverable after this interval;
-// concurrent callers wait only for the bounded retry window below.
+// A crashed invocation leaves the reservation recoverable after this interval;
+// promotion is separately fenced by the owner nonce and expiry.
 export const BOOTSTRAP_LEASE_TTL_MS = 30_000;
 const BOOTSTRAP_RETRY_DELAYS_MS = [0, 10, 20, 40, 80, 120] as const;
 
@@ -96,12 +94,12 @@ function toBootstrappedAdmin(payload: unknown): AdminBootstrapResult | null {
   if (
     typeof id !== 'string' ||
     typeof email !== 'string' ||
-    role !== 'admin' ||
+    (role !== 'admin' && role !== 'user') ||
     typeof emailVerified !== 'boolean'
   ) {
     return null;
   }
-  return { id, email, role, emailVerified };
+  return { id, email, role: 'admin', emailVerified };
 }
 
 async function hasBootstrappedAdmin(db: D1Database): Promise<boolean> {
@@ -169,35 +167,43 @@ async function releaseBootstrapGuard(db: D1Database, ownerNonce: string): Promis
     .run();
 }
 
-async function renewBootstrapGuard(
-  db: D1Database,
-  ownerNonce: string,
-  now: number,
-  leaseTtlMs: number,
-): Promise<void> {
-  await db
-    .prepare(
-      `UPDATE admin_bootstrap_guard
-       SET expires_at = ?
-       WHERE id = ? AND owner_nonce = ? AND completed_at IS NULL`,
-    )
-    .bind(now + leaseTtlMs, BOOTSTRAP_GUARD_ID, ownerNonce)
-    .run();
+async function discardProvisionalUser(db: D1Database, userId: string): Promise<void> {
+  await db.batch([
+    db.prepare('DELETE FROM "session" WHERE user_id = ?').bind(userId),
+    db.prepare('DELETE FROM "account" WHERE user_id = ?').bind(userId),
+    db.prepare('DELETE FROM "user" WHERE id = ? AND role = ?').bind(userId, 'user'),
+  ]);
 }
 
-function maintainBootstrapGuard(
+async function promoteProvisionalUser(
   db: D1Database,
   ownerNonce: string,
-  now: () => number,
-  leaseTtlMs: number,
-): () => void {
-  const interval = Math.max(1, Math.floor(leaseTtlMs / 3));
-  const timer = setInterval(() => {
-    void renewBootstrapGuard(db, ownerNonce, now(), leaseTtlMs).catch(() => undefined);
-  }, interval);
-  return () => {
-    clearInterval(timer);
-  };
+  userId: string,
+  now: number,
+): Promise<boolean> {
+  const results = await db.batch([
+    db
+      .prepare(
+        `UPDATE "user"
+         SET role = 'admin', updated_at = ?
+         WHERE id = ? AND role = 'user'
+           AND NOT EXISTS (SELECT 1 FROM "user" WHERE role = 'admin')
+           AND EXISTS (
+             SELECT 1 FROM admin_bootstrap_guard
+             WHERE id = ? AND owner_nonce = ? AND completed_at IS NULL AND expires_at > ?
+           )`,
+      )
+      .bind(now, userId, BOOTSTRAP_GUARD_ID, ownerNonce, now),
+    db
+      .prepare(
+        `UPDATE admin_bootstrap_guard
+         SET completed_at = ?, expires_at = ?
+         WHERE id = ? AND owner_nonce = ? AND completed_at IS NULL AND expires_at > ?
+           AND EXISTS (SELECT 1 FROM "user" WHERE id = ? AND role = 'admin')`,
+      )
+      .bind(now, now, BOOTSTRAP_GUARD_ID, ownerNonce, now, userId),
+  ]);
+  return results[0]?.meta.changes === 1 && results[1]?.meta.changes === 1;
 }
 
 async function completeBootstrapGuard(
@@ -247,12 +253,9 @@ export async function bootstrapAdminUser(
     }
   }
   if (ownerNonce === undefined) return { status: 'in-progress' };
-  const stopGuardMaintenance = maintainBootstrapGuard(input.db, ownerNonce, now, leaseTtlMs);
-
   // Protect compatibility with a legacy writer that may have created an admin
   // between the initial read and the atomic reservation.
   if (await hasBootstrappedAdmin(input.db)) {
-    stopGuardMaintenance();
     await completeBootstrapGuard(input.db, ownerNonce, now());
     return { status: 'already-bootstrapped' };
   }
@@ -263,14 +266,13 @@ export async function bootstrapAdminUser(
       name: input.name,
       email: input.email,
       password: input.password,
-      role: 'admin',
+      role: 'user',
     };
     const result = input.createUser
       ? await input.createUser(input.auth, body)
       : await input.auth.api.createUser({ body });
     created = (result as { user?: unknown }).user ?? result;
   } catch (error) {
-    stopGuardMaintenance();
     if (ENGINE_DUPLICATE_EMAIL_CODES.has(engineErrorCode(error) ?? '')) {
       await releaseBootstrapGuard(input.db, ownerNonce);
       return { status: 'email-conflict' };
@@ -278,23 +280,38 @@ export async function bootstrapAdminUser(
     await releaseBootstrapGuard(input.db, ownerNonce);
     throw error;
   }
-  const admin = toBootstrappedAdmin(created);
-  if (admin === null) {
-    stopGuardMaintenance();
+  const provisional = toBootstrappedAdmin(created);
+  if (provisional === null) {
+    const createdId = asRecord(created)?.id;
+    if (typeof createdId === 'string') {
+      await discardProvisionalUser(input.db, createdId);
+    }
     await releaseBootstrapGuard(input.db, ownerNonce);
-    throw new Error('Admin bootstrap returned an unexpected engine shape.');
+    throw new Error('Admin bootstrap returned an unexpected provisional-user shape.');
   }
-  stopGuardMaintenance();
-  await completeBootstrapGuard(input.db, ownerNonce, now());
+  let promoted: boolean;
+  try {
+    promoted = await promoteProvisionalUser(input.db, ownerNonce, provisional.id, now());
+  } catch (error) {
+    await discardProvisionalUser(input.db, provisional.id);
+    await releaseBootstrapGuard(input.db, ownerNonce);
+    throw error;
+  }
+  if (!promoted) {
+    await discardProvisionalUser(input.db, provisional.id);
+    return (await hasBootstrappedAdmin(input.db))
+      ? { status: 'already-bootstrapped' }
+      : { status: 'in-progress' };
+  }
   // Reuse Better Auth's supported API rather than recursing through HTTP. This
   // runs the same verification callback, token guard, AuthMailer and
   // background scheduler used by registration and request-verification.
   // Creation is already complete, so delivery failure remains retryable and
   // must not change the bootstrap creation response.
   try {
-    await input.auth.api.sendVerificationEmail({ body: { email: admin.email } });
+    await input.auth.api.sendVerificationEmail({ body: { email: provisional.email } });
   } catch {
     // Mail transports own sent/failed/skipped operational logging.
   }
-  return { status: 'created', admin };
+  return { status: 'created', admin: provisional };
 }
