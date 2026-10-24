@@ -79,15 +79,17 @@ export const emailVerificationToken = sqliteTable('email_verification_token', {
   consumedAt: integer('consumed_at'),
 });
 
-// Singleton application-owned first-admin lease. An expiry makes crashed
-// reservations recoverable; a nullable completion timestamp is a separate,
-// durable closed state. The owner nonce lets only the reserving operation
-// release a failed attempt.
+// Singleton application-owned first-admin state machine. The expiry makes an
+// unclaimed lease recoverable; winnerUserId is the durable, non-expiring claim
+// that fences every later promotion/cleanup. A nullable completion timestamp
+// is the final closed state. The owner nonce lets only the reserving operation
+// release a failed attempt before a winner is claimed.
 export const adminBootstrapGuard = sqliteTable('admin_bootstrap_guard', {
   id: integer('id').primaryKey(),
   ownerNonce: text('owner_nonce').notNull(),
   expiresAt: integer('expires_at').notNull(),
   completedAt: integer('completed_at'),
+  winnerUserId: text('winner_user_id'),
 });
 
 // Durable consumer-JWT signing-key ring (spec #150, ADR-0013). This table

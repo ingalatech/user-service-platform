@@ -1,0 +1,1 @@
+ALTER TABLE `admin_bootstrap_guard` ADD `winner_user_id` text;

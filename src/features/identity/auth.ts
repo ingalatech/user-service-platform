@@ -96,6 +96,24 @@ export function createIdentityAuth(input: IdentityAuthInput) {
   });
 }
 
+// Bootstrap-only Better Auth API context. It is never mounted on the Worker:
+// the just-created provisional user receives only the scoped Admin API
+// capability needed to promote its own durably claimed id, plus the core
+// self-delete operation used to clean up an unclaimed provisional user.
+// Email verification is disabled only in this private context so Better Auth's
+// supported email sign-in API can issue the short-lived internal session; the
+// deployment-facing auth instance and its verification policy are unchanged.
+export function createBootstrapIdentityAuth(input: IdentityAuthInput, provisionalUserId: string) {
+  return betterAuth({
+    ...sharedOptions({
+      ...input,
+      policy: { ...input.policy, requireEmailVerification: false },
+    }),
+    user: { deleteUser: { enabled: true } },
+    plugins: [admin({ adminUserIds: [provisionalUserId] })],
+  });
+}
+
 // Builds a request-scoped Better Auth instance with the asymmetric JWT/JWKS
 // capability behind the Reader State contract (spec #195, ADR-0013). Used only by the
 // application-owned POST /v1/auth/reader-state and GET /v1/auth/jwks operations;

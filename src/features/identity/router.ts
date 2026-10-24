@@ -3,10 +3,15 @@ import type { Context } from 'hono';
 import { resolveEffectiveConfig, type EffectiveConfig } from '../../config/index.js';
 import type { Env } from '../../env.js';
 import { PROBLEM_JSON, createProblem, type ProblemCode } from '../../shared/problem.js';
-import { createIdentityAuth, createReaderStateAuth } from './auth.js';
+import { createBootstrapIdentityAuth, createIdentityAuth, createReaderStateAuth } from './auth.js';
 import { resolveAdminIdentity } from './authorization.js';
 import { getAdminUserById, listAdminUsers } from './admin-users.js';
-import { bootstrapAdminUser, type BootstrapCreateUser } from './admin.js';
+import {
+  bootstrapAdminUser,
+  type BootstrapCreateUser,
+  type BootstrapDeleteUser,
+  type BootstrapSetRole,
+} from './admin.js';
 import { CONSUMER_CORS_PATHS, createConsumerCorsMiddleware } from './consumer-cors.js';
 import { extractReaderStateExpiry, resolveReaderStateConfig } from './reader-state.js';
 import type { ConsumerJsonWebKey } from './contract.js';
@@ -49,6 +54,8 @@ export interface IdentityRouterOptions {
   readonly now?: () => number;
   readonly bootstrapLeaseTtlMs?: number;
   readonly bootstrapCreateUser?: BootstrapCreateUser;
+  readonly bootstrapSetRole?: BootstrapSetRole;
+  readonly bootstrapDeleteUser?: BootstrapDeleteUser;
 }
 
 type IdentityContext = Context<{ Bindings: Env; Variables: { requestId: string } }>;
@@ -178,9 +185,13 @@ function scopedAuth(
   c: IdentityContext,
   override?: AuthMailer,
   mailTransport: 'eager' | 'deferred' = 'eager',
-): { auth: ReturnType<typeof createIdentityAuth>; policy: AuthPolicy } {
+): {
+  auth: ReturnType<typeof createIdentityAuth>;
+  policy: AuthPolicy;
+  createBootstrapAuth: (userId: string) => ReturnType<typeof createBootstrapIdentityAuth>;
+} {
   const base = scopedBase(c, override, mailTransport);
-  const auth = createIdentityAuth({
+  const identityAuthInput = {
     db: c.env.DB,
     policy: base.policy,
     mailer: base.mailer,
@@ -189,8 +200,13 @@ function scopedAuth(
     verifyEmailActionURL: base.effective.config.AUTH_VERIFY_EMAIL_ACTION_URL,
     resetPasswordActionURL: base.effective.config.AUTH_RESET_PASSWORD_ACTION_URL,
     background: base.background,
-  });
-  return { auth, policy: base.policy };
+  };
+  const auth = createIdentityAuth(identityAuthInput);
+  return {
+    auth,
+    policy: base.policy,
+    createBootstrapAuth: (userId) => createBootstrapIdentityAuth(identityAuthInput, userId),
+  };
 }
 
 // JWT-capable per-request wiring for Reader State issue/refresh and public
@@ -862,7 +878,7 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
   });
 
   router.openapi(adminBootstrapRoute, async (c) => {
-    const { auth, policy } = scopedAuth(c, override);
+    const { auth, policy, createBootstrapAuth } = scopedAuth(c, override);
     // Bootstrap provisions an email/password credential, so it honors the
     // credential-mechanism switch. It stays independent of the public
     // registration switch: operators must be able to provision the first
@@ -876,6 +892,7 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     if (passwordFailure !== null) return passwordFailure;
     const outcome = await bootstrapAdminUser({
       auth,
+      createBootstrapAuth,
       db: c.env.DB,
       name: input.name,
       email: input.email,
@@ -887,6 +904,10 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
       ...(options.bootstrapCreateUser === undefined
         ? {}
         : { createUser: options.bootstrapCreateUser }),
+      ...(options.bootstrapSetRole === undefined ? {} : { setRole: options.bootstrapSetRole }),
+      ...(options.bootstrapDeleteUser === undefined
+        ? {}
+        : { deleteUser: options.bootstrapDeleteUser }),
     });
     if (outcome.status === 'created') {
       return c.json(outcome.admin, 201);

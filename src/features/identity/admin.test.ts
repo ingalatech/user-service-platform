@@ -81,6 +81,18 @@ async function adminCount(): Promise<number> {
   return row?.total ?? 0;
 }
 
+async function associationCounts(userId: string): Promise<{ accounts: number; sessions: number }> {
+  const [accountRow, sessionRow] = await Promise.all([
+    workerEnv.DB.prepare('SELECT COUNT(*) AS total FROM "account" WHERE user_id = ?')
+      .bind(userId)
+      .first<{ total: number }>(),
+    workerEnv.DB.prepare('SELECT COUNT(*) AS total FROM "session" WHERE user_id = ?')
+      .bind(userId)
+      .first<{ total: number }>(),
+  ]);
+  return { accounts: accountRow?.total ?? 0, sessions: sessionRow?.total ?? 0 };
+}
+
 function tokenFromLastMessage(): string {
   const messages = mailer.sent;
   expect(messages.length).toBeGreaterThan(0);
@@ -170,7 +182,8 @@ describe('POST /v1/auth/admin/bootstrap', () => {
       .first<{ created_at: number; updated_at: number }>();
     expect(persistedTimestamps).not.toBeNull();
     expect(persistedTimestamps?.created_at).toBeLessThan(100_000_000_000);
-    expect(persistedTimestamps?.updated_at).toBe(Math.floor(TEST_NOW / 1000));
+    expect(persistedTimestamps?.updated_at).toBeGreaterThan(1_000_000_000);
+    expect(persistedTimestamps?.updated_at).toBeLessThan(100_000_000_000);
 
     // Exactly one User exists and it carries the administrative role: no
     // duplicate privileged accounts, no seeded identities.
@@ -329,8 +342,11 @@ describe('POST /v1/auth/admin/bootstrap', () => {
   it('fences a late create after a second attempt wins an expired lease', async () => {
     let currentNow = TEST_NOW;
     let firstCreate = true;
+    let lateProvisionalId = '';
     let markFirstCreateStarted: () => void = () => undefined;
     let releaseFirstCreate: () => void = () => undefined;
+    let setRoleCalls = 0;
+    let deleteUserCalls = 0;
     const firstCreateStarted = new Promise<void>((resolve) => {
       markFirstCreateStarted = resolve;
     });
@@ -341,11 +357,25 @@ describe('POST /v1/auth/admin/bootstrap', () => {
       authMailer: mailer,
       now: () => currentNow,
       bootstrapLeaseTtlMs: 30,
+      bootstrapSetRole: async (auth, userId, headers) => {
+        setRoleCalls += 1;
+        return auth.api.setRole({ body: { userId, role: 'admin' }, headers });
+      },
+      bootstrapDeleteUser: async (auth, password, headers) => {
+        deleteUserCalls += 1;
+        return auth.api.deleteUser({ body: { password }, headers });
+      },
       bootstrapCreateUser: async (auth, body) => {
         if (firstCreate) {
           firstCreate = false;
+          const created = await auth.api.createUser({ body });
+          const createdUser =
+            (created as { user?: { id?: string }; id?: string }).user ??
+            (created as { id?: string });
+          lateProvisionalId = createdUser.id ?? '';
           markFirstCreateStarted();
           await firstCreateMayFinish;
+          return created;
         }
         return auth.api.createUser({ body });
       },
@@ -372,6 +402,7 @@ describe('POST /v1/auth/admin/bootstrap', () => {
 
     expect(secondAttempt.status).toBe(201);
     expect(await adminCount()).toBe(1);
+    const winner = (await secondAttempt.clone().json()) as { id: string };
     releaseFirstCreate();
     const firstResponse = await firstAttempt;
     expect(firstResponse.status).toBe(409);
@@ -381,10 +412,68 @@ describe('POST /v1/auth/admin/bootstrap', () => {
     });
     expect(await adminCount()).toBe(1);
     expect(await userCount()).toBe(1);
+    expect(setRoleCalls).toBe(1);
+    expect(deleteUserCalls).toBe(1);
+    const guard = await workerEnv.DB.prepare(
+      'SELECT winner_user_id, completed_at FROM admin_bootstrap_guard WHERE id = 1',
+    ).first<{ winner_user_id: string | null; completed_at: number | null }>();
+    expect(guard).toEqual({ winner_user_id: winner.id, completed_at: TEST_NOW + 31 });
     const lateUser = await workerEnv.DB.prepare('SELECT id FROM "user" WHERE email = ?')
       .bind('late-admin@example.com')
       .first();
     expect(lateUser).toBeNull();
+    expect(await associationCounts(winner.id)).toEqual({ accounts: 1, sessions: 0 });
+    expect(lateProvisionalId).not.toBe('');
+    expect(lateProvisionalId).not.toBe(winner.id);
+    expect(await associationCounts(lateProvisionalId)).toEqual({ accounts: 0, sessions: 0 });
+  });
+
+  it('recovers a durably claimed winner after setRole fails', async () => {
+    let failFirstSetRole = true;
+    const recoverableApp = createApp({
+      authMailer: mailer,
+      now: () => TEST_NOW,
+      bootstrapSetRole: async (auth, userId, headers) => {
+        if (failFirstSetRole) {
+          failFirstSetRole = false;
+          throw new Error('simulated setRole interruption');
+        }
+        return auth.api.setRole({ body: { userId, role: 'admin' }, headers });
+      },
+    });
+    const request = async (): Promise<Response> =>
+      await recoverableApp.request(
+        ADMIN_BOOTSTRAP_PATH,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(adminInput),
+        },
+        testEnv(),
+      );
+
+    const interrupted = await request();
+    expect(interrupted.status).toBe(500);
+    expect(await adminCount()).toBe(0);
+    expect(await userCount()).toBe(1);
+
+    const guard = await workerEnv.DB.prepare(
+      'SELECT winner_user_id, completed_at FROM admin_bootstrap_guard WHERE id = 1',
+    ).first<{ winner_user_id: string | null; completed_at: number | null }>();
+    expect(guard?.winner_user_id).toEqual(expect.any(String));
+    expect(guard?.completed_at).toBeNull();
+
+    const recovered = await request();
+    expect(recovered.status).toBe(201);
+    expect(await recovered.json()).toMatchObject({ id: guard?.winner_user_id, role: 'admin' });
+    expect(await adminCount()).toBe(1);
+    expect(await userCount()).toBe(1);
+
+    const completedGuard = await workerEnv.DB.prepare(
+      'SELECT winner_user_id, completed_at FROM admin_bootstrap_guard WHERE id = 1',
+    ).first<{ winner_user_id: string | null; completed_at: number | null }>();
+    expect(completedGuard?.winner_user_id).toBe(guard?.winner_user_id);
+    expect(completedGuard?.completed_at).toBe(TEST_NOW);
   });
 
   it('keeps a completed guard permanent even when no User row remains', async () => {

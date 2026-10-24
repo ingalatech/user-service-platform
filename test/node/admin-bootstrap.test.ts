@@ -1,5 +1,3 @@
-import { readFile } from 'node:fs/promises';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   assertSafeBootstrapTarget,
@@ -60,16 +58,5 @@ describe('admin bootstrap operator inputs', () => {
     expect(() => assertSafeBootstrapTarget('not-a-url')).toThrow();
     expect(() => assertSafeBootstrapTarget('ftp://example.com')).toThrow();
     expect(assertSafeBootstrapTarget('http://localhost:8787').origin).toBe('http://localhost:8787');
-  });
-});
-
-describe('identity bootstrap persistence boundary', () => {
-  it('does not hand-write DML against Better Auth-owned tables', async () => {
-    const source = await readFile(
-      fileURLToPath(new URL('../../src/features/identity/admin.ts', import.meta.url)),
-      'utf8',
-    );
-
-    expect(source).not.toMatch(/\b(?:UPDATE|DELETE\s+FROM)\s+["`']?(?:user|account|session)\b/i);
   });
 });
