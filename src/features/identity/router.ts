@@ -2,22 +2,20 @@ import { OpenAPIHono } from '@hono/zod-openapi';
 import type { Context } from 'hono';
 import type { Env } from '../../env.js';
 import { PROBLEM_JSON, createProblem, type ProblemCode } from '../../shared/problem.js';
-import { resolveAdminIdentity } from './authorization.js';
-import { getAdminUserById, listAdminUsers } from './admin-users.js';
+import { createAdminUserReader } from './admin-users.js';
 import {
   bootstrapAdminUser,
   type BootstrapCreateUser,
   type BootstrapDeleteUser,
   type BootstrapSetRole,
 } from './admin.js';
+import { createCredentialOperations, type CredentialFailure } from './credential-operations.js';
 import { CONSUMER_CORS_PATHS, createConsumerCorsMiddleware } from './consumer-cors.js';
-import { extractReaderStateExpiry } from './reader-state.js';
-import type { ConsumerJsonWebKey } from './contract.js';
+import { createReaderStateOperations } from './reader-state-operations.js';
 import type { AuthMailer } from './mailer.js';
 import { createIdentityRuntime } from './identity-runtime.js';
 import type { IdentityRuntime } from './identity-runtime.js';
 import { evaluatePasswordPolicy } from './password-policy.js';
-import { isCurrentPasswordResetToken } from './password-reset-token.js';
 import {
   adminBootstrapRoute,
   adminMeRoute,
@@ -36,8 +34,6 @@ import {
   signOutRoute,
   verifyEmailRoute,
 } from './route.js';
-import { toAuthenticatedUser } from './session.js';
-import { consumeLatestVerificationToken } from './verification-token.js';
 
 export interface IdentityRouterOptions {
   // Test seam: an explicitly provided mailer (in-memory in tests) takes
@@ -72,58 +68,6 @@ function requestIdentityRuntime(c: IdentityContext, authMailer?: AuthMailer): Id
   });
 }
 
-// Better Auth failure surfaced either as an error Response (asResponse mode)
-// or as a thrown APIError. Only the numeric status and string code cross
-// this boundary; messages from the auth engine are never forwarded because
-// they are not stable machine contracts.
-interface EngineFailure {
-  readonly status: number;
-  readonly code?: string;
-}
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (typeof value !== 'object' || value === null) {
-    return null;
-  }
-  return value as Record<string, unknown>;
-}
-
-async function readEngineFailure(response: Response): Promise<EngineFailure> {
-  let code: string | undefined;
-  try {
-    const payload: unknown = await response.json();
-    const record = asRecord(payload);
-    if (record !== null && typeof record.code === 'string') {
-      code = record.code;
-    }
-  } catch {
-    // Non-JSON failure bodies carry no machine contract; status is enough.
-  }
-  return { status: response.status, code };
-}
-
-function thrownEngineFailure(error: unknown): EngineFailure | null {
-  const record = asRecord(error);
-  const statusCode = record?.statusCode;
-  if (typeof statusCode !== 'number') {
-    return null;
-  }
-  const body = asRecord(record?.body);
-  const code = body?.code;
-  return { status: statusCode, code: typeof code === 'string' ? code : undefined };
-}
-
-// Calls a Better Auth server endpoint in asResponse mode so session cookies
-// stay visible as Set-Cookie headers. Never throws for engine-level
-// failures; only unexpected defects escape to the 500 boundary.
-async function callEngine(call: () => Promise<Response>): Promise<Response | EngineFailure> {
-  try {
-    return await call();
-  } catch (error) {
-    return thrownEngineFailure(error) ?? { status: 500 };
-  }
-}
-
 function problem(
   c: IdentityContext,
   status: 400 | 401 | 403 | 404 | 409 | 500,
@@ -145,6 +89,65 @@ function problem(
       ? { 'Content-Type': PROBLEM_JSON }
       : { 'Content-Type': PROBLEM_JSON, 'Cache-Control': cacheControl },
   );
+}
+
+function credentialProblem(c: IdentityContext, failure: CredentialFailure, cacheControl?: string) {
+  switch (failure.kind) {
+    case 'email-password-disabled':
+      return problem(c, 403, 'email-password-disabled', 'Email authentication is disabled');
+    case 'registration-disabled':
+      return problem(
+        c,
+        403,
+        'registration-disabled',
+        'Registration is disabled',
+        'Registration is disabled.',
+      );
+    case 'password-policy-violation':
+      return c.json(
+        createProblem({
+          status: 400,
+          code: 'password-policy-violation',
+          title: 'Password does not meet policy',
+          detail: 'The password does not meet the effective password policy.',
+          instance: new URL(c.req.url).pathname,
+          failedRules: failure.failedRules,
+          passwordPolicy: failure.passwordPolicy,
+        }),
+        400,
+        { 'Content-Type': PROBLEM_JSON, 'Cache-Control': 'no-store' },
+      );
+    case 'email-verification-required':
+      return problem(
+        c,
+        403,
+        'email-verification-required',
+        'Email verification required',
+        'Verify the email address before signing in.',
+      );
+    case 'invalid-credentials':
+      return problem(c, 401, 'invalid-credentials', 'Invalid credentials');
+    case 'verification-invalid':
+      return problem(
+        c,
+        400,
+        'verification-invalid',
+        'Invalid or expired verification',
+        'The verification action is invalid or has expired.',
+      );
+    case 'reset-invalid':
+      return problem(
+        c,
+        400,
+        'reset-invalid',
+        'Invalid or expired password reset',
+        'The password-reset action is invalid or has expired.',
+      );
+    case 'bad-request':
+      return problem(c, 400, 'bad-request', 'Bad Request');
+    case 'internal-error':
+      return problem(c, 500, 'internal-error', 'Internal Server Error', undefined, cacheControl);
+  }
 }
 
 function passwordPolicyProblem(
@@ -198,9 +201,7 @@ function guardCookieMutation(
   return null;
 }
 
-function forwardSessionCookies(c: IdentityContext, source: Response): void {
-  const cookies =
-    typeof source.headers.getSetCookie === 'function' ? source.headers.getSetCookie() : [];
+function forwardSessionCookies(c: IdentityContext, cookies: readonly string[]): void {
   for (const cookie of cookies) {
     c.header('Set-Cookie', cookie, { append: true });
   }
@@ -208,9 +209,9 @@ function forwardSessionCookies(c: IdentityContext, source: Response): void {
 
 // Identity feature router (vertical slice, ADR-0002). Contract-bearing
 // routes stay on the OpenAPI-aware router so their definitions survive
-// mounting under `/v1`. Handlers map Better Auth outcomes onto the
-// application-owned contracts; no Better Auth, session-token or D1 row type
-// crosses the handler boundary.
+// mounting under `/v1`. Application operation modules map engine and D1
+// outcomes onto the contracts; this router adapts those outcomes to HTTP
+// without exposing Better Auth, session-token or D1 row types.
 export function createIdentityRouter(options: IdentityRouterOptions = {}) {
   const router = new OpenAPIHono<{ Bindings: Env; Variables: { requestId: string } }>();
   const override = options.authMailer;
@@ -230,40 +231,11 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     if (rejected !== null) {
       return rejected;
     }
-    const auth = runtime.authentication();
-    const policy = runtime.authPolicy;
-    if (!policy.emailPasswordEnabled) {
-      return problem(c, 403, 'email-password-disabled', 'Email authentication is disabled');
-    }
-    if (!policy.registrationEnabled) {
-      return problem(c, 403, 'registration-disabled', 'Registration is disabled');
-    }
-
-    const input = c.req.valid('json');
-    const passwordFailure = passwordPolicyProblem(c, input.password, policy);
-    if (passwordFailure !== null) return passwordFailure;
-    const outcome = await callEngine(() =>
-      auth.api.signUpEmail({
-        body: {
-          name: input.name ?? input.email.slice(0, input.email.indexOf('@')),
-          email: input.email,
-          password: input.password,
-        },
-        headers: c.req.raw.headers,
-        asResponse: true,
-      }),
-    );
-    if (outcome instanceof Response) {
-      if (outcome.ok) {
-        const user = toAuthenticatedUser(await outcome.json().catch(() => null));
-        if (user === null) {
-          return problem(c, 500, 'internal-error', 'Internal Server Error');
-        }
-        return c.json(user, 201);
-      }
-      return problem(c, 400, 'bad-request', 'Bad Request');
-    }
-    return problem(c, 500, 'internal-error', 'Internal Server Error');
+    const credentialOperations = createCredentialOperations({ runtime, db: c.env.DB });
+    const result = await credentialOperations.register(c.req.valid('json'), c.req.raw.headers);
+    return result.kind === 'failure'
+      ? credentialProblem(c, result.failure)
+      : c.json(result.value, 201);
   });
 
   router.openapi(loginRoute, async (c) => {
@@ -272,214 +244,73 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     if (rejected !== null) {
       return rejected;
     }
-    const auth = runtime.authentication();
-    const policy = runtime.authPolicy;
-    if (!policy.emailPasswordEnabled) {
-      return problem(c, 403, 'email-password-disabled', 'Email authentication is disabled');
-    }
-
-    const input = c.req.valid('json');
-    const outcome = await callEngine(() =>
-      auth.api.signInEmail({
-        body: { email: input.email, password: input.password },
-        headers: c.req.raw.headers,
-        asResponse: true,
-      }),
-    );
-    if (outcome instanceof Response) {
-      if (outcome.ok) {
-        const user = toAuthenticatedUser(await outcome.json().catch(() => null));
-        if (user === null) {
-          return problem(c, 500, 'internal-error', 'Internal Server Error');
-        }
-        forwardSessionCookies(c, outcome);
-        return c.json(user, 200);
-      }
-      const failure = await readEngineFailure(outcome);
-      if (failure.status === 403 && failure.code === 'EMAIL_NOT_VERIFIED') {
-        return problem(
-          c,
-          403,
-          'email-verification-required',
-          'Email verification required',
-          'Verify the email address before signing in.',
-        );
-      }
-      if (failure.status === 401) {
-        return problem(c, 401, 'invalid-credentials', 'Invalid credentials');
-      }
-      return problem(c, 400, 'bad-request', 'Bad Request');
-    }
-    return problem(c, 500, 'internal-error', 'Internal Server Error');
+    const credentialOperations = createCredentialOperations({ runtime, db: c.env.DB });
+    const result = await credentialOperations.login(c.req.valid('json'), c.req.raw.headers);
+    if (result.kind === 'failure') return credentialProblem(c, result.failure);
+    forwardSessionCookies(c, result.cookies);
+    return c.json(result.value, 200);
   });
 
   router.openapi(verifyEmailRoute, async (c) => {
-    const input = c.req.valid('json');
-    // This conditional update is the linearization point. It runs before
-    // Better Auth can take any verification branch, including its already-
-    // verified fast path; later engine failure is intentionally fail-closed.
-    let consumed: boolean;
-    try {
-      consumed = await consumeLatestVerificationToken({ db: c.env.DB, token: input.token });
-    } catch {
-      consumed = false;
-    }
-    if (!consumed) {
-      return problem(
-        c,
-        400,
-        'verification-invalid',
-        'Invalid or expired verification',
-        'The verification action is invalid or has expired.',
-      );
-    }
-    const auth = requestIdentityRuntime(c, override).authentication();
-    const outcome = await callEngine(() =>
-      auth.api.verifyEmail({
-        query: { token: input.token },
-        headers: c.req.raw.headers,
-        asResponse: true,
-      }),
-    );
-    if (outcome instanceof Response) {
-      if (outcome.ok) {
-        // The engine returns `{ status: true, user: null }` on this path;
-        // the verified address is the one the client submitted the action
-        // for, and eligibility is proven by the subsequent login instead of
-        // by echoing engine internals.
-        return c.json({ emailVerified: true as const }, 200);
-      }
-      return problem(
-        c,
-        400,
-        'verification-invalid',
-        'Invalid or expired verification',
-        'The verification action is invalid or has expired.',
-      );
-    }
-    return problem(c, 500, 'internal-error', 'Internal Server Error');
+    const credentialOperations = createCredentialOperations({
+      runtime: requestIdentityRuntime(c, override),
+      db: c.env.DB,
+    });
+    const result = await credentialOperations.verifyEmail(c.req.valid('json'), c.req.raw.headers);
+    return result.kind === 'failure'
+      ? credentialProblem(c, result.failure)
+      : c.json(result.value, 200);
   });
 
   router.openapi(requestVerificationRoute, async (c) => {
-    const runtime = requestIdentityRuntime(c, override);
-    const auth = runtime.authentication();
-    const policy = runtime.authPolicy;
-    if (!policy.emailPasswordEnabled) {
-      return problem(c, 403, 'email-password-disabled', 'Email authentication is disabled');
-    }
-
-    const input = c.req.valid('json');
-    const outcome = await callEngine(() =>
-      auth.api.sendVerificationEmail({
-        body: { email: input.email },
-        headers: c.req.raw.headers,
-        asResponse: true,
-      }),
+    const credentialOperations = createCredentialOperations({
+      runtime: requestIdentityRuntime(c, override),
+      db: c.env.DB,
+    });
+    const result = await credentialOperations.requestVerification(
+      c.req.valid('json'),
+      c.req.raw.headers,
     );
-    if (outcome instanceof Response) {
-      if (outcome.ok) {
-        // Generic acceptance: the engine answers identically for unknown,
-        // verified and unverified addresses, so this response cannot be
-        // used for account enumeration and never creates identities.
-        return c.json({ status: 'ok' as const }, 202);
-      }
-      const failure = await readEngineFailure(outcome);
-      if (failure.code === 'EMAIL_MISMATCH') {
-        return problem(c, 400, 'bad-request', 'Bad Request');
-      }
-      if (failure.status >= 500) {
-        return problem(c, 500, 'internal-error', 'Internal Server Error');
-      }
-      return c.json({ status: 'ok' as const }, 202);
-    }
-    return problem(c, 500, 'internal-error', 'Internal Server Error');
+    return result.kind === 'failure'
+      ? credentialProblem(c, result.failure)
+      : c.json(result.value, 202);
   });
 
   router.openapi(requestPasswordResetRoute, async (c) => {
-    const runtime = requestIdentityRuntime(c, override);
-    const auth = runtime.authentication();
-    const policy = runtime.authPolicy;
-    if (!policy.emailPasswordEnabled) {
-      return problem(c, 403, 'email-password-disabled', 'Email authentication is disabled');
-    }
-
-    const input = c.req.valid('json');
-    const outcome = await callEngine(() =>
-      auth.api.requestPasswordReset({
-        body: { email: input.email },
-        headers: c.req.raw.headers,
-        asResponse: true,
-      }),
+    const credentialOperations = createCredentialOperations({
+      runtime: requestIdentityRuntime(c, override),
+      db: c.env.DB,
+    });
+    const result = await credentialOperations.requestPasswordReset(
+      c.req.valid('json'),
+      c.req.raw.headers,
     );
-    if (outcome instanceof Response) {
-      if (outcome.ok) {
-        // Generic acceptance: the engine answers identically for unknown and
-        // known addresses, so this response cannot be used for account
-        // enumeration and never creates identities.
-        return c.json({ status: 'ok' as const }, 202);
-      }
-      const failure = await readEngineFailure(outcome);
-      if (failure.status >= 500) {
-        return problem(c, 500, 'internal-error', 'Internal Server Error');
-      }
-      return c.json({ status: 'ok' as const }, 202);
-    }
-    return problem(c, 500, 'internal-error', 'Internal Server Error');
+    return result.kind === 'failure'
+      ? credentialProblem(c, result.failure)
+      : c.json(result.value, 202);
   });
 
   router.openapi(checkPasswordResetRoute, async (c) => {
-    const runtime = requestIdentityRuntime(c, override);
-    const policy = runtime.authPolicy;
-    if (!policy.emailPasswordEnabled) {
-      return problem(c, 403, 'email-password-disabled', 'Email authentication is disabled');
+    const credentialOperations = createCredentialOperations({
+      runtime: requestIdentityRuntime(c, override),
+      db: c.env.DB,
+    });
+    const result = await credentialOperations.checkPasswordReset(c.req.valid('json'));
+    if (result.kind === 'failure') {
+      return credentialProblem(c, result.failure, 'no-store');
     }
-    const input = c.req.valid('json');
-    let valid: boolean;
-    try {
-      valid = await isCurrentPasswordResetToken({ db: c.env.DB, token: input.token });
-    } catch {
-      return problem(c, 500, 'internal-error', 'Internal Server Error', undefined, 'no-store');
-    }
-    return c.json({ valid }, 200, { 'Cache-Control': 'no-store' });
+    return c.json(result.value, 200, { 'Cache-Control': 'no-store' });
   });
 
   router.openapi(resetPasswordRoute, async (c) => {
-    const runtime = requestIdentityRuntime(c, override);
-    const auth = runtime.authentication();
-    const policy = runtime.authPolicy;
-    if (!policy.emailPasswordEnabled) {
-      return problem(c, 403, 'email-password-disabled', 'Email authentication is disabled');
-    }
-
-    const input = c.req.valid('json');
-    const passwordFailure = passwordPolicyProblem(c, input.newPassword, policy);
-    if (passwordFailure !== null) return passwordFailure;
-    const outcome = await callEngine(() =>
-      auth.api.resetPassword({
-        body: { newPassword: input.newPassword, token: input.token },
-        headers: c.req.raw.headers,
-        asResponse: true,
-      }),
-    );
-    if (outcome instanceof Response) {
-      if (outcome.ok) {
-        // The engine consumes the reset action (single use) and revokes
-        // existing sessions per the accepted security default.
-        return c.json({ status: 'ok' as const }, 200);
-      }
-      const failure = await readEngineFailure(outcome);
-      if (failure.status >= 500) {
-        return problem(c, 500, 'internal-error', 'Internal Server Error');
-      }
-      return problem(
-        c,
-        400,
-        'reset-invalid',
-        'Invalid or expired password reset',
-        'The password-reset action is invalid or has expired.',
-      );
-    }
-    return problem(c, 500, 'internal-error', 'Internal Server Error');
+    const credentialOperations = createCredentialOperations({
+      runtime: requestIdentityRuntime(c, override),
+      db: c.env.DB,
+    });
+    const result = await credentialOperations.resetPassword(c.req.valid('json'), c.req.raw.headers);
+    return result.kind === 'failure'
+      ? credentialProblem(c, result.failure)
+      : c.json(result.value, 200);
   });
 
   router.openapi(currentUserRoute, async (c) => {
@@ -498,32 +329,17 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     if (rejected !== null) {
       return rejected;
     }
-    const auth = runtime.authentication();
-    const outcome = await callEngine(() =>
-      auth.api.signOut({
-        headers: c.req.raw.headers,
-        asResponse: true,
-      }),
-    );
-    if (outcome instanceof Response) {
-      // Forward the clearing cookie so the browser/API client drops the
-      // session. Sign-out stays idempotent: 4xx engine answers still end as
-      // `ok` so the response cannot be used to probe session state.
-      forwardSessionCookies(c, outcome);
-      if (outcome.ok) {
-        return c.json({ status: 'ok' as const }, 200);
-      }
-      const failure = await readEngineFailure(outcome);
-      if (failure.status >= 500) {
-        return problem(c, 500, 'internal-error', 'Internal Server Error');
-      }
-      return c.json({ status: 'ok' as const }, 200);
-    }
-    const failure = outcome;
-    if (failure.status >= 500) {
-      return problem(c, 500, 'internal-error', 'Internal Server Error');
-    }
-    return c.json({ status: 'ok' as const }, 200);
+    const credentialOperations = createCredentialOperations({
+      runtime,
+      db: c.env.DB,
+    });
+    const result = await credentialOperations.signOut(c.req.raw.headers);
+    // Sign-out forwards clearing cookies even when the engine reports a
+    // recoverable failure.
+    forwardSessionCookies(c, result.cookies);
+    return result.kind === 'failure'
+      ? credentialProblem(c, result.failure)
+      : c.json(result.value, 200);
   });
 
   // Reader State issue/refresh (spec #195, ticket #196, ADR-0013). The live
@@ -537,47 +353,20 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     if (rejected !== null) {
       return rejected;
     }
-    let tokenAuth: ReturnType<typeof runtime.readerState>;
-    try {
-      tokenAuth = runtime.readerState();
-    } catch {
-      return problem(c, 500, 'internal-error', 'Internal Server Error', undefined, noStore);
-    }
-    const session = await runtime.resolveSessionContext(c.req.raw.headers, c.get('requestId'));
-    if (session === null) {
-      return problem(c, 401, 'unauthenticated', 'Unauthenticated', undefined, noStore);
-    }
-    const outcome = await callEngine(() =>
-      tokenAuth.api.getToken({ headers: c.req.raw.headers, asResponse: true }),
+    const result = await createReaderStateOperations(runtime).issue(
+      c.req.raw.headers,
+      c.get('requestId'),
     );
-    if (outcome instanceof Response) {
-      if (outcome.ok) {
-        const token = asRecord(await outcome.json().catch(() => null))?.token;
-        if (typeof token !== 'string' || token.length === 0) {
-          return problem(c, 500, 'internal-error', 'Internal Server Error', undefined, noStore);
-        }
-        const expiresAt = extractReaderStateExpiry(token);
-        if (expiresAt === null) {
-          return problem(c, 500, 'internal-error', 'Internal Server Error', undefined, noStore);
-        }
-        return c.json({ readerState: token, expiresAt }, 200, {
-          'Content-Type': 'application/json',
-          'Cache-Control': noStore,
-        });
-      }
-      const failure = await readEngineFailure(outcome);
-      if (failure.status >= 500) {
-        return problem(c, 500, 'internal-error', 'Internal Server Error', undefined, noStore);
-      }
-      // The authoritative session check passed but issuance found no live
-      // session (for example revoked between the two reads): deny as
-      // unauthenticated rather than minting.
-      return problem(c, 401, 'unauthenticated', 'Unauthenticated', undefined, noStore);
-    }
-    if (outcome.status >= 500) {
+    if (result.kind === 'internal-error') {
       return problem(c, 500, 'internal-error', 'Internal Server Error', undefined, noStore);
     }
-    return problem(c, 401, 'unauthenticated', 'Unauthenticated', undefined, noStore);
+    if (result.kind === 'unauthenticated') {
+      return problem(c, 401, 'unauthenticated', 'Unauthenticated', undefined, noStore);
+    }
+    return c.json(result.value, 200, {
+      'Content-Type': 'application/json',
+      'Cache-Control': noStore,
+    });
   });
 
   // Consumer verification-key publication (spec #150, ADR-0013). Only public
@@ -586,61 +375,14 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
   // public caching; failures are never cached.
   router.openapi(consumerJwksRoute, async (c) => {
     const runtime = requestIdentityRuntime(c, override);
-    let tokenAuth: ReturnType<typeof runtime.readerState>;
-    try {
-      tokenAuth = runtime.readerState();
-    } catch {
+    const result = await createReaderStateOperations(runtime).publishJwks(c.req.raw.headers);
+    if (result.kind === 'internal-error') {
       return problem(c, 500, 'internal-error', 'Internal Server Error', undefined, 'no-store');
     }
-    const outcome = await callEngine(() =>
-      tokenAuth.api.getJwks({ headers: c.req.raw.headers, asResponse: true }),
-    );
-    if (outcome instanceof Response && outcome.ok) {
-      const keys = asRecord(await outcome.json().catch(() => null))?.keys;
-      if (!Array.isArray(keys)) {
-        return problem(c, 500, 'internal-error', 'Internal Server Error', undefined, 'no-store');
-      }
-      const projected: ConsumerJsonWebKey[] = [];
-      for (const entry of keys) {
-        const record = asRecord(entry);
-        if (
-          record === null ||
-          typeof record.kid !== 'string' ||
-          typeof record.kty !== 'string' ||
-          typeof record.alg !== 'string'
-        ) {
-          return problem(c, 500, 'internal-error', 'Internal Server Error', undefined, 'no-store');
-        }
-        const key: ConsumerJsonWebKey = {
-          kid: record.kid,
-          kty: record.kty,
-          alg: record.alg,
-        };
-        for (const field of ['use', 'crv', 'x', 'y', 'n', 'e'] as const) {
-          const value = record[field];
-          if (value === undefined) {
-            continue;
-          }
-          if (typeof value !== 'string') {
-            return problem(
-              c,
-              500,
-              'internal-error',
-              'Internal Server Error',
-              undefined,
-              'no-store',
-            );
-          }
-          key[field] = value;
-        }
-        projected.push(key);
-      }
-      return c.json({ keys: projected }, 200, {
-        'Content-Type': 'application/json',
-        'Cache-Control': `public, max-age=${CONSUMER_JWKS_CACHE_MAX_AGE_SECONDS.toString()}`,
-      });
-    }
-    return problem(c, 500, 'internal-error', 'Internal Server Error', undefined, 'no-store');
+    return c.json(result.value, 200, {
+      'Content-Type': 'application/json',
+      'Cache-Control': `public, max-age=${CONSUMER_JWKS_CACHE_MAX_AGE_SECONDS.toString()}`,
+    });
   });
 
   router.openapi(authConfigRoute, (c) => {
@@ -667,17 +409,17 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     if (session === null) {
       return problem(c, 401, 'unauthenticated', 'Unauthenticated');
     }
-    const auth = runtime.administration();
-    const admin = await resolveAdminIdentity({
-      auth,
+    const reader = createAdminUserReader({
+      auth: runtime.administration(),
       db: c.env.DB,
       userId: session.user.id,
       headers: c.req.raw.headers,
     });
-    if (admin === null) {
+    const outcome = await reader.current();
+    if (outcome.kind === 'forbidden') {
       return problem(c, 403, 'forbidden', 'Forbidden', 'Administrator access is required.');
     }
-    return c.json(admin, 200);
+    return c.json(outcome.value, 200);
   });
 
   router.openapi(adminUsersRoute, async (c) => {
@@ -686,26 +428,22 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     if (session === null) {
       return problem(c, 401, 'unauthenticated', 'Unauthenticated');
     }
-    const auth = runtime.administration();
-    const admin = await resolveAdminIdentity({
-      auth,
+    const reader = createAdminUserReader({
+      auth: runtime.administration(),
       db: c.env.DB,
       userId: session.user.id,
       headers: c.req.raw.headers,
     });
-    if (admin === null) {
-      return problem(c, 403, 'forbidden', 'Forbidden', 'Administrator access is required.');
-    }
-    // The permission boundary resolved before this read: anonymous,
-    // expired, revoked and non-administrative callers never reach the list.
     const query = c.req.valid('query');
-    const listing = await listAdminUsers({
-      db: c.env.DB,
+    const outcome = await reader.list({
       limit: query.limit,
       offset: query.offset,
       email: query.email,
     });
-    return c.json(listing, 200);
+    if (outcome.kind === 'forbidden') {
+      return problem(c, 403, 'forbidden', 'Forbidden', 'Administrator access is required.');
+    }
+    return c.json(outcome.value, 200);
   });
 
   router.openapi(adminUserDetailRoute, async (c) => {
@@ -714,26 +452,21 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     if (session === null) {
       return problem(c, 401, 'unauthenticated', 'Unauthenticated');
     }
-    const auth = runtime.administration();
-    const admin = await resolveAdminIdentity({
-      auth,
+    const reader = createAdminUserReader({
+      auth: runtime.administration(),
       db: c.env.DB,
       userId: session.user.id,
       headers: c.req.raw.headers,
     });
-    if (admin === null) {
+    const params = c.req.valid('param');
+    const outcome = await reader.get(params.userId);
+    if (outcome.kind === 'forbidden') {
       return problem(c, 403, 'forbidden', 'Forbidden', 'Administrator access is required.');
     }
-    // The permission boundary resolved before this lookup: anonymous,
-    // expired, revoked and non-administrative callers never reach the read,
-    // so a regular User receives 403 even for an identifier that does not
-    // exist. Only validated opaque identifiers reach the store.
-    const params = c.req.valid('param');
-    const detail = await getAdminUserById({ db: c.env.DB, userId: params.userId });
-    if (detail === null) {
+    if (outcome.kind === 'not-found') {
       return problem(c, 404, 'not-found', 'Not Found', 'No such User.');
     }
-    return c.json(detail, 200);
+    return c.json(outcome.value, 200);
   });
 
   router.openapi(adminBootstrapRoute, async (c) => {

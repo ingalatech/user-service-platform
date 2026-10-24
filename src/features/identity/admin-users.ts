@@ -1,16 +1,16 @@
 import type { D1Database } from '@cloudflare/workers-types';
 import { asc, count, eq, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/d1';
-import type { AdminUser, AdminUserList } from './contract.js';
+import type { createIdentityAuth } from './auth.js';
+import type { AdminMe, AdminUser, AdminUserList } from './contract.js';
 import { identitySchema, user } from './schema.js';
 
 // Application-owned protected User listing (ticket #125, spec #123). This
 // module owns the read query inside Identity's infrastructure boundary: it
 // projects only the explicitly selected administrative fields in ascending
 // email order, so credentials, session tokens and raw persistence rows never
-// reach callers. Authorization is decided by the caller through
-// `resolveAdminIdentity` before this read; this module performs no
-// permission check itself.
+// reach callers. The exported query functions are read-only primitives; the
+// `AdminUserReader` below owns the permission check before composing them.
 export interface ListAdminUsersInput {
   // Slice-owned D1 binding, used read-only for the listing and its total.
   readonly db: D1Database;
@@ -53,12 +53,87 @@ export interface GetAdminUserInput {
   readonly userId: string;
 }
 
+export interface AdminUserReaderInput {
+  readonly auth: ReturnType<typeof createIdentityAuth>;
+  readonly db: D1Database;
+  readonly userId: string;
+  readonly headers: Headers;
+}
+
+export type AdminReadOutcome<T> =
+  { readonly kind: 'allowed'; readonly value: T } | { readonly kind: 'forbidden' };
+
+export type AdminUserDetailOutcome = AdminReadOutcome<AdminUser> | { readonly kind: 'not-found' };
+
+export interface AdminUserReader {
+  current(): Promise<AdminReadOutcome<AdminMe>>;
+  list(
+    query: Pick<ListAdminUsersInput, 'limit' | 'offset' | 'email'>,
+  ): Promise<AdminReadOutcome<AdminUserList>>;
+  get(userId: string): Promise<AdminUserDetailOutcome>;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value !== 'object' || value === null) return null;
+  return value as Record<string, unknown>;
+}
+
+async function authorizedAdministrator(input: AdminUserReaderInput): Promise<AdminMe | null> {
+  const outcome: unknown = await input.auth.api.userHasPermission({
+    headers: input.headers,
+    body: { userId: input.userId, permissions: { user: ['list'] } },
+  });
+  if (asRecord(outcome)?.success !== true) return null;
+
+  const database = drizzle(input.db, { schema: identitySchema });
+  const rows = await database
+    .select({ id: user.id, email: user.email, emailVerified: user.emailVerified, role: user.role })
+    .from(user)
+    .where(eq(user.id, input.userId))
+    .limit(1);
+  const row = rows[0];
+  if (row === undefined) return null;
+  return {
+    id: row.id,
+    email: row.email,
+    emailVerified: row.emailVerified,
+    // The plugin supplies the application default for rows predating the
+    // role capability; storage nulls never reach the public contract.
+    role: row.role ?? 'user',
+  };
+}
+
+// Application-owned administration read family. One caller first resolves the
+// authoritative session; this module then owns the Admin-plugin permission
+// check and the safe D1 projections for current/list/detail operations.
+export function createAdminUserReader(input: AdminUserReaderInput): AdminUserReader {
+  return {
+    async current() {
+      const administrator = await authorizedAdministrator(input);
+      return administrator === null
+        ? { kind: 'forbidden' }
+        : { kind: 'allowed', value: administrator };
+    },
+    async list(query) {
+      if ((await authorizedAdministrator(input)) === null) return { kind: 'forbidden' };
+      return {
+        kind: 'allowed',
+        value: await listAdminUsers({ db: input.db, ...query }),
+      };
+    },
+    async get(userId) {
+      if ((await authorizedAdministrator(input)) === null) return { kind: 'forbidden' };
+      const detail = await getAdminUserById({ db: input.db, userId });
+      return detail === null ? { kind: 'not-found' } : { kind: 'allowed', value: detail };
+    },
+  };
+}
+
 // Reads one administrative User through the exact safe projection. Returns
-// null when no row matches the opaque identifier. Like the listing, this
-// read performs no permission check itself: callers resolve the
-// administrator through `resolveAdminIdentity` before this lookup, so
-// anonymous and non-administrative callers never reach it. Identifiers and
-// result contents are never logged here.
+// null when no row matches the opaque identifier. This query primitive does
+// not perform a permission check; callers should use `AdminUserReader` or
+// establish authorization before calling it. Identifiers and result contents
+// are never logged here.
 export async function getAdminUserById(input: GetAdminUserInput): Promise<AdminUser | null> {
   const database = drizzle(input.db, { schema: identitySchema });
   const rows = await database
