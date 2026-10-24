@@ -1,4 +1,8 @@
 import { z } from '@hono/zod-openapi';
+import { PasswordPolicySchema } from './password-policy.js';
+
+export type { PasswordPolicy } from './password-policy.js';
+export { PasswordPolicySchema } from './password-policy.js';
 
 // Application-owned identity contracts (ADR-0002, ADR-0007). These schemas
 // are the single source for runtime validation, TypeScript inference and the
@@ -14,17 +18,6 @@ const passwordField = z
   .min(1, { error: 'Password must not be empty.' })
   .max(128, { error: 'Password must be at most 128 characters.' })
   .openapi({ example: 'Correct-horse-41' });
-
-export const PasswordPolicySchema = z
-  .object({
-    minLength: z.number().int().min(1).max(128).openapi({ example: 8 }),
-    maxLength: z.number().int().min(1).max(128).openapi({ example: 128 }),
-    minUppercase: z.number().int().min(0).max(128).openapi({ example: 1 }),
-    minLowercase: z.number().int().min(0).max(128).openapi({ example: 1 }),
-    minDigits: z.number().int().min(0).max(128).openapi({ example: 1 }),
-    minSymbols: z.number().int().min(0).max(128).openapi({ example: 0 }),
-  })
-  .openapi('PasswordPolicy');
 
 export const AuthConfigSchema = z
   .object({
@@ -306,7 +299,6 @@ export const ConsumerJwksResponseSchema = z
   .openapi('ConsumerJwks');
 
 export type ReaderStateResponse = z.infer<typeof ReaderStateResponseSchema>;
-export type PasswordPolicy = z.infer<typeof PasswordPolicySchema>;
 export type AuthConfig = z.infer<typeof AuthConfigSchema>;
 export type ConsumerJsonWebKey = z.infer<typeof ConsumerJsonWebKeySchema>;
 export type ConsumerJwksResponse = z.infer<typeof ConsumerJwksResponseSchema>;

@@ -33,7 +33,7 @@ describe('generated OpenAPI artifact', () => {
     const raw = await readFile(artifactPath, 'utf8');
     const document = JSON.parse(raw) as {
       components: {
-        schemas: Record<string, { required?: string[] }>;
+        schemas: Record<string, { required?: string[]; properties?: Record<string, unknown> }>;
       };
       paths: Record<
         string,
@@ -55,11 +55,28 @@ describe('generated OpenAPI artifact', () => {
       'status',
       'code',
     ]);
+    expect(document.components.schemas.ProblemDetails?.properties).not.toHaveProperty(
+      'failedRules',
+    );
+    expect(document.components.schemas.ProblemDetails?.properties).not.toHaveProperty(
+      'passwordPolicy',
+    );
+    expect(document.components.schemas.IdentityProblemDetails?.properties).toHaveProperty(
+      'failedRules',
+    );
+    expect(document.components.schemas.IdentityProblemDetails?.properties).toHaveProperty(
+      'passwordPolicy',
+    );
 
     const healthGet = document.paths['/v1/health']?.get;
     expect(healthGet?.responses?.default?.content?.['application/problem+json']?.schema?.$ref).toBe(
       '#/components/schemas/ProblemDetails',
     );
+    expect(
+      document.paths['/v1/auth/register']?.post?.responses?.default?.content?.[
+        'application/problem+json'
+      ]?.schema?.$ref,
+    ).toBe('#/components/schemas/IdentityProblemDetails');
   });
 
   it('describes the current-User and sign-out operations (ticket #11)', async () => {
@@ -96,11 +113,11 @@ describe('generated OpenAPI artifact', () => {
         ?.schema?.$ref,
     ).toBe('#/components/schemas/SignOutResult');
 
-    // Error contracts stay on the shared Problem Details envelope.
+    // Identity responses use the Identity-owned Problem Details extension.
     expect(
       document.paths['/v1/me']?.get?.responses?.default?.content?.['application/problem+json']
         ?.schema?.$ref,
-    ).toBe('#/components/schemas/ProblemDetails');
+    ).toBe('#/components/schemas/IdentityProblemDetails');
 
     // The current-User representation exposes only stable identity fields.
     expect(document.components.schemas.CurrentUser?.required).toEqual([

@@ -203,7 +203,11 @@ function sharedOptions(
       disableSignUp: !policy.registrationEnabled,
       requireEmailVerification: policy.requireEmailVerification,
       minPasswordLength: policy.passwordPolicy.minLength,
-      maxPasswordLength: policy.passwordPolicy.maxLength,
+      // Better Auth measures string length in UTF-16 code units while
+      // Identity's policy counts Unicode code points. Keep the engine ceiling
+      // permissive for any valid code-point length; Credential operations
+      // enforce the precise configured maximum before invoking the engine.
+      maxPasswordLength: Math.min(128, policy.passwordPolicy.maxLength * 2),
       // Password recovery goes through the application-owned AuthMailer like
       // verification does; provider SDK/types stay inside adapters (ADR-0010).
       // Successful resets revoke existing sessions so previously issued

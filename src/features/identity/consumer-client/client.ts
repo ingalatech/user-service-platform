@@ -16,38 +16,12 @@ import {
   type VerifiedReaderState,
 } from './verifier.js';
 import type { components, paths } from './generated/api.js';
+export { evaluatePasswordRules as evaluatePassword } from '../password-policy-rules.js';
+export type { PasswordPolicyEvaluation, PasswordPolicyRule } from '../password-policy-rules.js';
 
 export type AuthoritativeSessionStatus = 'unknown' | 'authenticated' | 'anonymous';
 export type AuthConfig = components['schemas']['AuthConfig'];
 export type PasswordPolicy = AuthConfig['passwordPolicy'];
-export type PasswordPolicyRule =
-  'min-length' | 'max-length' | 'min-uppercase' | 'min-lowercase' | 'min-digits' | 'min-symbols';
-
-export interface PasswordPolicyEvaluation {
-  readonly valid: boolean;
-  readonly failedRules: readonly PasswordPolicyRule[];
-}
-
-export function evaluatePassword(
-  password: string,
-  policy: PasswordPolicy,
-): PasswordPolicyEvaluation {
-  const points = Array.from(password);
-  const uppercase = points.filter((value) => /\p{Lu}/u.test(value)).length;
-  const lowercase = points.filter((value) => /\p{Ll}/u.test(value)).length;
-  const digits = points.filter((value) => /\p{Nd}/u.test(value)).length;
-  const symbols = points.filter(
-    (value) => !/[\p{L}\p{N}]/u.test(value) && !/\s/u.test(value),
-  ).length;
-  const failedRules: PasswordPolicyRule[] = [];
-  if (points.length < policy.minLength) failedRules.push('min-length');
-  if (points.length > policy.maxLength) failedRules.push('max-length');
-  if (uppercase < policy.minUppercase) failedRules.push('min-uppercase');
-  if (lowercase < policy.minLowercase) failedRules.push('min-lowercase');
-  if (digits < policy.minDigits) failedRules.push('min-digits');
-  if (symbols < policy.minSymbols) failedRules.push('min-symbols');
-  return { valid: failedRules.length === 0, failedRules };
-}
 
 export interface ConsumerReaderState extends VerifiedReaderState {
   readonly sessionStatus: AuthoritativeSessionStatus;

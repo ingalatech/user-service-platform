@@ -9,6 +9,7 @@ import {
   PASSWORD_POLICY_VIOLATIONS,
   TEST_PASSWORD_POLICY,
 } from './password-policy.test-data.js';
+import { evaluatePassword } from './consumer-client/index.js';
 import { resolveAuthSecret } from './secret.js';
 
 // Seam under test (ticket #10, ADR-0011): the public HTTP boundary of the built
@@ -296,6 +297,7 @@ describe('POST /v1/auth/register', () => {
     };
 
     for (const [index, violation] of PASSWORD_POLICY_VIOLATIONS.entries()) {
+      const clientEvaluation = evaluatePassword(violation.password, TEST_PASSWORD_POLICY);
       const res = await post(
         '/v1/auth/register',
         {
@@ -308,12 +310,31 @@ describe('POST /v1/auth/register', () => {
 
       expect(res.status).toBe(400);
       expect(res.headers.get('cache-control')).toBe('no-store');
+      expect(clientEvaluation).toEqual({ valid: false, failedRules: [violation.rule] });
       expect(await res.json()).toMatchObject({
         code: 'password-policy-violation',
-        failedRules: [violation.rule],
+        failedRules: clientEvaluation.failedRules,
         passwordPolicy: TEST_PASSWORD_POLICY,
       });
     }
+
+    const unicodePassword = 'A\u{10428}2\u{1F4A5}wxyz';
+    const unicodePolicy = { ...TEST_PASSWORD_POLICY, minLength: 8, maxLength: 8 };
+    const unicodePolicyEnv = { ...policyEnv, AUTH_PASSWORD_MAX_LENGTH: '8' };
+    expect(evaluatePassword(unicodePassword, unicodePolicy)).toEqual({
+      valid: true,
+      failedRules: [],
+    });
+    const unicodeResponse = await post(
+      '/v1/auth/register',
+      {
+        name: 'Unicode Policy',
+        email: 'unicode-policy@example.com',
+        password: unicodePassword,
+      },
+      unicodePolicyEnv,
+    );
+    expect(unicodeResponse.status, await unicodeResponse.clone().text()).toBe(201);
 
     for (const [index, password] of PASSWORD_POLICY_BOUNDARY_PASSWORDS.entries()) {
       const res = await post(

@@ -64,6 +64,65 @@
           "instance": {
             "type": "string",
             "example": "/v1/does-not-exist"
+          }
+        },
+        "required": [
+          "type",
+          "title",
+          "status",
+          "code"
+        ]
+      },
+      "RegisteredUser": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "example": "abc123"
+          },
+          "email": {
+            "type": "string",
+            "maxLength": 254,
+            "format": "email",
+            "example": "ada@example.com"
+          },
+          "emailVerified": {
+            "type": "boolean",
+            "example": false
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "emailVerified"
+        ]
+      },
+      "IdentityProblemDetails": {
+        "type": "object",
+        "properties": {
+          "type": {
+            "type": "string",
+            "example": "urn:problem:not-found"
+          },
+          "title": {
+            "type": "string",
+            "example": "Not Found"
+          },
+          "status": {
+            "type": "integer",
+            "example": 404
+          },
+          "detail": {
+            "type": "string",
+            "example": "No such operation."
+          },
+          "code": {
+            "type": "string",
+            "example": "not-found"
+          },
+          "instance": {
+            "type": "string",
+            "example": "/v1/does-not-exist"
           },
           "failedRules": {
             "type": "array",
@@ -119,30 +178,6 @@
           "title",
           "status",
           "code"
-        ]
-      },
-      "RegisteredUser": {
-        "type": "object",
-        "properties": {
-          "id": {
-            "type": "string",
-            "example": "abc123"
-          },
-          "email": {
-            "type": "string",
-            "maxLength": 254,
-            "format": "email",
-            "example": "ada@example.com"
-          },
-          "emailVerified": {
-            "type": "boolean",
-            "example": false
-          }
-        },
-        "required": [
-          "id",
-          "email",
-          "emailVerified"
         ]
       },
       "RegisterRequest": {
@@ -792,7 +827,7 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
                 }
               }
             }
@@ -833,7 +868,7 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
                 }
               }
             }
@@ -874,7 +909,7 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
                 }
               }
             }
@@ -915,7 +950,7 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
                 }
               }
             }
@@ -956,7 +991,7 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
                 }
               }
             }
@@ -997,7 +1032,7 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
                 }
               }
             }
@@ -1038,7 +1073,7 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
                 }
               }
             }
@@ -1070,7 +1105,7 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
                 }
               }
             }
@@ -1102,7 +1137,7 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
                 }
               }
             }
@@ -1134,7 +1169,7 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
                 }
               }
             }
@@ -1166,7 +1201,7 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
                 }
               }
             }
@@ -1198,7 +1233,7 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
                 }
               }
             }
@@ -1230,7 +1265,7 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
                 }
               }
             }
@@ -1303,7 +1338,7 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
                 }
               }
             }
@@ -1350,7 +1385,7 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
                 }
               }
             }
@@ -1391,7 +1426,7 @@
             "content": {
               "application/problem+json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ProblemDetails"
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
                 }
               }
             }

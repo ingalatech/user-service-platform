@@ -1,61 +1,54 @@
-import type { AuthPolicy } from './policy.js';
-import { PasswordPolicyRuleSchema, type PasswordPolicyRule } from '../../shared/problem.js';
+import { z } from '@hono/zod-openapi';
+import {
+  PASSWORD_POLICY_RULE_NAMES,
+  evaluatePasswordRules,
+  type PasswordPolicyEvaluation as PasswordPolicyRulesEvaluation,
+  type PasswordPolicyRule,
+} from './password-policy-rules.js';
 
-export type { PasswordPolicyRule } from '../../shared/problem.js';
+export { PASSWORD_POLICY_RULE_NAMES };
+export { evaluatePasswordRules };
+export type { PasswordPolicyRule };
 
-export const PASSWORD_POLICY_RULES = PasswordPolicyRuleSchema.options;
+export const PasswordPolicyRuleSchema = z.enum(PASSWORD_POLICY_RULE_NAMES);
 
-export interface PasswordPolicy {
-  readonly minLength: number;
-  readonly maxLength: number;
-  readonly minUppercase: number;
-  readonly minLowercase: number;
-  readonly minDigits: number;
-  readonly minSymbols: number;
-}
+const PasswordPolicyFieldsSchema = z.object({
+  minLength: z.number().int(),
+  maxLength: z.number().int(),
+  minUppercase: z.number().int(),
+  minLowercase: z.number().int(),
+  minDigits: z.number().int(),
+  minSymbols: z.number().int(),
+});
 
-export interface PasswordPolicyEvaluation {
-  readonly valid: boolean;
+// This unbounded extension shape intentionally preserves the existing
+// Problem Details wire/OpenAPI representation. The public AuthConfig policy
+// applies deployment bounds and examples to the same canonical fields below.
+export const PasswordPolicyProblemSchema = PasswordPolicyFieldsSchema;
+
+export const PasswordPolicySchema = PasswordPolicyFieldsSchema.extend({
+  minLength: z.number().int().min(1).max(128).openapi({ example: 8 }),
+  maxLength: z.number().int().min(1).max(128).openapi({ example: 128 }),
+  minUppercase: z.number().int().min(0).max(128).openapi({ example: 1 }),
+  minLowercase: z.number().int().min(0).max(128).openapi({ example: 1 }),
+  minDigits: z.number().int().min(0).max(128).openapi({ example: 1 }),
+  minSymbols: z.number().int().min(0).max(128).openapi({ example: 0 }),
+}).openapi('PasswordPolicy');
+
+export type PasswordPolicy = z.infer<typeof PasswordPolicySchema>;
+
+export interface PasswordPolicyViolation {
   readonly failedRules: readonly PasswordPolicyRule[];
-  readonly policy: PasswordPolicy;
+  readonly passwordPolicy: PasswordPolicy;
 }
 
-const uppercase = /\p{Lu}/u;
-const lowercase = /\p{Ll}/u;
-const digit = /\p{Nd}/u;
-const letterOrNumber = /[\p{L}\p{N}]/u;
-const whitespace = /\s/u;
-
-function count(password: string, predicate: (codePoint: string) => boolean): number {
-  let result = 0;
-  for (const codePoint of password) {
-    if (predicate(codePoint)) result += 1;
-  }
-  return result;
+export interface PasswordPolicyResult extends PasswordPolicyRulesEvaluation {
+  readonly policy: PasswordPolicy;
 }
 
 export function evaluatePasswordPolicy(
   password: string,
   policy: PasswordPolicy,
-): PasswordPolicyEvaluation {
-  const length = Array.from(password).length;
-  const uppercaseCount = count(password, (value) => uppercase.test(value));
-  const lowercaseCount = count(password, (value) => lowercase.test(value));
-  const digitCount = count(password, (value) => digit.test(value));
-  const symbolCount = count(
-    password,
-    (value) => !letterOrNumber.test(value) && !whitespace.test(value),
-  );
-  const failedRules: PasswordPolicyRule[] = [];
-  if (length < policy.minLength) failedRules.push('min-length');
-  if (length > policy.maxLength) failedRules.push('max-length');
-  if (uppercaseCount < policy.minUppercase) failedRules.push('min-uppercase');
-  if (lowercaseCount < policy.minLowercase) failedRules.push('min-lowercase');
-  if (digitCount < policy.minDigits) failedRules.push('min-digits');
-  if (symbolCount < policy.minSymbols) failedRules.push('min-symbols');
-  return { valid: failedRules.length === 0, failedRules, policy };
-}
-
-export function passwordPolicyFromAuthPolicy(policy: AuthPolicy): PasswordPolicy {
-  return policy.passwordPolicy;
+): PasswordPolicyResult {
+  return { ...evaluatePasswordRules(password, policy), policy };
 }

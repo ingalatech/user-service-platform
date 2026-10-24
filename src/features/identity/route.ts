@@ -1,5 +1,5 @@
 import { createRoute } from '@hono/zod-openapi';
-import { ProblemDetailsSchema } from '../../shared/problem.js';
+import { IdentityProblemDetailsSchema } from './problem.js';
 import {
   AdminBootstrapRequestSchema,
   AdminBootstrapResultSchema,
@@ -35,13 +35,13 @@ import {
 // Problem Details envelope so consumers branch on status + stable `code`.
 function problemResponses(description: string): {
   default: {
-    content: { 'application/problem+json': { schema: typeof ProblemDetailsSchema } };
+    content: { 'application/problem+json': { schema: typeof IdentityProblemDetailsSchema } };
     description: string;
   };
 } {
   return {
     default: {
-      content: { 'application/problem+json': { schema: ProblemDetailsSchema } },
+      content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
       description,
     },
   };

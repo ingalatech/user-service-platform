@@ -18,7 +18,7 @@ import type {
 } from './contract.js';
 import { callIdentityEngine, readIdentityEngineFailure, responseCookies } from './engine-result.js';
 import { evaluatePasswordPolicy } from './password-policy.js';
-import type { PasswordPolicy, PasswordPolicyRule } from './password-policy.js';
+import type { PasswordPolicy, PasswordPolicyViolation } from './password-policy.js';
 import { isCurrentPasswordResetToken } from './password-reset-token.js';
 import type { IdentityRuntime } from './identity-runtime.js';
 import { toAuthenticatedUser } from './session.js';
@@ -27,11 +27,7 @@ import { consumeLatestVerificationToken } from './verification-token.js';
 export type CredentialFailure =
   | { readonly kind: 'email-password-disabled' }
   | { readonly kind: 'registration-disabled' }
-  | {
-      readonly kind: 'password-policy-violation';
-      readonly failedRules: readonly PasswordPolicyRule[];
-      readonly passwordPolicy: PasswordPolicy;
-    }
+  | ({ readonly kind: 'password-policy-violation' } & PasswordPolicyViolation)
   | { readonly kind: 'bad-request' }
   | { readonly kind: 'email-verification-required' }
   | { readonly kind: 'invalid-credentials' }

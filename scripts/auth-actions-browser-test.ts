@@ -66,7 +66,7 @@ export async function runAuthActionsBrowserTest(): Promise<void> {
           },
           passwordPolicy: {
             minLength: 10,
-            maxLength: 64,
+            maxLength: 10,
             minUppercase: 2,
             minLowercase: 1,
             minDigits: 2,
@@ -82,12 +82,22 @@ export async function runAuthActionsBrowserTest(): Promise<void> {
         body: '{"status":"ok"}',
       });
     });
+    let resetAttempts = 0;
     await page.route('**/v1/auth/reset-password', async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: 'application/json',
-        body: '{"status":"ok"}',
-      });
+      resetAttempts += 1;
+      await route.fulfill(
+        resetAttempts === 1
+          ? {
+              status: 400,
+              contentType: 'application/problem+json',
+              body: JSON.stringify({ code: 'password-policy-violation' }),
+            }
+          : {
+              status: 200,
+              contentType: 'application/json',
+              body: '{"status":"ok"}',
+            },
+      );
     });
     await page.route('**/reset-password?token=browser-token', (route) =>
       route.fulfill({ status: 200, contentType: 'text/html', body: document }),
@@ -101,16 +111,18 @@ export async function runAuthActionsBrowserTest(): Promise<void> {
     await page.goto('http://service.test/reset-password?token=browser-token');
     await waitForCount(page.locator('#requirements li'), 6);
     assert(
-      (await page.locator('#new-password').getAttribute('minlength')) === '10',
-      'policy sets minimum',
+      (await page.locator('#new-password').getAttribute('maxlength')) === null,
+      'browser does not apply a UTF-16 maxlength for code-point policy',
     );
     await page.locator('#new-password').fill('Abcdefgh12!');
     await page.getByRole('button', { name: 'Set new password' }).click();
+    await page.getByText('Your password does not meet the current requirements.').waitFor();
+    const policyErrorText = await page.locator('#status').textContent();
     assert(
-      (await page.locator('#status').textContent())?.includes('current requirements'),
-      'shows policy error',
+      policyErrorText?.includes('current requirements'),
+      'shows policy error from the server response',
     );
-    await page.locator('#new-password').fill('ABcdefgh12!');
+    await page.locator('#new-password').fill('AB\u{10428}2\u{1F4A5}3abcd');
     await page.getByRole('button', { name: 'Set new password' }).click();
     await page.getByText('Your password was reset.').waitFor();
 
