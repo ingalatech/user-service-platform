@@ -1,6 +1,11 @@
 import type { Env } from '../../env.js';
 import { renderPasswordResetEmail, renderVerificationEmail } from './mail-templates.js';
-import type { AuthMailer, PasswordResetMessage, VerificationMessage } from './mailer.js';
+import type {
+  AuthMailDeliveryResult,
+  AuthMailer,
+  PasswordResetMessage,
+  VerificationMessage,
+} from './mailer.js';
 
 // Production transactional-mail transport (ticket #13, ADR-0010, accepted
 // research recommendation: Resend as the first production adapter). This
@@ -158,6 +163,10 @@ export class ResendAuthMailer implements AuthMailer {
   }
 
   sendVerificationEmail(message: VerificationMessage): Promise<void> {
+    return this.sendVerificationEmailWithResult(message).then(() => undefined);
+  }
+
+  sendVerificationEmailWithResult(message: VerificationMessage): Promise<AuthMailDeliveryResult> {
     const template = renderVerificationEmail({
       appName: this.config.appName,
       url: message.url,
@@ -182,7 +191,7 @@ export class ResendAuthMailer implements AuthMailer {
       subject: template.subject,
       html: template.html,
       text: template.text,
-    });
+    }).then(() => undefined);
   }
 
   private async deliver(input: {
@@ -191,7 +200,7 @@ export class ResendAuthMailer implements AuthMailer {
     subject: string;
     html: string;
     text: string;
-  }): Promise<void> {
+  }): Promise<AuthMailDeliveryResult> {
     const domain = recipientDomain(input.to);
     if (this.config.sandboxGuard && !isAllowlisted(input.to, this.config.allowlist)) {
       this.log({
@@ -202,7 +211,7 @@ export class ResendAuthMailer implements AuthMailer {
         recipientDomain: domain,
         reason: 'allowlist',
       });
-      return;
+      return { status: 'skipped' };
     }
     let response: Response;
     try {
@@ -229,7 +238,7 @@ export class ResendAuthMailer implements AuthMailer {
         recipientDomain: domain,
         reason: 'network-error',
       });
-      return;
+      return { status: 'failed' };
     }
     if (!response.ok) {
       this.log({
@@ -240,7 +249,7 @@ export class ResendAuthMailer implements AuthMailer {
         recipientDomain: domain,
         status: response.status,
       });
-      return;
+      return { status: 'failed' };
     }
     const payload: unknown = await response.json().catch(() => null);
     const messageId = asRecord(payload)?.id;
@@ -252,5 +261,6 @@ export class ResendAuthMailer implements AuthMailer {
       recipientDomain: domain,
       ...(typeof messageId === 'string' ? { providerMessageId: messageId } : {}),
     });
+    return { status: 'sent' };
   }
 }

@@ -20,8 +20,14 @@ export interface PasswordResetMessage {
   readonly expiresAt?: Date;
 }
 
+export type AuthMailDeliveryResult =
+  { readonly status: 'sent' } | { readonly status: 'skipped' } | { readonly status: 'failed' };
+
 export interface AuthMailer {
   sendVerificationEmail(message: VerificationMessage): Promise<void>;
+  // Optional result-aware seam for bootstrap's durable delivery state. Existing
+  // application mailers remain source-compatible and resolve as sent.
+  sendVerificationEmailWithResult?(message: VerificationMessage): Promise<AuthMailDeliveryResult>;
   sendPasswordResetEmail(message: PasswordResetMessage): Promise<void>;
 }
 
@@ -46,8 +52,12 @@ export class InMemoryAuthMailer implements AuthMailer {
   }
 
   sendVerificationEmail(message: VerificationMessage): Promise<void> {
+    return this.sendVerificationEmailWithResult(message).then(() => undefined);
+  }
+
+  sendVerificationEmailWithResult(message: VerificationMessage): Promise<AuthMailDeliveryResult> {
     this.messages.push({ ...message, capturedAt: new Date().toISOString() });
-    return Promise.resolve();
+    return Promise.resolve({ status: 'sent' });
   }
 
   sendPasswordResetEmail(message: PasswordResetMessage): Promise<void> {
@@ -67,6 +77,10 @@ export class InMemoryAuthMailer implements AuthMailer {
 // never logged.
 export class DevelopmentAuthMailer implements AuthMailer {
   sendVerificationEmail(message: VerificationMessage): Promise<void> {
+    return this.sendVerificationEmailWithResult(message).then(() => undefined);
+  }
+
+  sendVerificationEmailWithResult(message: VerificationMessage): Promise<AuthMailDeliveryResult> {
     const domain = message.to.split('@')[1] ?? 'invalid';
     console.log(
       JSON.stringify({
@@ -76,7 +90,7 @@ export class DevelopmentAuthMailer implements AuthMailer {
         recipientDomain: domain,
       }),
     );
-    return Promise.resolve();
+    return Promise.resolve({ status: 'skipped' });
   }
 
   sendPasswordResetEmail(message: PasswordResetMessage): Promise<void> {
@@ -151,6 +165,14 @@ export function deferredAuthMailer(
   const current = (): AuthMailer => (resolved ??= resolveAuthMailer(env));
   return {
     sendVerificationEmail: (message) => current().sendVerificationEmail(message),
+    sendVerificationEmailWithResult: async (message) => {
+      const mailer = current();
+      if (mailer.sendVerificationEmailWithResult !== undefined) {
+        return mailer.sendVerificationEmailWithResult(message);
+      }
+      await mailer.sendVerificationEmail(message);
+      return { status: 'sent' };
+    },
     sendPasswordResetEmail: (message) => current().sendPasswordResetEmail(message),
   };
 }

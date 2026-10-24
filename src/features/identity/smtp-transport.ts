@@ -2,7 +2,12 @@ import type { Env } from '../../env.js';
 import { createWorkersSmtpSendMail, SmtpDeliveryError } from './smtp-client.js';
 import type { SmtpFailurePhase } from './smtp-client.js';
 import { renderPasswordResetEmail, renderVerificationEmail } from './mail-templates.js';
-import type { AuthMailer, PasswordResetMessage, VerificationMessage } from './mailer.js';
+import type {
+  AuthMailDeliveryResult,
+  AuthMailer,
+  PasswordResetMessage,
+  VerificationMessage,
+} from './mailer.js';
 import { isAllowlisted, parseAllowlist } from './resend-transport.js';
 
 // Provider-neutral SMTP transactional-mail transport (ticket #58, ADR-0010,
@@ -275,6 +280,10 @@ export class SmtpAuthMailer implements AuthMailer {
   }
 
   sendVerificationEmail(message: VerificationMessage): Promise<void> {
+    return this.sendVerificationEmailWithResult(message).then(() => undefined);
+  }
+
+  sendVerificationEmailWithResult(message: VerificationMessage): Promise<AuthMailDeliveryResult> {
     const template = renderVerificationEmail({
       appName: this.config.appName,
       url: message.url,
@@ -299,7 +308,7 @@ export class SmtpAuthMailer implements AuthMailer {
       subject: template.subject,
       html: template.html,
       text: template.text,
-    });
+    }).then(() => undefined);
   }
 
   private async deliver(input: {
@@ -308,7 +317,7 @@ export class SmtpAuthMailer implements AuthMailer {
     subject: string;
     html: string;
     text: string;
-  }): Promise<void> {
+  }): Promise<AuthMailDeliveryResult> {
     const domain = recipientDomain(input.to);
     if (this.config.sandboxGuard && !isAllowlisted(input.to, this.config.allowlist)) {
       this.log({
@@ -319,7 +328,7 @@ export class SmtpAuthMailer implements AuthMailer {
         recipientDomain: domain,
         reason: 'allowlist',
       });
-      return;
+      return { status: 'skipped' };
     }
     let result: SmtpSendResult;
     try {
@@ -342,7 +351,7 @@ export class SmtpAuthMailer implements AuthMailer {
         smtpPhase: failure.phase,
         ...(failure.replyCode === undefined ? {} : { smtpReplyCode: failure.replyCode }),
       });
-      return;
+      return { status: 'failed' };
     }
     this.log({
       level: 'info',
@@ -352,5 +361,6 @@ export class SmtpAuthMailer implements AuthMailer {
       recipientDomain: domain,
       ...(result.messageId === undefined ? {} : { providerMessageId: result.messageId }),
     });
+    return { status: 'sent' };
   }
 }

@@ -96,6 +96,27 @@ export function createIdentityAuth(input: IdentityAuthInput) {
   });
 }
 
+// Bootstrap-only Better Auth API context. It is never mounted on the Worker:
+// the just-created provisional user receives only the scoped Admin API
+// capability needed to promote its own durably claimed id, plus the core
+// self-delete operation used to clean up an unclaimed provisional user.
+// Email verification is disabled only in this private context so Better Auth's
+// supported email sign-in API can issue the short-lived internal session; the
+// deployment-facing auth instance and its verification policy are unchanged.
+export function createBootstrapIdentityAuth(input: IdentityAuthInput, provisionalUserId: string) {
+  return betterAuth({
+    ...sharedOptions(
+      {
+        ...input,
+        policy: { ...input.policy, requireEmailVerification: false },
+      },
+      { awaitVerificationDelivery: true },
+    ),
+    user: { deleteUser: { enabled: true } },
+    plugins: [admin({ adminUserIds: [provisionalUserId] })],
+  });
+}
+
 // Builds a request-scoped Better Auth instance with the asymmetric JWT/JWKS
 // capability behind the Reader State contract (spec #195, ADR-0013). Used only by the
 // application-owned POST /v1/auth/reader-state and GET /v1/auth/jwks operations;
@@ -147,7 +168,10 @@ export function createReaderStateAuth(input: ReaderStateAuthInput) {
 
 // Shared engine options for both builders. Plugin lists stay literal at each
 // call site so endpoint inference keeps the precise plugin type.
-function sharedOptions(input: IdentityAuthInput) {
+function sharedOptions(
+  input: IdentityAuthInput,
+  options: { readonly awaitVerificationDelivery?: boolean } = {},
+) {
   const {
     db,
     policy,
@@ -246,13 +270,22 @@ function sharedOptions(input: IdentityAuthInput) {
           fallbackPath: VERIFY_EMAIL_ACTION_PATH,
           token: signedToken,
         });
-        background(
-          mailer.sendVerificationEmail({
-            to: newEmail ?? user.email,
-            url,
-            token: signedToken,
-          }),
-        );
+        const message = {
+          to: newEmail ?? user.email,
+          url,
+          token: signedToken,
+        };
+        if (options.awaitVerificationDelivery === true) {
+          const result =
+            mailer.sendVerificationEmailWithResult === undefined
+              ? (await mailer.sendVerificationEmail(message), { status: 'sent' as const })
+              : await mailer.sendVerificationEmailWithResult(message);
+          if (result.status !== 'sent') {
+            throw new Error('The verification message was not accepted by the mail transport.');
+          }
+        } else {
+          background(mailer.sendVerificationEmail(message));
+        }
       },
     },
   };

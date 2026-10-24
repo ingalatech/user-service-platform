@@ -240,6 +240,38 @@ describe('resolveEffectiveConfig', () => {
     ).toThrow(/AUTH_REQUIRE_EMAIL_VERIFICATION/);
   });
 
+  it('rejects password category minima whose combined requirement cannot fit', () => {
+    expect(() =>
+      resolveEffectiveConfig({
+        environment: 'local',
+        runtime: {
+          AUTH_PASSWORD_MIN_LENGTH: '4',
+          AUTH_PASSWORD_MAX_LENGTH: '4',
+          AUTH_PASSWORD_MIN_UPPERCASE: '2',
+          AUTH_PASSWORD_MIN_LOWERCASE: '1',
+          AUTH_PASSWORD_MIN_DIGITS: '1',
+          AUTH_PASSWORD_MIN_SYMBOLS: '1',
+        },
+      }),
+    ).toThrow(/AUTH_PASSWORD_MAX_LENGTH/);
+  });
+
+  it('accepts category minima that exactly fit the maximum password length', () => {
+    const effective = resolveEffectiveConfig({
+      environment: 'local',
+      runtime: {
+        AUTH_PASSWORD_MIN_LENGTH: '5',
+        AUTH_PASSWORD_MAX_LENGTH: '5',
+        AUTH_PASSWORD_MIN_UPPERCASE: '2',
+        AUTH_PASSWORD_MIN_LOWERCASE: '1',
+        AUTH_PASSWORD_MIN_DIGITS: '1',
+        AUTH_PASSWORD_MIN_SYMBOLS: '1',
+      },
+    });
+
+    expect(effective.config.AUTH_PASSWORD_MAX_LENGTH).toBe('5');
+  });
+
   it('rejects unknown mail transports', () => {
     expect(() =>
       resolveEffectiveConfig({

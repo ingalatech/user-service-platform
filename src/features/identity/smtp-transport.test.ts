@@ -194,12 +194,13 @@ describe('SmtpAuthMailer', () => {
   it('sends verification mail through the SMTP transport with the shared template', async () => {
     const { mailer, records, sent } = testTransport(smtpEnv());
 
-    await mailer.sendVerificationEmail({
+    const delivery = await mailer.sendVerificationEmailWithResult({
       to: 'ada@example.com',
       url: 'https://example.com/verify?token=secret-token',
       token: 'secret-token',
     });
 
+    expect(delivery).toEqual({ status: 'sent' });
     expect(sent).toHaveLength(1);
     expect(sent[0]?.to).toBe('ada@example.com');
     expect(sent[0]?.from).toBe('User Service <noreply@example.com>');
@@ -377,12 +378,13 @@ describe('sandbox allowlist guard for SMTP', () => {
   it('skips non-allowlisted recipients in sandbox without calling the transport', async () => {
     const { mailer, records, sent } = testTransport(sandboxSmtpEnv());
 
-    await mailer.sendVerificationEmail({
+    const delivery = await mailer.sendVerificationEmailWithResult({
       to: 'real-user@production.com',
       url: 'https://example.com/verify?token=prod-token',
       token: 'prod-token',
     });
 
+    expect(delivery).toEqual({ status: 'skipped' });
     expect(sent).toHaveLength(0);
     expect(records).toHaveLength(1);
     expect(records[0]).toMatchObject({

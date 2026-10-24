@@ -35,7 +35,12 @@ export type {
   VerifyEmailRequest,
   VerifyEmailResult,
 } from './contract.js';
-export type { AuthMailer, PasswordResetMessage, VerificationMessage } from './mailer.js';
+export type {
+  AuthMailDeliveryResult,
+  AuthMailer,
+  PasswordResetMessage,
+  VerificationMessage,
+} from './mailer.js';
 export { InMemoryAuthMailer, ResendAuthMailer, SmtpAuthMailer } from './mailer.js';
 export type { AuthMailPurpose, ResendTransportConfig } from './mailer.js';
 export type { AuthMailLogger, AuthMailLogRecord } from './mailer.js';
