@@ -1091,8 +1091,13 @@ describe('password recovery', () => {
       { token: 'not-a-real-token', newPassword: 'Brand-new-horse-42' },
       disabled,
     );
+    const checkRes = await post(
+      '/v1/auth/check-password-reset',
+      { token: 'not-a-real-token' },
+      disabled,
+    );
 
-    for (const res of [requestRes, resetRes]) {
+    for (const res of [requestRes, resetRes, checkRes]) {
       expect(res.status).toBe(403);
       expect(await res.json()).toMatchObject({ code: 'email-password-disabled', status: 403 });
     }

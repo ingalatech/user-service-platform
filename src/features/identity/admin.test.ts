@@ -317,6 +317,58 @@ describe('POST /v1/auth/admin/bootstrap', () => {
     expect(mailer.sent).toHaveLength(0);
   });
 
+  it('renews a lease while a slow creation is in progress', async () => {
+    let currentNow = TEST_NOW;
+    let firstCreate = true;
+    let markFirstCreateStarted: () => void = () => undefined;
+    const firstCreateStarted = new Promise<void>((resolve) => {
+      markFirstCreateStarted = resolve;
+    });
+    const slowApp = createApp({
+      authMailer: mailer,
+      now: () => currentNow,
+      bootstrapLeaseTtlMs: 30,
+      bootstrapCreateUser: async (auth, body) => {
+        if (firstCreate) {
+          firstCreate = false;
+          markFirstCreateStarted();
+          await new Promise((resolve) => setTimeout(resolve, 1_000));
+          return auth.api.createUser({ body });
+        }
+        return auth.api.createUser({ body });
+      },
+    });
+    const request = async (body: typeof adminInput): Promise<Response> =>
+      await slowApp.request(
+        ADMIN_BOOTSTRAP_PATH,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify(body),
+        },
+        testEnv(),
+      );
+
+    const winner = request(adminInput);
+    await firstCreateStarted;
+    await new Promise((resolve) => setTimeout(resolve, 70));
+    currentNow += 31;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const loser = await request({
+      name: 'Grace Admin',
+      email: 'grace-admin@example.com',
+      password: 'Another-horse-42',
+    });
+
+    expect(loser.status).toBe(409);
+    expect(await loser.json()).toMatchObject({
+      code: 'admin-bootstrap-in-progress',
+      status: 409,
+    });
+    expect((await winner).status).toBe(201);
+    expect(await adminCount()).toBe(1);
+  });
+
   it('keeps a completed guard permanent even when no User row remains', async () => {
     await workerEnv.DB.prepare(
       'INSERT INTO admin_bootstrap_guard (id, owner_nonce, expires_at, completed_at) VALUES (?, ?, ?, ?)',

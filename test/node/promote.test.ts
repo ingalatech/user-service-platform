@@ -31,7 +31,7 @@ const PRODUCTION: ResolvedDeployment = {
 };
 
 describe('promotion CLI version selection', () => {
-  it('shows the latest ten versions in descending order as one-line clean options', () => {
+  it('shows every version in descending order as one-line clean options', () => {
     const prepared = preparePromotionVersions(
       Array.from({ length: 12 }, (_, index) => ({
         id: `immutable-v${String(index + 1)}`,
@@ -54,6 +54,8 @@ describe('promotion CLI version selection', () => {
       'immutable-v5',
       'immutable-v4',
       'immutable-v3',
+      'immutable-v2',
+      'immutable-v1',
     ]);
     expect(prepared.display).toEqual([
       'untagged — immutable-v12 — 2026-10-12T12:00:00.000Z',
@@ -66,6 +68,8 @@ describe('promotion CLI version selection', () => {
       'candidate-5 — immutable-v5 — 2026-10-05T12:00:00.000Z',
       'untagged — immutable-v4 — 2026-10-04T12:00:00.000Z',
       'candidate-3 — immutable-v3 — 2026-10-03T12:00:00.000Z',
+      'untagged — immutable-v2 — 2026-10-02T12:00:00.000Z',
+      'candidate-1 — immutable-v1 — 2026-10-01T12:00:00.000Z',
     ]);
     expect(prepared.display.every((choice) => !choice.includes('technical annotation'))).toBe(true);
   });

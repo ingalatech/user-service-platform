@@ -47,6 +47,7 @@ export interface IdentityRouterOptions {
   readonly authMailer?: AuthMailer;
   // Deterministic lease-clock and engine-failure seams for Worker-runtime tests.
   readonly now?: () => number;
+  readonly bootstrapLeaseTtlMs?: number;
   readonly bootstrapCreateUser?: BootstrapCreateUser;
 }
 
@@ -524,6 +525,10 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
   });
 
   router.openapi(checkPasswordResetRoute, async (c) => {
+    const { policy } = scopedAuth(c, override);
+    if (!policy.emailPasswordEnabled) {
+      return problem(c, 403, 'email-password-disabled', 'Email authentication is disabled');
+    }
     const input = c.req.valid('json');
     let valid: boolean;
     try {
@@ -876,6 +881,9 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
       email: input.email,
       password: input.password,
       ...(options.now === undefined ? {} : { now: options.now }),
+      ...(options.bootstrapLeaseTtlMs === undefined
+        ? {}
+        : { leaseTtlMs: options.bootstrapLeaseTtlMs }),
       ...(options.bootstrapCreateUser === undefined
         ? {}
         : { createUser: options.bootstrapCreateUser }),

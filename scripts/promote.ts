@@ -34,9 +34,7 @@ export function preparePromotionVersions(value: unknown): {
   readonly display: string[];
 } {
   const versions = parseWorkerVersions(value);
-  const latest = [...versions]
-    .sort((left, right) => right.createdOn.localeCompare(left.createdOn))
-    .slice(0, 10);
+  const latest = [...versions].sort((left, right) => right.createdOn.localeCompare(left.createdOn));
   return {
     versions: latest,
     display: latest.map(

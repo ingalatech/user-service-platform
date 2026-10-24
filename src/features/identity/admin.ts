@@ -30,6 +30,8 @@ export interface BootstrapAdminInput {
   // Test seam for deterministic lease-clock scenarios; production callers use
   // the Worker clock.
   readonly now?: () => number;
+  // Test seam for deterministic long-running create-user scenarios.
+  readonly leaseTtlMs?: number;
   // Narrow test seam for exercising engine failures without changing the
   // supported Better Auth create-user boundary used in production.
   readonly createUser?: BootstrapCreateUser;
@@ -129,6 +131,7 @@ async function acquireBootstrapGuard(
   db: D1Database,
   ownerNonce: string,
   now: number,
+  leaseTtlMs: number,
 ): Promise<boolean> {
   const result = await db
     .prepare(
@@ -139,7 +142,7 @@ async function acquireBootstrapGuard(
          expires_at = excluded.expires_at
        WHERE completed_at IS NULL AND expires_at <= ?`,
     )
-    .bind(BOOTSTRAP_GUARD_ID, ownerNonce, now + BOOTSTRAP_LEASE_TTL_MS, now)
+    .bind(BOOTSTRAP_GUARD_ID, ownerNonce, now + leaseTtlMs, now)
     .run();
   return result.meta.changes === 1;
 }
@@ -166,6 +169,37 @@ async function releaseBootstrapGuard(db: D1Database, ownerNonce: string): Promis
     .run();
 }
 
+async function renewBootstrapGuard(
+  db: D1Database,
+  ownerNonce: string,
+  now: number,
+  leaseTtlMs: number,
+): Promise<void> {
+  await db
+    .prepare(
+      `UPDATE admin_bootstrap_guard
+       SET expires_at = ?
+       WHERE id = ? AND owner_nonce = ? AND completed_at IS NULL`,
+    )
+    .bind(now + leaseTtlMs, BOOTSTRAP_GUARD_ID, ownerNonce)
+    .run();
+}
+
+function maintainBootstrapGuard(
+  db: D1Database,
+  ownerNonce: string,
+  now: () => number,
+  leaseTtlMs: number,
+): () => void {
+  const interval = Math.max(1, Math.floor(leaseTtlMs / 3));
+  const timer = setInterval(() => {
+    void renewBootstrapGuard(db, ownerNonce, now(), leaseTtlMs).catch(() => undefined);
+  }, interval);
+  return () => {
+    clearInterval(timer);
+  };
+}
+
 async function completeBootstrapGuard(
   db: D1Database,
   ownerNonce: string,
@@ -189,6 +223,7 @@ export async function bootstrapAdminUser(
   input: BootstrapAdminInput,
 ): Promise<BootstrapAdminOutcome> {
   const now = input.now ?? Date.now;
+  const leaseTtlMs = input.leaseTtlMs ?? BOOTSTRAP_LEASE_TTL_MS;
   if (await hasBootstrappedAdmin(input.db)) {
     await closeBootstrapGuard(input.db, now());
     return { status: 'already-bootstrapped' };
@@ -202,7 +237,7 @@ export async function bootstrapAdminUser(
       return { status: 'already-bootstrapped' };
     }
     const candidate = crypto.randomUUID();
-    if (await acquireBootstrapGuard(input.db, candidate, now())) {
+    if (await acquireBootstrapGuard(input.db, candidate, now(), leaseTtlMs)) {
       ownerNonce = candidate;
       break;
     }
@@ -212,10 +247,12 @@ export async function bootstrapAdminUser(
     }
   }
   if (ownerNonce === undefined) return { status: 'in-progress' };
+  const stopGuardMaintenance = maintainBootstrapGuard(input.db, ownerNonce, now, leaseTtlMs);
 
   // Protect compatibility with a legacy writer that may have created an admin
   // between the initial read and the atomic reservation.
   if (await hasBootstrappedAdmin(input.db)) {
+    stopGuardMaintenance();
     await completeBootstrapGuard(input.db, ownerNonce, now());
     return { status: 'already-bootstrapped' };
   }
@@ -233,6 +270,7 @@ export async function bootstrapAdminUser(
       : await input.auth.api.createUser({ body });
     created = (result as { user?: unknown }).user ?? result;
   } catch (error) {
+    stopGuardMaintenance();
     if (ENGINE_DUPLICATE_EMAIL_CODES.has(engineErrorCode(error) ?? '')) {
       await releaseBootstrapGuard(input.db, ownerNonce);
       return { status: 'email-conflict' };
@@ -242,9 +280,11 @@ export async function bootstrapAdminUser(
   }
   const admin = toBootstrappedAdmin(created);
   if (admin === null) {
+    stopGuardMaintenance();
     await releaseBootstrapGuard(input.db, ownerNonce);
     throw new Error('Admin bootstrap returned an unexpected engine shape.');
   }
+  stopGuardMaintenance();
   await completeBootstrapGuard(input.db, ownerNonce, now());
   // Reuse Better Auth's supported API rather than recursing through HTTP. This
   // runs the same verification callback, token guard, AuthMailer and
