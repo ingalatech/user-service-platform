@@ -21,6 +21,9 @@ describe('release environment files', () => {
     expect(production.workerName).toContain('-production');
     expect(sandbox.applicationConfig.SMTP_HOST).toBe('smtp.gmail.com');
     expect(production.applicationConfig.SMTP_HOST).toBe('smtp.gmail.com');
+    expect(sandbox.applicationConfig.AUTH_MAIL_ALLOWLIST).toBe(
+      'jonatangarbuyo@gmail.com,cronistadev@gmail.com',
+    );
     expect(sandbox.applicationConfig.AUTH_RESET_PASSWORD_ACTION_URL).toBe(
       'https://rch-rugbychampagneweb-sandbox.rch-evolucion.workers.dev/usuario/restablecer',
     );

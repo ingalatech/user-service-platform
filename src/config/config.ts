@@ -130,9 +130,19 @@ function validateProfile(config: NonSecretProfile): void {
   }
   const passwordMinLength = Number(config.AUTH_PASSWORD_MIN_LENGTH.trim());
   const passwordMaxLength = Number(config.AUTH_PASSWORD_MAX_LENGTH.trim());
+  const requiredCategoryLength =
+    Number(config.AUTH_PASSWORD_MIN_UPPERCASE.trim()) +
+    Number(config.AUTH_PASSWORD_MIN_LOWERCASE.trim()) +
+    Number(config.AUTH_PASSWORD_MIN_DIGITS.trim()) +
+    Number(config.AUTH_PASSWORD_MIN_SYMBOLS.trim());
   if (passwordMinLength < 1 || passwordMaxLength < passwordMinLength) {
     throw new Error(
       'Configuration error: AUTH_PASSWORD_MIN_LENGTH and AUTH_PASSWORD_MAX_LENGTH are invalid.',
+    );
+  }
+  if (requiredCategoryLength > passwordMaxLength) {
+    throw new Error(
+      'Configuration error: AUTH_PASSWORD_MAX_LENGTH cannot fit the required character categories.',
     );
   }
   for (const [name, value] of [

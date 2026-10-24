@@ -1,9 +1,9 @@
 import type { D1Database } from '@cloudflare/workers-types';
 import { drizzle } from 'drizzle-orm/d1';
-import { eq } from 'drizzle-orm';
+import { and, eq, exists, gt, isNull, notExists } from 'drizzle-orm';
 import type { createIdentityAuth } from './auth.js';
 import type { AdminBootstrapResult } from './contract.js';
-import { identitySchema, user } from './schema.js';
+import { adminBootstrapGuard, identitySchema, user } from './schema.js';
 
 // Explicit first-administrator bootstrap (ticket #59, spec #8). The first
 // administrative User is created through Better Auth's supported Admin API as a
@@ -168,11 +168,11 @@ async function releaseBootstrapGuard(db: D1Database, ownerNonce: string): Promis
 }
 
 async function discardProvisionalUser(db: D1Database, userId: string): Promise<void> {
-  await db.batch([
-    db.prepare('DELETE FROM "session" WHERE user_id = ?').bind(userId),
-    db.prepare('DELETE FROM "account" WHERE user_id = ?').bind(userId),
-    db.prepare('DELETE FROM "user" WHERE id = ? AND role = ?').bind(userId, 'user'),
-  ]);
+  const database = drizzle(db, { schema: identitySchema });
+  await database
+    .delete(user)
+    .where(and(eq(user.id, userId), eq(user.role, 'user')))
+    .run();
 }
 
 async function promoteProvisionalUser(
@@ -181,29 +181,52 @@ async function promoteProvisionalUser(
   userId: string,
   now: number,
 ): Promise<boolean> {
-  const results = await db.batch([
-    db
-      .prepare(
-        `UPDATE "user"
-         SET role = 'admin', updated_at = ?
-         WHERE id = ? AND role = 'user'
-           AND NOT EXISTS (SELECT 1 FROM "user" WHERE role = 'admin')
-           AND EXISTS (
-             SELECT 1 FROM admin_bootstrap_guard
-             WHERE id = ? AND owner_nonce = ? AND completed_at IS NULL AND expires_at > ?
-           )`,
+  const database = drizzle(db, { schema: identitySchema });
+  const results = await database.batch([
+    database
+      .update(user)
+      .set({ role: 'admin', updatedAt: new Date(now) })
+      .where(
+        and(
+          eq(user.id, userId),
+          eq(user.role, 'user'),
+          notExists(database.select().from(user).where(eq(user.role, 'admin'))),
+          exists(
+            database
+              .select()
+              .from(adminBootstrapGuard)
+              .where(
+                and(
+                  eq(adminBootstrapGuard.id, BOOTSTRAP_GUARD_ID),
+                  eq(adminBootstrapGuard.ownerNonce, ownerNonce),
+                  isNull(adminBootstrapGuard.completedAt),
+                  gt(adminBootstrapGuard.expiresAt, now),
+                ),
+              ),
+          ),
+        ),
       )
-      .bind(now, userId, BOOTSTRAP_GUARD_ID, ownerNonce, now),
-    db
-      .prepare(
-        `UPDATE admin_bootstrap_guard
-         SET completed_at = ?, expires_at = ?
-         WHERE id = ? AND owner_nonce = ? AND completed_at IS NULL AND expires_at > ?
-           AND EXISTS (SELECT 1 FROM "user" WHERE id = ? AND role = 'admin')`,
+      .returning({ id: user.id }),
+    database
+      .update(adminBootstrapGuard)
+      .set({ completedAt: now, expiresAt: now })
+      .where(
+        and(
+          eq(adminBootstrapGuard.id, BOOTSTRAP_GUARD_ID),
+          eq(adminBootstrapGuard.ownerNonce, ownerNonce),
+          isNull(adminBootstrapGuard.completedAt),
+          gt(adminBootstrapGuard.expiresAt, now),
+          exists(
+            database
+              .select()
+              .from(user)
+              .where(and(eq(user.id, userId), eq(user.role, 'admin'))),
+          ),
+        ),
       )
-      .bind(now, now, BOOTSTRAP_GUARD_ID, ownerNonce, now, userId),
+      .returning({ id: adminBootstrapGuard.id }),
   ]);
-  return results[0]?.meta.changes === 1 && results[1]?.meta.changes === 1;
+  return results[0].length === 1 && results[1].length === 1;
 }
 
 async function completeBootstrapGuard(

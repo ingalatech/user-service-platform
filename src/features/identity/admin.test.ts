@@ -163,6 +163,15 @@ describe('POST /v1/auth/admin/bootstrap', () => {
     expect(body.role).toBe('admin');
     expect(body.emailVerified).toBe(false);
 
+    const persistedTimestamps = await workerEnv.DB.prepare(
+      'SELECT created_at, updated_at FROM "user" WHERE id = ?',
+    )
+      .bind(body.id)
+      .first<{ created_at: number; updated_at: number }>();
+    expect(persistedTimestamps).not.toBeNull();
+    expect(persistedTimestamps?.created_at).toBeLessThan(100_000_000_000);
+    expect(persistedTimestamps?.updated_at).toBe(Math.floor(TEST_NOW / 1000));
+
     // Exactly one User exists and it carries the administrative role: no
     // duplicate privileged accounts, no seeded identities.
     expect(await userCount()).toBe(1);
