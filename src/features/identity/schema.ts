@@ -80,16 +80,28 @@ export const emailVerificationToken = sqliteTable('email_verification_token', {
 });
 
 // Singleton application-owned first-admin state machine. The expiry makes an
-// unclaimed lease recoverable; winnerUserId is the durable, non-expiring claim
-// that fences every later promotion/cleanup. A nullable completion timestamp
-// is the final closed state. The owner nonce lets only the reserving operation
-// release a failed attempt before a winner is claimed.
+// unclaimed lease recoverable; provisionalUserId is preallocated before calling
+// Better Auth so a crash after createUser remains identifiable. winnerUserId is
+// the durable, non-expiring claim that fences later promotion/cleanup. Delivery
+// status remains pending until the AuthMailer promise succeeds.
 export const adminBootstrapGuard = sqliteTable('admin_bootstrap_guard', {
   id: integer('id').primaryKey(),
   ownerNonce: text('owner_nonce').notNull(),
   expiresAt: integer('expires_at').notNull(),
   completedAt: integer('completed_at'),
+  provisionalUserId: text('provisional_user_id'),
   winnerUserId: text('winner_user_id'),
+  verificationStatus: text('verification_status'),
+});
+
+// Application-owned record of every preallocated provisional identity. Keeping
+// each attempt separate lets a new lease owner use a fresh ID without losing
+// the exact IDs an older, crashed Better Auth createUser may have persisted.
+export const adminBootstrapAttempt = sqliteTable('admin_bootstrap_attempt', {
+  userId: text('user_id').primaryKey(),
+  ownerNonce: text('owner_nonce').notNull(),
+  state: text('state').notNull(),
+  createdAt: integer('created_at').notNull(),
 });
 
 // Durable consumer-JWT signing-key ring (spec #150, ADR-0013). This table
@@ -118,5 +130,6 @@ export const identitySchema = {
   verification,
   emailVerificationToken,
   adminBootstrapGuard,
+  adminBootstrapAttempt,
   jwks,
 };

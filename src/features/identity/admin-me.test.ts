@@ -156,6 +156,7 @@ beforeEach(async () => {
     db.prepare('DELETE FROM "account"'),
     db.prepare('DELETE FROM "verification"'),
     db.prepare('DELETE FROM "email_verification_token"'),
+    db.prepare('DELETE FROM "admin_bootstrap_attempt"'),
     db.prepare('DELETE FROM "admin_bootstrap_guard"'),
     db.prepare('DELETE FROM "user"'),
   ]);

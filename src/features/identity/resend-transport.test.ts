@@ -123,12 +123,13 @@ describe('ResendAuthMailer', () => {
       return okResponse('msg_123');
     });
 
-    await mailer.sendVerificationEmail({
+    const delivery = await mailer.sendVerificationEmailWithResult({
       to: 'ada@example.com',
       url: 'https://example.com/verify?token=secret-token',
       token: 'secret-token',
     });
 
+    expect(delivery).toEqual({ status: 'sent' });
     expect(seen).toHaveLength(1);
     expect(seen[0]?.url).toBe('https://api.resend.com/emails');
     const headers = seen[0]?.init?.headers as Record<string, string>;
@@ -201,12 +202,13 @@ describe('ResendAuthMailer', () => {
 
     // The auth response path must not fail when mail delivery fails: the
     // verification gate stays enforced and retry happens via resend.
-    await mailer.sendVerificationEmail({
+    const delivery = await mailer.sendVerificationEmailWithResult({
       to: 'ada@example.com',
       url: 'https://example.com/verify?token=secret-token',
       token: 'secret-token',
     });
 
+    expect(delivery).toEqual({ status: 'failed' });
     expect(records).toHaveLength(1);
     expect(records[0]).toMatchObject({
       level: 'error',
@@ -291,12 +293,13 @@ describe('sandbox allowlist guard', () => {
       return okResponse('msg_should_not_happen');
     });
 
-    await mailer.sendVerificationEmail({
+    const delivery = await mailer.sendVerificationEmailWithResult({
       to: 'real-user@production.com',
       url: 'https://example.com/verify?token=prod-token',
       token: 'prod-token',
     });
 
+    expect(delivery).toEqual({ status: 'skipped' });
     expect(calls).toBe(0);
     expect(records).toHaveLength(1);
     expect(records[0]).toMatchObject({

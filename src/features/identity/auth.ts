@@ -105,10 +105,13 @@ export function createIdentityAuth(input: IdentityAuthInput) {
 // deployment-facing auth instance and its verification policy are unchanged.
 export function createBootstrapIdentityAuth(input: IdentityAuthInput, provisionalUserId: string) {
   return betterAuth({
-    ...sharedOptions({
-      ...input,
-      policy: { ...input.policy, requireEmailVerification: false },
-    }),
+    ...sharedOptions(
+      {
+        ...input,
+        policy: { ...input.policy, requireEmailVerification: false },
+      },
+      { awaitVerificationDelivery: true },
+    ),
     user: { deleteUser: { enabled: true } },
     plugins: [admin({ adminUserIds: [provisionalUserId] })],
   });
@@ -165,7 +168,10 @@ export function createReaderStateAuth(input: ReaderStateAuthInput) {
 
 // Shared engine options for both builders. Plugin lists stay literal at each
 // call site so endpoint inference keeps the precise plugin type.
-function sharedOptions(input: IdentityAuthInput) {
+function sharedOptions(
+  input: IdentityAuthInput,
+  options: { readonly awaitVerificationDelivery?: boolean } = {},
+) {
   const {
     db,
     policy,
@@ -264,13 +270,22 @@ function sharedOptions(input: IdentityAuthInput) {
           fallbackPath: VERIFY_EMAIL_ACTION_PATH,
           token: signedToken,
         });
-        background(
-          mailer.sendVerificationEmail({
-            to: newEmail ?? user.email,
-            url,
-            token: signedToken,
-          }),
-        );
+        const message = {
+          to: newEmail ?? user.email,
+          url,
+          token: signedToken,
+        };
+        if (options.awaitVerificationDelivery === true) {
+          const result =
+            mailer.sendVerificationEmailWithResult === undefined
+              ? (await mailer.sendVerificationEmail(message), { status: 'sent' as const })
+              : await mailer.sendVerificationEmailWithResult(message);
+          if (result.status !== 'sent') {
+            throw new Error('The verification message was not accepted by the mail transport.');
+          }
+        } else {
+          background(mailer.sendVerificationEmail(message));
+        }
       },
     },
   };
