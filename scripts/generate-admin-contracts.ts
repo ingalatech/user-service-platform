@@ -1,9 +1,11 @@
 import { execFile } from 'node:child_process';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { build } from 'esbuild';
+import * as ts from 'typescript';
+import { assertAdminBrowserSafeImports } from './admin-contract-safety.js';
 
 const exec = promisify(execFile);
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -12,6 +14,71 @@ const openApiPath = resolve(root, 'openapi', 'openapi.json');
 const generatedTypesPath = resolve(generatedDirectory, 'api.d.ts');
 const runtimeSchemasPath = resolve(generatedDirectory, 'contracts.js');
 const runtimeSchemaDeclarationsPath = resolve(generatedDirectory, 'contracts.d.ts');
+
+function browserSafeZodSource(path: string, sourceText: string): string {
+  const source = ts.createSourceFile(path, sourceText, ts.ScriptTarget.Latest, true);
+  let removedOpenApiMetadata = 0;
+  let rewrittenImports = 0;
+
+  const transformer: ts.TransformerFactory<ts.SourceFile> = (context) => {
+    const visit: ts.Visitor = (node) => {
+      if (
+        ts.isImportDeclaration(node) &&
+        ts.isStringLiteral(node.moduleSpecifier) &&
+        node.moduleSpecifier.text === '@hono/zod-openapi'
+      ) {
+        const bindings = node.importClause?.namedBindings;
+        if (
+          !bindings ||
+          !ts.isNamedImports(bindings) ||
+          bindings.elements.length !== 1 ||
+          bindings.elements[0]?.name.text !== 'z'
+        ) {
+          throw new Error(`Unsupported server-only schema import in ${path}.`);
+        }
+        rewrittenImports += 1;
+        return context.factory.updateImportDeclaration(
+          node,
+          node.modifiers,
+          node.importClause,
+          context.factory.createStringLiteral('zod'),
+          node.attributes,
+        );
+      }
+
+      if (
+        ts.isCallExpression(node) &&
+        ts.isPropertyAccessExpression(node.expression) &&
+        node.expression.name.text === 'openapi'
+      ) {
+        // Visit the schema receiver bottom-up so nested field annotations are
+        // removed too. Only the OpenAPI metadata call is discarded; all Zod
+        // validation/transformation calls remain in the generated browser code.
+        removedOpenApiMetadata += 1;
+        return ts.visitNode(node.expression.expression, visit);
+      }
+
+      return ts.visitEachChild(node, visit, context);
+    };
+    return (sourceFile) => ts.visitNode(sourceFile, visit) as ts.SourceFile;
+  };
+
+  const transformed = ts.transform(source, [transformer]);
+  try {
+    if (sourceText.includes('@hono/zod-openapi') && rewrittenImports === 0) {
+      throw new Error(`Expected the server-only schema import in ${path}.`);
+    }
+    if (sourceText.includes('.openapi(') && removedOpenApiMetadata === 0) {
+      throw new Error(`Expected OpenAPI metadata calls in schema source ${path}.`);
+    }
+    const transformedSource = transformed.transformed[0];
+    if (transformedSource === undefined)
+      throw new Error(`Unable to transform schema source ${path}.`);
+    return ts.createPrinter({ newLine: ts.NewLineKind.LineFeed }).printFile(transformedSource);
+  } finally {
+    transformed.dispose();
+  }
+}
 
 // Types come from the generated OpenAPI document. Runtime schemas are bundled
 // from their canonical Identity/Problem Details Zod source modules so Admin
@@ -30,7 +97,26 @@ const bundle = await build({
   platform: 'browser',
   format: 'esm',
   target: 'es2022',
-  external: ['@hono/zod-openapi', 'zod'],
+  minify: true,
+  external: ['zod'],
+  plugins: [
+    {
+      name: 'browser-safe-admin-zod-schemas',
+      setup(builder) {
+        builder.onLoad({ filter: /\.ts$/ }, async ({ path }) => {
+          if (
+            !path.startsWith(resolve(root, 'src', 'features', 'identity')) &&
+            !path.startsWith(resolve(root, 'src', 'shared'))
+          ) {
+            return null;
+          }
+          const source = await readFile(path, 'utf8');
+          if (!source.includes('@hono/zod-openapi') && !source.includes('.openapi(')) return null;
+          return { contents: browserSafeZodSource(path, source), loader: 'ts' };
+        });
+      },
+    },
+  ],
   outfile: runtimeSchemasPath,
   write: false,
   logLevel: 'silent',
@@ -38,6 +124,13 @@ const bundle = await build({
 const runtimeSchemaBundle = bundle.outputFiles[0];
 if (runtimeSchemaBundle === undefined) {
   throw new Error('Admin runtime contract bundling produced no output.');
+}
+assertAdminBrowserSafeImports(runtimeSchemaBundle.text, 'Generated Admin runtime contracts');
+if (runtimeSchemaBundle.text.includes('.openapi(')) {
+  const offset = runtimeSchemaBundle.text.indexOf('.openapi(');
+  throw new Error(
+    `Generated Admin runtime contracts retain server-only OpenAPI annotations: ${runtimeSchemaBundle.text.slice(offset, offset + 160)}`,
+  );
 }
 await writeFile(runtimeSchemasPath, runtimeSchemaBundle.contents);
 
