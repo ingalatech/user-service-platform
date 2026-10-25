@@ -1,7 +1,7 @@
 import { useState, type SyntheticEvent } from 'react';
 import { useGetList } from 'ra-core';
 import { Link, useLocation } from 'react-router';
-import type { AdminUser } from '../../src/features/identity/contract.js';
+import type { AdminUser } from './generated/contracts.js';
 import { ApiError } from './api.js';
 import { Button } from './kit/components/ui/button.js';
 import { Input } from './kit/components/ui/input.js';

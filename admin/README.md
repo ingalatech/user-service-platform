@@ -46,11 +46,16 @@ React Admin's named `query-string` imports are routed through the local Vite
 
 ## Authentication
 
-`src/api.ts` consumes the runtime contracts owned by Identity; it never maintains
-a second API schema. Same-origin `fetch` uses HttpOnly session cookies with
-`credentials: include`. No authentication data is stored in localStorage or
-sessionStorage. The kit receives an in-memory store and telemetry is disabled.
-`GET /v1/admin/me` is the permission authority; public `/v1/me` stays unchanged.
+`src/api.ts` is the same-origin HTTP adapter and consumes generated Admin
+contracts from `src/generated`; it never imports Identity source contracts or
+maintains a second API schema. Types derive from the OpenAPI document and its
+runtime validators are bundled from the canonical Identity Zod schemas. Run
+`npm run admin:contracts:generate` after changing those source contracts;
+`npm run admin:contracts:check` detects generated drift. Same-origin `fetch`
+uses HttpOnly session cookies with `credentials: include`. No authentication
+data is stored in localStorage or sessionStorage. The kit receives an in-memory
+store and telemetry is disabled. `GET /v1/admin/me` is the permission
+authority; public `/v1/me` stays unchanged.
 The outer BrowserRouter owns the `/admin` basename (the kit default is a hash
 router). Shared React Query/form dependencies are pinned to one compatible
 version and Vite deduplicates their contexts.

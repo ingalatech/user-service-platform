@@ -1,6 +1,6 @@
 import { useGetOne } from 'ra-core';
 import { Link, Navigate, useLocation, useParams } from 'react-router';
-import type { AdminUser } from '../../src/features/identity/contract.js';
+import type { AdminUser } from './generated/contracts.js';
 import { ApiError } from './api.js';
 import { Button } from './kit/components/ui/button.js';
 

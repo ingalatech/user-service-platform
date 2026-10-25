@@ -14,6 +14,9 @@ openapi/baseline/**
 # (ADR-0007, ticket #152). They must stay byte-identical to the generator;
 # drift is enforced by `npm run consumer:check`.
 src/features/identity/consumer-client/generated/**
+# Admin's OpenAPI types and source-schema runtime bundle are generated outputs
+# (ADR-0012, ticket #233); `npm run admin:contracts:check` enforces byte drift.
+admin/src/generated/**
 # Vendored Matt Pocock workflow skills are external assets pinned by
 # skills-lock.json. They must remain source-faithful; feature work must not
 # rewrite them (PR #15 final acceptance review).

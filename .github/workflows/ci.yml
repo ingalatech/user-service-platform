@@ -50,6 +50,9 @@ jobs:
       - name: OpenAPI drift check
         run: npm run openapi:check
 
+      - name: Admin contract drift check
+        run: npm run admin:contracts:check
+
       - name: Workers runtime tests
         run: npm run test
 
