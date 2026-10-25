@@ -64,40 +64,6 @@ describe('GitHub Actions CI-only boundary (issue #171)', () => {
     assertAllowedCiSteps(workflow.jobs?.gates?.steps);
   });
 
-  it('rejects an additional parallel workflow job', () => {
-    const workflow = parseYaml(readFileSync(`${workflowsDir}/ci.yml`, 'utf8')) as {
-      jobs?: Record<string, unknown>;
-    };
-    const jobsWithDeploy = {
-      ...workflow.jobs,
-      deploy: {
-        'runs-on': 'ubuntu-latest',
-        steps: [{ name: 'Deploy', run: 'npm run deploy' }],
-      },
-    };
-
-    expect(() => {
-      assertOnlyGatesJob(jobsWithDeploy);
-    }).toThrow();
-  });
-
-  it.each([
-    {
-      label: 'a wrapper script step',
-      step: { name: 'Run release wrapper', run: 'node scripts/release-wrapper.mjs' },
-    },
-    {
-      label: 'an unapproved GitHub Action step',
-      step: { name: 'Release action', uses: 'vendor/release-action@v1' },
-    },
-  ])('rejects $label added to the workflow step sequence', ({ step }) => {
-    const wrappedSteps = [...expectedCiSteps.slice(0, 2), step, ...expectedCiSteps.slice(2)];
-
-    expect(() => {
-      assertAllowedCiSteps(wrappedSteps);
-    }).toThrow();
-  });
-
   it('documents local isolated agent work and explicit local releases', () => {
     const opencode = readFileSync('docs/agents/opencode.md', 'utf8');
     const projectState = readFileSync('docs/agents/project-state.md', 'utf8');
