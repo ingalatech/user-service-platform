@@ -16,6 +16,9 @@ export default defineConfig(
       // outputs (ADR-0007, ticket #152); drift is enforced by
       // `npm run consumer:check`, not by lint.
       'src/features/identity/consumer-client/generated/**',
+      // Generated Admin OpenAPI types and bundled canonical runtime schemas
+      // are byte-checked by `npm run admin:contracts:check`.
+      'admin/src/generated/**',
     ],
   },
   {

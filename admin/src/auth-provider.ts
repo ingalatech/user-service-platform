@@ -1,5 +1,5 @@
 import type { AuthProvider, UserIdentity } from 'ra-core';
-import type { AdminMe } from '../../src/features/identity/contract.js';
+import type { AdminMe } from './generated/contracts.js';
 import { adminIdentity, ApiError, login, signOut } from './api.js';
 
 export type AdminIdentity = AdminMe & UserIdentity;

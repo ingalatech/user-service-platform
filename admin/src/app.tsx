@@ -14,7 +14,7 @@ import { Link, Navigate, Route, useNavigate } from 'react-router';
 import { Admin } from './kit/components/admin/admin.js';
 import { Button } from './kit/components/ui/button.js';
 import { authProvider } from './auth-provider.js';
-import { AdminMeSchema } from '../../src/features/identity/contract.js';
+import { AdminMeSchema } from './generated/contracts.js';
 import { ApiError } from './api.js';
 import { Layout } from './kit/components/admin/layout.js';
 import { i18nProvider } from './i18n.js';
