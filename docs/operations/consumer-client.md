@@ -7,7 +7,10 @@ or frontend repository change is part of this slice.
 
 ## Public surface
 
-- `createConsumerClient()` creates the shared deployment-scoped controller.
+- `createConsumerClient()` creates the shared deployment-scoped controller and
+  is the supported entry point. Its returned `ConsumerClient` is the consumer
+  interface; storage, JWKS-cache construction, signature verification and
+  cross-tab adapters are implementation details.
 - `login()` authenticates through the service-only HttpOnly session and then
   obtains verified Reader State.
 - `getSnapshot()` returns locally verified presentation state. It performs no
@@ -21,6 +24,14 @@ or frontend repository change is part of this slice.
   sign-out. Server failure remains visible as `logout-failed`.
 - `observeReaderState()` lets scripts/islands react to verified replacement or
   logout without polling.
+
+The consumer barrel exports the public client/error/config/input/state types
+and the password-policy evaluator used by registration forms. It does not
+export storage mutation, cache construction or low-level verification helpers.
+The storage key helper, storage adapter type, `readerStateStore` option and
+`nowSeconds` option remain as a compatibility exception for the vendored RCH
+client test. Removing them requires a separate RCH change; production RCH code
+uses the controller and does not coordinate storage internals.
 
 Generated TypeScript contracts live at
 `src/features/identity/consumer-client/generated/api.d.ts` and are produced by

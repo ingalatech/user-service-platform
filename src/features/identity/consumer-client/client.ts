@@ -160,11 +160,16 @@ export interface ConsumerClientOptions {
   readonly baseUrl: string;
   readonly issuer: string;
   readonly audience: string;
+  // Vendored RCH test adapter retained for source compatibility; production
+  // consumers should use the browser's deployment-scoped localStorage.
   readonly readerStateStore?: KeyValueStorage;
-  readonly broadcast?: ReaderStateBroadcast | null;
   readonly fetchImpl?: typeof fetch;
+  // Deterministic clock retained for the vendored RCH client tests.
   readonly nowSeconds?: () => number;
-  readonly renewalRetryDelayMs?: number;
+}
+
+export interface ConsumerClientTestOptions extends ConsumerClientOptions {
+  readonly broadcast?: ReaderStateBroadcast | null;
 }
 
 export interface ConsumerLoginInput {
@@ -250,6 +255,16 @@ const sleep = (milliseconds: number): Promise<void> =>
   new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 export function createConsumerClient(options: ConsumerClientOptions): ConsumerClient {
+  return createConsumerClientInternal(options);
+}
+
+// Test-only setup seam. It is exported from this implementation module for
+// internal tests, never re-exported by the supported consumer-client barrel.
+export function createConsumerClientForTests(options: ConsumerClientTestOptions): ConsumerClient {
+  return createConsumerClientInternal(options);
+}
+
+function createConsumerClientInternal(options: ConsumerClientTestOptions): ConsumerClient {
   if ((globalThis as Record<string, unknown>).isSecureContext === false) {
     throw new ConsumerClientError(
       'insecure-context',
@@ -276,7 +291,7 @@ export function createConsumerClient(options: ConsumerClientOptions): ConsumerCl
         ? createBrowserReaderStateBroadcast(scope)
         : null;
   const nowSeconds = options.nowSeconds ?? (() => Math.floor(Date.now() / 1000));
-  const retryDelayMs = options.renewalRetryDelayMs ?? 250;
+  const retryDelayMs = 250;
   const navigatorCandidate = globalRecord.navigator as
     | {
         locks?: {
