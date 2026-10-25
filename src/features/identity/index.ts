@@ -69,27 +69,17 @@ export { resolveSessionContext } from './identity-runtime.js';
 // `./consumer-client/index.js`; it depends only on generated contracts and
 // `openapi-fetch`, never on server internals.
 export {
-  createBrowserReaderStateBroadcast,
   createConsumerClient,
-  createMemoryReaderStateBroadcast,
   ConsumerClientError,
+  evaluatePassword,
   type AuthoritativeSessionStatus,
+  type AuthConfig,
   type ConsumerClient,
   type ConsumerClientOptions,
   type ConsumerLoginInput,
   type ConsumerReaderState,
   type ConsumerRegisterInput,
-  type ReaderStateBroadcast,
-} from './consumer-client/index.js';
-export { createJwksCache, type JwksCache, type JwksCacheInput } from './consumer-client/index.js';
-export {
-  ReaderStateError,
-  verifyReaderState,
-  // The client verification key mirrors the public contract key without
-  // importing server (Zod/Hono) types into the independently importable
-  // client boundary; the alias keeps the two representations distinct.
-  type ConsumerJsonWebKey as ConsumerVerificationKey,
-  type VerifiedReaderState,
-  type VerifyReaderStateErrorCode,
-  type VerifyReaderStateInput,
+  type PasswordPolicy,
+  type PasswordPolicyEvaluation,
+  type PasswordPolicyRule,
 } from './consumer-client/index.js';

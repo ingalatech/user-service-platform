@@ -6,7 +6,7 @@ import type { Env } from '../../../env.js';
 import { InMemoryAuthMailer } from '../mailer.js';
 import {
   createBrowserReaderStateBroadcast,
-  createConsumerClient,
+  createConsumerClientForTests as createConsumerClient,
   createMemoryReaderStateBroadcast,
 } from './client.js';
 import { readerStateStorageKey, type KeyValueStorage } from './storage.js';

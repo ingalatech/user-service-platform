@@ -763,8 +763,10 @@ export default {
       page,
       outcomeOf(`
         (() => {
-          const scope = { service: window.location.origin, issuer: window.__cfg.issuer, audience: window.__cfg.audience };
-          window.localStorage.removeItem(ConsumerClient.jwksStorageKey(scope));
+          for (let index = window.localStorage.length - 1; index >= 0; index -= 1) {
+            const key = window.localStorage.key(index);
+            if (key?.startsWith('usp.reader-state.v1.jwks.')) window.localStorage.removeItem(key);
+          }
           window.__consumer = undefined;
           return true;
         })()
