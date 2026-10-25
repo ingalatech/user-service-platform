@@ -29,6 +29,10 @@ function assertAllowedCiSteps(steps: unknown): void {
   expect(steps).toEqual(expectedCiSteps);
 }
 
+function assertOnlyGatesJob(jobs: unknown): void {
+  expect(Object.keys(jobs as Record<string, unknown>).sort()).toEqual(['gates']);
+}
+
 describe('GitHub Actions CI-only boundary (issue #171)', () => {
   const workflowsDir = '.github/workflows';
 
@@ -53,10 +57,28 @@ describe('GitHub Actions CI-only boundary (issue #171)', () => {
 
   it('allows exactly the pinned quality-gates steps, commands and order', () => {
     const workflow = parseYaml(readFileSync(`${workflowsDir}/ci.yml`, 'utf8')) as {
-      jobs?: { gates?: { steps?: unknown } };
+      jobs?: Record<string, { steps?: unknown }>;
     };
 
+    assertOnlyGatesJob(workflow.jobs);
     assertAllowedCiSteps(workflow.jobs?.gates?.steps);
+  });
+
+  it('rejects an additional parallel workflow job', () => {
+    const workflow = parseYaml(readFileSync(`${workflowsDir}/ci.yml`, 'utf8')) as {
+      jobs?: Record<string, unknown>;
+    };
+    const jobsWithDeploy = {
+      ...workflow.jobs,
+      deploy: {
+        'runs-on': 'ubuntu-latest',
+        steps: [{ name: 'Deploy', run: 'npm run deploy' }],
+      },
+    };
+
+    expect(() => {
+      assertOnlyGatesJob(jobsWithDeploy);
+    }).toThrow();
   });
 
   it.each([
