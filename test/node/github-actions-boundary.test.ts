@@ -60,12 +60,25 @@ describe('GitHub Actions CI-only boundary (issue #171)', () => {
     const runbook = readFileSync('docs/operations/sandbox-release-runbook.md', 'utf8');
 
     expect(opencode).toMatch(/OpenCode is used from an isolated ticket worktree/);
-    expect(projectState).toMatch(/GitHub Actions contains only/);
+    const operatingAgreement =
+      projectState.split('## Operating agreement')[1]?.split('## Architecture and toolchain')[0] ??
+      '';
+    const releaseBoundary = projectState.split('## Release boundary')[1] ?? '';
+    expect(operatingAgreement).toMatch(/P2 works one approved.*isolated worktree/s);
+    expect(operatingAgreement).toMatch(
+      /No automated review\/correction\s+workers or release commands run from repository CI/,
+    );
+    expect(releaseBoundary).toMatch(
+      /Deploy, promotion and provisioning are explicit local P1 operations\./,
+    );
+    expect(releaseBoundary).toMatch(/CI runs\s+deterministic[\s\S]+generated-contract checks/);
+    expect(releaseBoundary).toMatch(/Worker\s+tests and harness tests only/);
+    expect(releaseBoundary).toMatch(/it does not mutate Cloudflare/);
     expect(adr).toMatch(/Sandbox and production releases are explicit local operator actions/);
     expect(runbook).toMatch(/Sandbox release \(local operator action\)/);
     expect(runbook).toMatch(/Promotion is an explicit local operator action/);
     expect(projectState).toMatch(
-      /Product planning and implementation\s+tickets remain authoritative/,
+      /Configurable Profile and the D1 collections engine remain in planning under\s+Wayfinder issues #208 and #216/,
     );
   });
 });
