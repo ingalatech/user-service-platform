@@ -1,8 +1,9 @@
 // PROTOTYPE: disposable local D1 schema-mutation probe for issue #219.
-// Run with: npx tsx scripts/prototypes/d1-schema-219.mjs
+// Run locally with: npx tsx scripts/prototypes/d1-schema-219.mjs
+// P1-only remote binding mode: npx tsx scripts/prototypes/d1-schema-219.mjs --remote-scratch <name> <uuid>
 // Every query runs inside workerd through Wrangler local mode's D1 binding.
 import { spawn } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { once } from 'node:events';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
@@ -11,7 +12,7 @@ const scratch = await mkdtemp(join(tmpdir(), 'd1-schema-219-'));
 const evidencePath = join(tmpdir(), `${basename(scratch)}-evidence.json`);
 const workerPath = join(scratch, 'worker.mjs');
 const configPath = join(scratch, 'wrangler.jsonc');
-const databaseId = '21900000-0000-4000-8000-000000000001';
+const localDatabaseId = '21900000-0000-4000-8000-000000000001';
 
 const worker = `
 export default {
@@ -26,6 +27,19 @@ export default {
           results.push(item.mode === 'all' ? await bound.all() : await bound.run());
         }
         return Response.json({ results });
+      }
+      if (input.action === 'preflightRemoteScratch') {
+        const objects = await env.DB.prepare(
+          "SELECT name, type FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name != '_cf_KV' ORDER BY name",
+        ).all();
+        if (objects.results.length !== 0) {
+          return Response.json({ empty: false, userTableCount: objects.results.length });
+        }
+        const marker = input.marker;
+        await env.DB.prepare('CREATE TABLE "prototype_219_identity" (marker TEXT PRIMARY KEY)').run();
+        await env.DB.prepare('INSERT INTO "prototype_219_identity" (marker) VALUES (?)').bind(marker).run();
+        const verified = await env.DB.prepare('SELECT marker FROM "prototype_219_identity"').first('marker');
+        return Response.json({ empty: true, sentinelVerified: verified === marker });
       }
       if (input.action === 'batch') {
         const statements = input.statements.map((item) => {
@@ -101,6 +115,38 @@ export default {
 let workerProcess;
 let baseUrl;
 const faultyLoop = globalThis.process.argv.slice(2).includes('--faulty');
+const argv = globalThis.process.argv.slice(2);
+const remoteMode = argv[0] === '--remote-scratch';
+const scratchName = remoteMode ? argv[1] : null;
+const databaseId = remoteMode ? argv[2] : localDatabaseId;
+const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const scratchNamePattern = /^rch-us-d1-probe-219-[a-f0-9]{12}$/;
+const randomMarker = globalThis.crypto.randomUUID();
+const redact = (value) =>
+  String(value)
+    .replace(
+      /[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}/gi,
+      '[redacted-uuid]',
+    )
+    .replace(/\b[0-9a-f]{32}\b/gi, '[redacted-id]')
+    .replace(/\b[A-Za-z0-9_-]{32,}\b/g, '[redacted-token-like-value]')
+    .replace(/(Bearer\s+)[^\s"']+/gi, '$1[redacted]');
+const remoteChildEnvironment = Object.fromEntries(
+  [
+    'PATH',
+    'HOME',
+    'TMPDIR',
+    'CI',
+    'CLOUDFLARE_API_TOKEN',
+    'CLOUDFLARE_ACCOUNT_ID',
+    'CLOUDFLARE_API_KEY',
+    'CLOUDFLARE_EMAIL',
+    'CLOUDFLARE_ACCESS_CLIENT_ID',
+    'CLOUDFLARE_ACCESS_CLIENT_SECRET',
+  ]
+    .filter((key) => globalThis.process.env[key] !== undefined)
+    .map((key) => [key, globalThis.process.env[key]]),
+);
 let faultyCheckInjected = false;
 
 const evidence = {
@@ -110,12 +156,17 @@ const evidence = {
     runtime: globalThis.process.version,
     databaseBinding: 'DB',
     workerRuntime: 'Wrangler local mode -> Miniflare/workerd',
-    databaseId: 'synthetic-local-id-only',
+    databaseId: remoteMode ? 'redacted' : 'synthetic-local-id-only',
+    scratchAlias: remoteMode ? 'P1-provided scratch alias (redacted)' : null,
     scratchDirectory: scratch,
     scratchCleanup:
       'the mkdtemp root is removed in finally; evidence JSON is kept separately in OS tmp',
     evidencePath,
-    cloudflareRemoteAccess: false,
+    cloudflareRemoteAccess: remoteMode,
+    remoteConfigured: false,
+    remoteVerification: remoteMode
+      ? 'Not executed by P2. P1 must run the emitted Wrangler D1 execute command and confirm prototype_219_identity before deleting the scratch database.'
+      : null,
     faultInjection: faultyLoop ? '--faulty (expected non-zero exit)' : null,
   },
   cloudflareDocumentedLimits: {
@@ -175,7 +226,7 @@ const record = async (name, operation, validate) => {
     checks,
   };
   evidence.states.push(state);
-  globalThis.console.log(JSON.stringify(state));
+  globalThis.console.log(redact(JSON.stringify(state)));
   if (state.verdict === 'fail') {
     throw new Error(`Prototype observation failed checks for ${name}`);
   }
@@ -196,8 +247,24 @@ const exec = (sql, values = undefined, mode = 'run') =>
   call({ action: 'statements', statements: [{ sql, values, mode }] });
 
 try {
-  const args = globalThis.process.argv.slice(2);
-  if (args.some((argument) => argument !== '--faulty')) {
+  if (remoteMode) {
+    if (
+      argv.length !== 3 ||
+      !scratchNamePattern.test(scratchName ?? '') ||
+      !uuidPattern.test(databaseId ?? '')
+    ) {
+      throw new Error(
+        'Remote mode requires exactly --remote-scratch <rch-us-d1-probe-219-random-suffix> <valid-uuid>; no other flags are accepted',
+      );
+    }
+    const environmentFiles = await readdir(
+      new globalThis.URL('../../config/environments/', import.meta.url),
+    );
+    const configuredEnvironments = environmentFiles.map((file) => file.replace(/^\.env\./, ''));
+    if (argv.includes('--faulty') || configuredEnvironments.includes(scratchName)) {
+      throw new Error('Remote scratch mode does not accept mixed flags or environment names');
+    }
+  } else if (argv.some((argument) => argument !== '--faulty')) {
     throw new Error('Supported optional argument: --faulty');
   }
   await writeFile(workerPath, worker);
@@ -211,8 +278,9 @@ try {
         d1_databases: [
           {
             binding: 'DB',
-            database_name: 'd1-schema-219-scratch',
+            database_name: remoteMode ? scratchName : 'd1-schema-219-scratch',
             database_id: databaseId,
+            ...(remoteMode ? { remote: true } : {}),
           },
         ],
       },
@@ -231,7 +299,7 @@ try {
     [
       wranglerPath,
       'dev',
-      '--local',
+      ...(remoteMode ? [] : ['--local']),
       '--config',
       configPath,
       '--ip',
@@ -243,20 +311,33 @@ try {
     ],
     {
       cwd: scratch,
-      env: {
-        PATH: globalThis.process.env.PATH,
-        HOME: scratch,
-        TMPDIR: scratch,
-        CI: '1',
-        CLOUDFLARE_API_TOKEN: '',
-        WRANGLER_SEND_METRICS: 'false',
-      },
+      env: remoteMode
+        ? {
+            ...remoteChildEnvironment,
+            TMPDIR: scratch,
+            WRANGLER_SEND_METRICS: 'false',
+          }
+        : {
+            PATH: globalThis.process.env.PATH,
+            HOME: scratch,
+            TMPDIR: scratch,
+            CI: '1',
+            CLOUDFLARE_API_TOKEN: '',
+            WRANGLER_SEND_METRICS: 'false',
+          },
       stdio: ['ignore', 'pipe', 'pipe'],
     },
   );
   baseUrl = await new Promise((resolve, reject) => {
     const timeout = globalThis.setTimeout(
-      () => reject(new Error(`Wrangler local startup timed out: ${startupOutput.join('')}`)),
+      () =>
+        reject(
+          new Error(
+            remoteMode
+              ? 'Wrangler startup timed out; child output withheld'
+              : `Wrangler local startup timed out: ${startupOutput.join('')}`,
+          ),
+        ),
       30000,
     );
     const inspect = (chunk) => {
@@ -276,10 +357,28 @@ try {
     });
     workerProcess.once('exit', (code) => {
       globalThis.clearTimeout(timeout);
-      reject(new Error(`Wrangler exited before startup (${code}): ${startupOutput.join('')}`));
+      reject(
+        new Error(
+          remoteMode
+            ? `Wrangler exited before startup (${code}); child output withheld`
+            : `Wrangler exited before startup (${code}): ${startupOutput.join('')}`,
+        ),
+      );
     });
   });
   evidence.environment.localWorkerUrl = baseUrl;
+
+  if (remoteMode) {
+    const preflight = await call({ action: 'preflightRemoteScratch', marker: randomMarker });
+    if (preflight.empty !== true || preflight.sentinelVerified !== true) {
+      throw new Error(
+        'Remote scratch is not empty or its identity sentinel could not be verified; aborted before prototype DDL',
+      );
+    }
+    evidence.remoteSentinel = { verified: true, userTablesBeforeDDL: 0, marker: '[redacted]' };
+    evidence.remoteConfigured = true;
+    evidence.p1VerificationCommand = `npx wrangler d1 execute ${scratchName} --remote --command 'SELECT marker FROM prototype_219_identity'`;
+  }
 
   await record(
     'bootstrap-catalog-and-ledger',
@@ -865,9 +964,14 @@ try {
     throw new Error('Fault injection did not reach a check to invert');
   }
 } catch (error) {
-  evidence.fatalError = { name: error.name, message: error.message };
+  evidence.fatalError = {
+    name: error.name,
+    message: remoteMode
+      ? 'Remote probe failed; sensitive child output withheld'
+      : redact(error.message),
+  };
   globalThis.process.exitCode = 1;
-  globalThis.console.error(JSON.stringify(evidence.fatalError));
+  globalThis.console.error(redact(JSON.stringify(evidence.fatalError)));
 } finally {
   evidence.finalVerdict =
     evidence.fatalError || evidence.states.some((state) => state.verdict === 'fail')
@@ -884,20 +988,26 @@ try {
   evidence.checkedStateCount = evidence.states.filter(
     (state) => state.verdict === 'pass' && state.checks.length > 0,
   ).length;
+  if (remoteMode && evidence.finalVerdict !== 'pass') {
+    evidence.remoteConfigured = false;
+  }
   evidence.observationalStateCount = evidence.states.filter(
     (state) => state.verdict === 'observed',
   ).length;
   try {
-    await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`);
+    await writeFile(evidencePath, `${redact(JSON.stringify(evidence, null, 2))}\n`);
     globalThis.console.log(
-      JSON.stringify({
-        evidencePath,
-        finalStateCount: evidence.states.length,
-        checkedStateCount: evidence.checkedStateCount,
-        observationalStateCount: evidence.observationalStateCount,
-        finalVerdict: evidence.finalVerdict,
-        fatalError: evidence.fatalError ?? null,
-      }),
+      redact(
+        JSON.stringify({
+          evidencePath,
+          finalStateCount: evidence.states.length,
+          checkedStateCount: evidence.checkedStateCount,
+          observationalStateCount: evidence.observationalStateCount,
+          finalVerdict: evidence.finalVerdict,
+          fatalError: evidence.fatalError ?? null,
+          p1VerificationCommand: evidence.p1VerificationCommand ?? null,
+        }),
+      ),
     );
   } finally {
     try {
