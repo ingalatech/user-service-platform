@@ -8,6 +8,7 @@ const expectedCiSteps = [
     uses: 'actions/checkout@v7',
     with: {
       ref: "${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}",
+      'fetch-depth': 0,
     },
   },
   {
