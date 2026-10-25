@@ -128,7 +128,7 @@ const call = async (body) => {
   return response.status === 200 ? result : { httpStatus: response.status, body: result };
 };
 
-const record = async (name, operation, validate = () => []) => {
+const record = async (name, operation, validate) => {
   const result = await operation();
   const snapshot = await call({
     action: 'statements',
@@ -141,7 +141,13 @@ const record = async (name, operation, validate = () => []) => {
       { sql: 'PRAGMA quick_check', mode: 'all' },
     ],
   });
-  const checks = await validate(result, snapshot);
+  const producedChecks = typeof validate === 'function' ? await validate(result, snapshot) : [];
+  const checks = Array.isArray(producedChecks) ? producedChecks : [];
+  if (checks.length === 0) {
+    checks.push(
+      check('state must provide at least one after-state assertion', checks.length, 1, false),
+    );
+  }
   if (faultyLoop && !faultyCheckInjected && checks.length > 0) {
     checks[0] = { ...checks[0], passed: false, injected: true };
     faultyCheckInjected = true;
@@ -296,31 +302,98 @@ try {
     ],
   );
 
-  await record('dynamic-identifiers-validated-quoted-values-bound', async () => {
-    const identifier = 'records';
-    const validIdentifier = /^[a-z][a-z0-9_]{0,62}$/.test(identifier);
-    if (!validIdentifier) throw new Error('identifier rejected by allowlist');
-    const quotedIdentifier = `"${identifier.replaceAll('"', '""')}"`;
-    const injectedValue = 'value\'; DROP TABLE "records"; --';
-    const result = await exec(
-      `SELECT id FROM ${quotedIdentifier} WHERE value = ?`,
-      [injectedValue],
-      'all',
-    );
-    return {
-      result,
-      evidence: { identifier, validIdentifier, quotedIdentifier, maliciousLookingValueBound: true },
-    };
-  });
+  await record(
+    'dynamic-identifiers-validated-quoted-values-bound',
+    async () => {
+      const identifier = 'records';
+      const validIdentifier = /^[a-z][a-z0-9_]{0,62}$/.test(identifier);
+      if (!validIdentifier) throw new Error('identifier rejected by allowlist');
+      const quotedIdentifier = `"${identifier.replaceAll('"', '""')}"`;
+      const injectedValue = 'value\'; DROP TABLE "records"; --';
+      const result = await exec(
+        `SELECT id FROM ${quotedIdentifier} WHERE value = ?`,
+        [injectedValue],
+        'all',
+      );
+      return {
+        result,
+        evidence: {
+          identifier,
+          validIdentifier,
+          quotedIdentifier,
+          maliciousLookingValueBound: true,
+        },
+        recordAfter: rows(
+          await exec('SELECT id, value FROM "records" WHERE id = ?', ['r1'], 'all'),
+        ),
+      };
+    },
+    (result, snapshot) => [
+      check(
+        'identifier passed the allowlist and was quoted',
+        result.evidence.validIdentifier && result.evidence.quotedIdentifier === '"records"',
+        true,
+      ),
+      check(
+        'injection-shaped input was bound as a value, not a statement',
+        rows(result.result),
+        [],
+      ),
+      check('original record remains intact', result.recordAfter, [
+        { id: 'r1', value: 'preserve-me' },
+      ]),
+      check(
+        'records table remains present',
+        rows(snapshot, 0).some((item) => item.name === 'records' && item.type === 'table'),
+        true,
+      ),
+    ],
+  );
 
-  await record('rename-table-and-indexes', () =>
-    call({
-      action: 'batch',
-      statements: [
-        { sql: 'ALTER TABLE "records" RENAME TO "records_renamed"' },
-        { sql: 'ALTER TABLE "records_renamed" RENAME TO "records"' },
-      ],
-    }),
+  await record(
+    'rename-table-and-indexes',
+    async () => {
+      const batch = await call({
+        action: 'batch',
+        statements: [
+          { sql: 'ALTER TABLE "records" RENAME TO "records_renamed"' },
+          { sql: 'ALTER TABLE "records_renamed" RENAME TO "records"' },
+        ],
+      });
+      return {
+        batch,
+        tableAfter: rows(
+          await exec(
+            'SELECT name FROM sqlite_master WHERE type = ? AND name = ?',
+            ['table', 'records'],
+            'all',
+          ),
+        ),
+        indexesAfter: rows(await exec('PRAGMA index_list("records")', undefined, 'all')),
+        recordAfter: rows(
+          await exec('SELECT id, value FROM "records" WHERE id = ?', ['r1'], 'all'),
+        ),
+      };
+    },
+    (result) => [
+      check(
+        'table rename batch succeeded',
+        result.batch.results?.every((item) => item.success) ?? false,
+        true,
+      ),
+      check('original physical table name restored', result.tableAfter, [{ name: 'records' }]),
+      check(
+        'table rename preserved both explicit indexes',
+        result.indexesAfter
+          .map((item) => item.name)
+          .filter((name) => ['records_id_idx', 'records_value_unique'].includes(name))
+          .sort(),
+        ['records_id_idx', 'records_value_unique'],
+      ),
+      check('table rename preserved record data', result.recordAfter, [
+        { id: 'r1', value: 'preserve-me' },
+      ]),
+    ],
   );
 
   await record(
@@ -370,14 +443,39 @@ try {
     ],
   );
 
-  await record('rename-column-and-add-column', () =>
-    call({
-      action: 'batch',
-      statements: [
-        { sql: 'ALTER TABLE "records" RENAME COLUMN "renamed_value" TO "value"' },
-        { sql: 'ALTER TABLE "records" ADD COLUMN "added" TEXT NOT NULL DEFAULT \'defaulted\'' },
-      ],
-    }),
+  await record(
+    'rename-column-and-add-column',
+    async () => {
+      const batch = await call({
+        action: 'batch',
+        statements: [
+          { sql: 'ALTER TABLE "records" RENAME COLUMN "renamed_value" TO "value"' },
+          { sql: 'ALTER TABLE "records" ADD COLUMN "added" TEXT NOT NULL DEFAULT \'defaulted\'' },
+        ],
+      });
+      return {
+        batch,
+        columnsAfter: rows(await exec('PRAGMA table_xinfo("records")', undefined, 'all')),
+        recordAfter: rows(
+          await exec('SELECT id, value, added FROM "records" WHERE id = ?', ['r1'], 'all'),
+        ),
+      };
+    },
+    (result) => [
+      check(
+        'rename/add column batch succeeded',
+        result.batch.results?.every((item) => item.success) ?? false,
+        true,
+      ),
+      check(
+        'renamed and added columns exist',
+        result.columnsAfter.map((item) => item.name),
+        ['id', 'value', 'added'],
+      ),
+      check('existing row and new-column default preserved', result.recordAfter, [
+        { id: 'r1', value: 'preserve-me', added: 'defaulted' },
+      ]),
+    ],
   );
 
   await record(
@@ -577,18 +675,48 @@ try {
     ],
   );
 
-  await record('sqlite-master-and-pragma-introspection', async () =>
-    call({
-      action: 'statements',
-      statements: [
-        { sql: 'SELECT name, type, sql FROM sqlite_master ORDER BY type, name', mode: 'all' },
-        { sql: 'PRAGMA table_xinfo("records")', mode: 'all' },
-        { sql: 'PRAGMA index_list("records")', mode: 'all' },
-        { sql: 'PRAGMA foreign_key_list("records")', mode: 'all' },
-        { sql: 'PRAGMA foreign_key_check', mode: 'all' },
-        { sql: 'PRAGMA quick_check', mode: 'all' },
-      ],
-    }),
+  await record(
+    'sqlite-master-and-pragma-introspection',
+    () =>
+      call({
+        action: 'statements',
+        statements: [
+          { sql: 'SELECT name, type, sql FROM sqlite_master ORDER BY type, name', mode: 'all' },
+          { sql: 'PRAGMA table_xinfo("records")', mode: 'all' },
+          { sql: 'PRAGMA index_list("records")', mode: 'all' },
+          { sql: 'PRAGMA foreign_key_list("records")', mode: 'all' },
+          { sql: 'PRAGMA foreign_key_check', mode: 'all' },
+          { sql: 'PRAGMA quick_check', mode: 'all' },
+        ],
+      }),
+    (result) => [
+      check(
+        'sqlite_master includes records table and both explicit indexes',
+        rows(result, 0)
+          .filter((item) =>
+            ['records', 'records_id_idx', 'records_value_unique'].includes(item.name),
+          )
+          .map((item) => item.name)
+          .sort(),
+        ['records', 'records_id_idx', 'records_value_unique'],
+      ),
+      check(
+        'table_xinfo exposes expected rebuilt columns',
+        rows(result, 1).map((item) => item.name),
+        ['id', 'value', 'added'],
+      ),
+      check(
+        'index_list exposes both explicit indexes',
+        rows(result, 2)
+          .filter((item) => item.origin === 'c')
+          .map((item) => item.name)
+          .sort(),
+        ['records_id_idx', 'records_value_unique'],
+      ),
+      check('foreign-key introspection is empty for this table', rows(result, 3), []),
+      check('foreign-key-check reports no violations', rows(result, 4), []),
+      check('quick_check reports an intact database', rows(result, 5), [{ quick_check: 'ok' }]),
+    ],
   );
 
   await record(
@@ -651,12 +779,45 @@ try {
     ],
   );
 
-  await record('drop-index-column-and-table', async () => {
-    const dropColumn = await exec('ALTER TABLE "records" DROP COLUMN "added"');
-    const dropIndex = await exec('DROP INDEX "records_value_unique"');
-    const dropTable = await exec('DROP TABLE "records"');
-    return { dropColumn, dropIndex, dropTable };
-  });
+  await record(
+    'drop-index-column-and-table',
+    async () => {
+      const dropColumn = await exec('ALTER TABLE "records" DROP COLUMN "added"');
+      const dropIndex = await exec('DROP INDEX "records_value_unique"');
+      const dropTable = await exec('DROP TABLE "records"');
+      const after = await call({
+        action: 'statements',
+        statements: [
+          {
+            sql: 'SELECT name, type FROM sqlite_master WHERE name IN (?, ?, ?)',
+            values: ['records', 'records_id_idx', 'records_value_unique'],
+            mode: 'all',
+          },
+          {
+            sql: 'SELECT collection_id, name, revision FROM "schema_catalog" WHERE collection_id = ?',
+            values: ['coll_219'],
+            mode: 'all',
+          },
+        ],
+      });
+      return {
+        dropColumn,
+        dropIndex,
+        dropTable,
+        physicalObjectsAfter: rows(after, 0),
+        catalogAfter: rows(after, 1),
+      };
+    },
+    (result) => [
+      check('DROP COLUMN succeeded', result.dropColumn.results?.[0]?.success ?? false, true),
+      check('DROP INDEX succeeded', result.dropIndex.results?.[0]?.success ?? false, true),
+      check('DROP TABLE succeeded', result.dropTable.results?.[0]?.success ?? false, true),
+      check('dropped table and indexes are absent', result.physicalObjectsAfter, []),
+      check('catalog metadata survives physical table drop', result.catalogAfter, [
+        { collection_id: 'coll_219', name: 'sample', revision: 1 },
+      ]),
+    ],
+  );
 
   evidence.guaranteesObserved.push(
     'D1 batch executes the tested multi-statement DDL/catalog sequence in the local Miniflare binding.',
@@ -685,12 +846,20 @@ try {
     (count, state) => count + state.checks.filter((item) => !item.passed).length,
     0,
   );
+  evidence.checkedStateCount = evidence.states.filter(
+    (state) => state.verdict === 'pass' && state.checks.length > 0,
+  ).length;
+  evidence.observationalStateCount = evidence.states.filter(
+    (state) => state.verdict === 'observed',
+  ).length;
   try {
     await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`);
     globalThis.console.log(
       JSON.stringify({
         evidencePath,
         finalStateCount: evidence.states.length,
+        checkedStateCount: evidence.checkedStateCount,
+        observationalStateCount: evidence.observationalStateCount,
         finalVerdict: evidence.finalVerdict,
         fatalError: evidence.fatalError ?? null,
       }),
