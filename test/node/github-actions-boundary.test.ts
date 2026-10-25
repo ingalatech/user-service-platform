@@ -2,6 +2,33 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { parse as parseYaml } from 'yaml';
 
+const expectedCiSteps = [
+  {
+    name: 'Check out',
+    uses: 'actions/checkout@v7',
+    with: {
+      ref: "${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}",
+    },
+  },
+  {
+    name: 'Set up Node.js',
+    uses: 'actions/setup-node@v7',
+    with: { 'node-version-file': '.nvmrc', cache: 'npm' },
+  },
+  { name: 'Install dependencies', run: 'npm ci' },
+  { name: 'Lint (zero warnings)', run: 'npm run lint' },
+  { name: 'Format check', run: 'npm run format:check' },
+  { name: 'Typecheck', run: 'npm run typecheck' },
+  { name: 'OpenAPI drift check', run: 'npm run openapi:check' },
+  { name: 'Admin contract drift check', run: 'npm run admin:contracts:check' },
+  { name: 'Workers runtime tests', run: 'npm run test' },
+  { name: 'Node harness tests', run: 'npm run test:harness' },
+] as const;
+
+function assertAllowedCiSteps(steps: unknown): void {
+  expect(steps).toEqual(expectedCiSteps);
+}
+
 describe('GitHub Actions CI-only boundary (issue #171)', () => {
   const workflowsDir = '.github/workflows';
 
@@ -24,30 +51,29 @@ describe('GitHub Actions CI-only boundary (issue #171)', () => {
     expect(workflow.permissions).toEqual({ contents: 'read' });
   });
 
-  it('runs the repository quality and generated-contract checks', () => {
-    const workflow = readFileSync(`${workflowsDir}/ci.yml`, 'utf8');
+  it('allows exactly the pinned quality-gates steps, commands and order', () => {
+    const workflow = parseYaml(readFileSync(`${workflowsDir}/ci.yml`, 'utf8')) as {
+      jobs?: { gates?: { steps?: unknown } };
+    };
 
-    for (const command of [
-      'npm ci',
-      'npm run lint',
-      'npm run format:check',
-      'npm run typecheck',
-      'npm run openapi:check',
-      'npm run test',
-      'npm run test:harness',
-    ]) {
-      expect(workflow).toContain(command);
-    }
+    assertAllowedCiSteps(workflow.jobs?.gates?.steps);
   });
 
-  it('does not run agents, releases, deployment commands, or require runtime credentials', () => {
-    const workflow = readFileSync(`${workflowsDir}/ci.yml`, 'utf8');
+  it.each([
+    {
+      label: 'a wrapper script step',
+      step: { name: 'Run release wrapper', run: 'node scripts/release-wrapper.mjs' },
+    },
+    {
+      label: 'an unapproved GitHub Action step',
+      step: { name: 'Release action', uses: 'vendor/release-action@v1' },
+    },
+  ])('rejects $label added to the workflow step sequence', ({ step }) => {
+    const wrappedSteps = [...expectedCiSteps.slice(0, 2), step, ...expectedCiSteps.slice(2)];
 
-    expect(workflow).not.toMatch(/opencode|agent:ticket|agent:fix-cycle|review:cycle/i);
-    expect(workflow).not.toMatch(
-      /wrangler\s+(deploy|versions|deployments)|npm run (deploy|promote)/i,
-    );
-    expect(workflow).not.toMatch(/secrets\.|CLOUDFLARE|D1_DATABASE_ID|BETTER_AUTH_SECRET/i);
+    expect(() => {
+      assertAllowedCiSteps(wrappedSteps);
+    }).toThrow();
   });
 
   it('documents local isolated agent work and explicit local releases', () => {
