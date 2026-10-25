@@ -1,13 +1,15 @@
-import { EventEmitter } from 'node:events';
 import { describe, expect, it } from 'vitest';
+import { existsSync } from 'node:fs';
 import { LOCAL_PROFILE } from '../../src/config/index.js';
 import {
+  listPromotionVersionsForSelection,
   preparePromotionVersions,
-  runPromotionSmoke,
-  type PromotionSmokeSpawn,
-} from '../../scripts/promote.js';
+  promotionSmokeCommand,
+  smokeEnvironment,
+} from '../../scripts/deploy/orchestrate.js';
 import type { ResolvedDeployment } from '../../scripts/deploy/environment-config.js';
 import { CONTRACT_SANDBOX_DATABASE_ID } from './deploy-test-utils.js';
+import { TestReleaseProcess } from './release-process-test-adapter.js';
 
 const SANDBOX: ResolvedDeployment = {
   targetKey: 'rch-rugbychampagne',
@@ -31,6 +33,40 @@ const PRODUCTION: ResolvedDeployment = {
 };
 
 describe('promotion CLI version selection', () => {
+  it('keeps remote version listing and interpretation behind release execution', async () => {
+    const processAdapter = new TestReleaseProcess({
+      respond: ({ args }) =>
+        args.includes('versions') && args.includes('list')
+          ? {
+              exitCode: 0,
+              stdout: JSON.stringify([
+                {
+                  id: 'older-v1',
+                  metadata: { created_on: '2026-10-19T12:00:00Z' },
+                  annotations: { 'workers/tag': 'older' },
+                },
+                {
+                  id: 'current-v2',
+                  metadata: { created_on: '2026-10-20T12:00:00Z' },
+                  annotations: { 'workers/tag': 'current' },
+                },
+              ]),
+            }
+          : undefined,
+    });
+
+    const prepared = await listPromotionVersionsForSelection(SANDBOX, processAdapter);
+
+    expect(prepared.versions.map((version) => version.id)).toEqual(['current-v2', 'older-v1']);
+    expect(prepared.display[0]).toContain('current — current-v2');
+    expect(processAdapter.calls).toHaveLength(1);
+    const configArgument = processAdapter.calls[0]?.args.indexOf('--config') ?? -1;
+    const configPath =
+      configArgument < 0 ? undefined : processAdapter.calls[0]?.args[configArgument + 1];
+    expect(configPath).toBeDefined();
+    if (configPath !== undefined) expect(existsSync(configPath)).toBe(false);
+  });
+
   it('shows every version in descending order as one-line clean options', () => {
     const prepared = preparePromotionVersions(
       Array.from({ length: 12 }, (_, index) => ({
@@ -74,45 +110,25 @@ describe('promotion CLI version selection', () => {
     expect(prepared.display.every((choice) => !choice.includes('technical annotation'))).toBe(true);
   });
 
-  it('spawns environment-specific promotion smokes with only versioned URLs', async () => {
-    const invocations: {
-      readonly command: string;
-      readonly args: readonly string[];
-      readonly env: NodeJS.ProcessEnv;
-    }[] = [];
-    const spawnFn: PromotionSmokeSpawn = (command, args, options) => {
-      const child = new EventEmitter();
-      invocations.push({ command, args, env: options.env });
-      queueMicrotask(() => child.emit('close', 0));
-      return child;
-    };
+  it('selects environment-specific promotion smoke commands with only versioned URLs', () => {
     process.env.SMOKE_SANDBOX_BASE_URL = 'https://inherited.example.test';
     process.env.SMTP_PASSWORD = 'must-not-enter-smoke';
     try {
-      await runPromotionSmoke(SANDBOX, SANDBOX.workerUrl, spawnFn);
-      await runPromotionSmoke(PRODUCTION, PRODUCTION.workerUrl, spawnFn);
+      expect(promotionSmokeCommand('sandbox')).toEqual(['npm', ['run', 'smoke:readiness']]);
+      expect(promotionSmokeCommand('production')).toEqual(['npm', ['run', 'smoke:production']]);
+      expect(smokeEnvironment({ ...SANDBOX, workerUrl: 'https://candidate.example.test' })).toEqual(
+        {
+          PATH: process.env.PATH,
+          SMOKE_SANDBOX_BASE_URL: 'https://candidate.example.test',
+        },
+      );
+      expect(smokeEnvironment(PRODUCTION)).toEqual({
+        PATH: process.env.PATH,
+        SMOKE_PRODUCTION_BASE_URL: 'https://production.example.test',
+      });
     } finally {
       delete process.env.SMOKE_SANDBOX_BASE_URL;
       delete process.env.SMTP_PASSWORD;
     }
-
-    expect(invocations).toEqual([
-      {
-        command: 'npm',
-        args: ['run', 'smoke:readiness'],
-        env: {
-          PATH: process.env.PATH,
-          SMOKE_SANDBOX_BASE_URL: 'https://sandbox.example.test',
-        },
-      },
-      {
-        command: 'npm',
-        args: ['run', 'smoke:production'],
-        env: {
-          PATH: process.env.PATH,
-          SMOKE_PRODUCTION_BASE_URL: 'https://production.example.test',
-        },
-      },
-    ]);
   });
 });

@@ -1,9 +1,13 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { DeploymentTarget, ResolvedDeployment } from './environment-config.js';
 import {
   assertRequiredSecretBindings,
   parseWorkerVersionDetails,
   parseWorkerVersions,
   type WorkerVersionDetails,
+  type WorkerVersionSummary,
 } from './versions.js';
 import {
   buildVersionManifest,
@@ -12,6 +16,14 @@ import {
   versionLabel,
 } from './manifest.js';
 import { isAbsentWorkerError } from './provision-worker.js';
+import { formatPreflightError, preflightFailed, runPreflight } from './preflight.js';
+import {
+  removeTempWranglerConfig,
+  resolveRepoRoot,
+  writeTempPromotionWranglerConfig,
+  writeTempWranglerConfig,
+} from './materialize.js';
+import { releaseEnvironment, type ReleaseProcess, type ReleaseProcessOptions } from './process.js';
 import {
   drainSessionFailureTail,
   parseTailLines,
@@ -61,34 +73,10 @@ export interface DeployRequest {
   readonly dryRun?: boolean;
 }
 
-export interface DeployCommandResult {
-  readonly exitCode: number;
-  readonly stdout?: string;
-  readonly stderr?: string;
-}
-
-export interface DeployCommandOptions {
-  readonly env?: NodeJS.ProcessEnv;
-}
-
-export type DeployCommandRunner = (
-  command: string,
-  args: string[],
-  options?: DeployCommandOptions,
-) => Promise<DeployCommandResult>;
-
 export interface PromotionRequest {
   readonly resolved: DeploymentTarget;
   readonly versionId: string;
   readonly confirm?: string;
-}
-
-export interface PromotionIo {
-  readonly materialize: (resolved: DeploymentTarget) => string;
-  readonly cleanup: (path: string) => void;
-  readonly preflight: (resolved: DeploymentTarget) => Promise<void>;
-  readonly log: (message: string) => void;
-  readonly smoke: (resolved: DeploymentTarget, versionUrl: string) => Promise<void>;
 }
 
 export function promotionSmokeCommand(
@@ -110,17 +98,101 @@ export function smokeEnvironment(resolved: DeploymentTarget): NodeJS.ProcessEnv 
   };
 }
 
+export function preparePromotionVersions(value: unknown): {
+  readonly versions: WorkerVersionSummary[];
+  readonly display: string[];
+} {
+  const versions = parseWorkerVersions(value);
+  const latest = [...versions].sort((left, right) => right.createdOn.localeCompare(left.createdOn));
+  return {
+    versions: latest,
+    display: latest.map(
+      (version) =>
+        `${version.tag ?? 'untagged'} — ${version.id} — ${new Date(version.createdOn).toISOString()}`,
+    ),
+  };
+}
+
+// Initial version selection is part of release execution too. Keep target
+// config materialization, process invocation, payload parsing and cleanup
+// together; the CLI receives only safe display labels and immutable IDs.
+export async function listPromotionVersionsForSelection(
+  target: DeploymentTarget,
+  processAdapter: ReleaseProcess,
+): Promise<{ readonly versions: WorkerVersionSummary[]; readonly display: string[] }> {
+  const directory = mkdtempSync(join(tmpdir(), 'user-service-promote-select-'));
+  let configPath: string | undefined;
+  try {
+    configPath = writeTempPromotionWranglerConfig(target, directory);
+    const listed = await processAdapter.run(
+      'npx',
+      ['wrangler', 'versions', 'list', '--json', '--config', configPath],
+      { env: releaseEnvironment(target) },
+    );
+    if (listed.exitCode !== 0) throw new Error('Unable to list Worker versions.');
+    let value: unknown;
+    try {
+      value = JSON.parse(listed.stdout ?? '[]') as unknown;
+    } catch {
+      throw new Error('Unable to read Worker versions.');
+    }
+    const prepared = preparePromotionVersions(value);
+    if (prepared.versions.length === 0) throw new Error('No Worker versions are available.');
+    return prepared;
+  } finally {
+    if (configPath !== undefined) removeTempWranglerConfig(configPath);
+    removeTempReleaseDirectory(directory);
+  }
+}
+
+async function runReleasePreflight(
+  resolved: DeploymentTarget,
+  processAdapter: ReleaseProcess,
+): Promise<void> {
+  const checks = await runPreflight(
+    { resolved },
+    {
+      nodeVersion: process.version,
+      commands: [],
+      run: async (command, args) => {
+        const result = await processAdapter.run(command, args, {
+          env: releaseEnvironment(resolved),
+        });
+        return {
+          exitCode: result.exitCode,
+          stdout: result.stdout ?? '',
+          ...(result.stderr === undefined ? {} : { stderr: result.stderr }),
+        };
+      },
+    },
+  );
+  if (preflightFailed(checks)) throw formatPreflightError(checks);
+}
+
+function tempReleaseDirectory(prefix: string): string {
+  return mkdtempSync(join(tmpdir(), prefix));
+}
+
+function removeTempReleaseDirectory(directory: string): void {
+  try {
+    rmSync(directory, { recursive: true, force: true });
+  } catch {
+    // Temporary-directory hygiene never masks the release outcome.
+  }
+}
+
 export async function runPromotion(
   request: PromotionRequest,
-  io: PromotionIo,
-  runner: DeployCommandRunner,
+  processAdapter: ReleaseProcess,
 ): Promise<void> {
   const versionId = request.versionId.trim();
   if (!/^[a-zA-Z0-9-]+$/.test(versionId)) {
     throw new Error('A valid immutable Worker Version ID must be selected.');
   }
-  const configPath = io.materialize(request.resolved);
+  const directory = tempReleaseDirectory('user-service-promote-');
+  let configPath: string | undefined;
   try {
+    configPath = writeTempPromotionWranglerConfig(request.resolved, directory);
     if (
       request.resolved.environment === 'production' &&
       request.confirm !== request.resolved.workerName
@@ -129,15 +201,12 @@ export async function runPromotion(
         `Refusing production promotion; type the exact Worker name "${request.resolved.workerName}" to confirm.`,
       );
     }
-    await io.preflight(request.resolved);
-    const listed = await runner('npx', [
-      'wrangler',
-      'versions',
-      'list',
-      '--json',
-      '--config',
-      configPath,
-    ]);
+    await runReleasePreflight(request.resolved, processAdapter);
+    const listed = await processAdapter.run(
+      'npx',
+      ['wrangler', 'versions', 'list', '--json', '--config', configPath],
+      { env: releaseEnvironment(request.resolved) },
+    );
     if (listed.exitCode !== 0) {
       throw new Error('list-worker-versions failed.');
     }
@@ -150,15 +219,11 @@ export async function runPromotion(
     if (!parseWorkerVersions(versions).some((version) => version.id === versionId)) {
       throw new Error('The selected immutable Worker Version ID is not available for this Worker.');
     }
-    const viewed = await runner('npx', [
-      'wrangler',
-      'versions',
-      'view',
-      '--json',
-      versionId,
-      '--config',
-      configPath,
-    ]);
+    const viewed = await processAdapter.run(
+      'npx',
+      ['wrangler', 'versions', 'view', '--json', versionId, '--config', configPath],
+      { env: releaseEnvironment(request.resolved) },
+    );
     if (viewed.exitCode !== 0) throw new Error('view-worker-version failed.');
     let versionDetailsValue: unknown;
     try {
@@ -176,21 +241,24 @@ export async function runPromotion(
       requiredSecretNamesForTransport(manifest.mailTransport),
     );
     const versionUrl = versionUrlForVerifiedVersion(request.resolved, versionDetails);
-    await io.smoke(request.resolved, versionUrl);
-    const promoted = await runner('npx', [
-      'wrangler',
-      'versions',
-      'deploy',
-      `${versionId}@100%`,
-      '--config',
-      configPath,
-    ]);
+    const [smokeCommand, smokeArgs] = promotionSmokeCommand(request.resolved.environment);
+    const smoke = await processAdapter.run(smokeCommand, [...smokeArgs], {
+      env: smokeEnvironment({ ...request.resolved, workerUrl: versionUrl }),
+      output: 'inherit',
+    });
+    if (smoke.exitCode !== 0) throw new Error('Sandbox smoke failed.');
+    const promoted = await processAdapter.run(
+      'npx',
+      ['wrangler', 'versions', 'deploy', `${versionId}@100%`, '--config', configPath],
+      { env: releaseEnvironment(request.resolved), output: 'inherit' },
+    );
     if (promoted.exitCode !== 0) {
       throw new Error('promote-worker-version failed.');
     }
-    io.log(`promoted worker=${request.resolved.workerName} version=${versionId}`);
+    console.log(`promoted worker=${request.resolved.workerName} version=${versionId}`);
   } finally {
-    io.cleanup(configPath);
+    if (configPath !== undefined) removeTempWranglerConfig(configPath);
+    removeTempReleaseDirectory(directory);
   }
 }
 
@@ -238,25 +306,6 @@ export function versionUrlForVerifiedVersion(
   return `https://${versionPrefix}-${target.workerName}.${subdomain}`;
 }
 
-export interface DeployIo {
-  readonly materialize: (resolved: ResolvedDeployment) => string;
-  readonly cleanup: (path: string) => void;
-  readonly preflight: (resolved: ResolvedDeployment) => Promise<void>;
-  readonly log: (message: string) => void;
-  readonly sourceMetadata?: () => Promise<{ readonly commit: string; readonly branch: string }>;
-  readonly confirmFirstDeployment?: (workerName: string) => Promise<boolean>;
-  // Optional bounded diagnostic tail for the sandbox smoke window (ticket
-  // #96). When present and the environment is sandbox, the deploy boundary
-  // starts the tail immediately before `smoke-sandbox` and always terminates
-  // it afterward via `stop()`. Production never receives a tail. Absence of
-  // the hook (older harnesses, dry runs without tail support) runs the smoke
-  // unchanged.
-  readonly startSessionFailureTail?: (
-    resolved: ResolvedDeployment,
-    configPath: string,
-  ) => Promise<SessionFailureTailHandle>;
-}
-
 // The only accepted production confirmation is the target Worker name
 // itself: the operator must name the exact production Worker being mutated.
 export function productionConfirmFor(resolved: DeploymentTarget): string {
@@ -293,17 +342,14 @@ function assertProductionConfirmed(request: DeployRequest): void {
   }
 }
 
-async function collectTailLines(
-  tail: SessionFailureTailHandle | null,
-  io: DeployIo,
-): Promise<readonly string[]> {
+async function collectTailLines(tail: SessionFailureTailHandle | null): Promise<readonly string[]> {
   if (tail === null) {
     return [];
   }
   try {
     return await tail.stop();
   } catch {
-    io.log('sandbox smoke diagnostic: session failure tail stop failed');
+    console.log('sandbox smoke diagnostic: session failure tail stop failed');
     return [];
   }
 }
@@ -328,13 +374,12 @@ function tailExitedBeforeSmoke(tail: SessionFailureTailHandle): boolean {
 // optional `requestId`/`environment` may be logged.
 async function collectDrainedTailLines(
   tail: SessionFailureTailHandle,
-  io: DeployIo,
 ): Promise<{ readonly lines: readonly string[]; readonly liveThroughDrain: boolean }> {
   try {
     const outcome = await drainSessionFailureTail(tail);
     return { lines: outcome.lines, liveThroughDrain: outcome.liveThroughDrain };
   } catch {
-    io.log('sandbox smoke diagnostic: session failure tail stop failed');
+    console.log('sandbox smoke diagnostic: session failure tail stop failed');
     return { lines: [], liveThroughDrain: false };
   }
 }
@@ -352,63 +397,64 @@ async function collectDrainedTailLines(
 async function runSandboxSmokeWithDiagnostics(
   resolved: ResolvedDeployment,
   configPath: string,
-  io: DeployIo,
-  runner: DeployCommandRunner,
+  processAdapter: ReleaseProcess,
 ): Promise<void> {
   let tail: SessionFailureTailHandle | null = null;
-  if (io.startSessionFailureTail !== undefined) {
+  if (processAdapter.startSessionFailureTail !== undefined) {
     try {
-      tail = await io.startSessionFailureTail(resolved, configPath);
+      tail = await processAdapter.startSessionFailureTail(resolved, configPath);
     } catch {
-      tail = null;
-      io.log(
+      console.log(
         'sandbox smoke diagnostic: session failure tail unavailable ' +
           '(continuing smoke without diagnostics)',
       );
     }
   }
   try {
-    await runStep('smoke-sandbox', 'npm', ['run', 'smoke:health'], runner, {
+    await runStep('smoke-sandbox', 'npm', ['run', 'smoke:health'], processAdapter, {
       env: smokeEnvironment(resolved),
+      output: 'inherit',
     });
   } catch (smokeError) {
     if (tail !== null && tailExitedBeforeSmoke(tail)) {
-      await collectTailLines(tail, io);
-      io.log('sandbox smoke diagnostic: session failure tail unavailable (exited before smoke)');
+      await collectTailLines(tail);
+      console.log(
+        'sandbox smoke diagnostic: session failure tail unavailable (exited before smoke)',
+      );
       throw smokeError;
     }
     if (tail !== null) {
-      const drained = await collectDrainedTailLines(tail, io);
+      const drained = await collectDrainedTailLines(tail);
       const events = parseTailLines(drained.lines);
       if (events.length > 0) {
-        io.log(summarizeSessionFailures(events));
+        console.log(summarizeSessionFailures(events));
       } else if (drained.liveThroughDrain) {
-        io.log(
+        console.log(
           `${summarizeSessionFailures([])} (tail live through ${String(SESSION_FAILURE_TAIL_DRAIN_MS)}ms drain)`,
         );
       } else {
-        io.log(`${summarizeSessionFailures([])} (tail exited during drain)`);
+        console.log(`${summarizeSessionFailures([])} (tail exited during drain)`);
       }
       throw smokeError;
     }
-    io.log(summarizeSessionFailures(parseTailLines(await collectTailLines(tail, io))));
+    console.log(summarizeSessionFailures(parseTailLines(await collectTailLines(tail))));
     throw smokeError;
   }
-  const events = parseTailLines(await collectTailLines(tail, io));
+  const events = parseTailLines(await collectTailLines(tail));
   if (events.length > 0) {
-    io.log(summarizeSessionFailures(events));
+    console.log(summarizeSessionFailures(events));
   } else {
-    io.log('sandbox smoke diagnostic: no session.resolve-failed event observed');
+    console.log('sandbox smoke diagnostic: no session.resolve-failed event observed');
   }
 }
 async function runStep(
   step: DeploymentStep,
   command: string,
   args: string[],
-  runner: DeployCommandRunner,
-  options?: DeployCommandOptions,
+  processAdapter: ReleaseProcess,
+  options?: ReleaseProcessOptions,
 ): Promise<void> {
-  const result = await runner(command, args, options);
+  const result = await processAdapter.run(command, args, options);
   if (result.exitCode !== 0) {
     throw new Error(`${step} failed (exit ${String(result.exitCode)}).`);
   }
@@ -421,34 +467,33 @@ export interface DeploymentOutcome {
 
 export async function runDeployment(
   request: DeployRequest,
-  io: DeployIo,
-  runner: DeployCommandRunner,
+  processAdapter: ReleaseProcess,
+  confirmFirstDeployment: (workerName: string) => Promise<boolean> = () => Promise.resolve(false),
 ): Promise<DeploymentOutcome> {
-  const configPath = io.materialize(request.resolved);
+  const directory = tempReleaseDirectory('user-service-deploy-');
+  let configPath: string | undefined;
   try {
+    configPath = writeTempWranglerConfig(request.resolved, directory);
     assertProductionConfirmed(request);
-    await io.preflight(request.resolved);
+    await runReleasePreflight(request.resolved, processAdapter);
     let steps = planDeploymentSteps(request);
     if (request.dryRun === true) {
-      io.log(
+      console.log(
         `dry-run target=${request.resolved.targetKey} environment=${request.resolved.environment} worker=${request.resolved.workerName} database=${request.resolved.databaseName} steps=${steps.join(',')}`,
       );
       return { workerName: request.resolved.workerName, steps };
     }
-    io.log(
+    console.log(
       `deploy target=${request.resolved.targetKey} environment=${request.resolved.environment} worker=${request.resolved.workerName}`,
     );
     // Determine whether this is the Cloudflare-required active first deploy
     // before building or applying migrations: the operator's confirmation
     // must precede every remote mutation.
-    const versions = await runner('npx', [
-      'wrangler',
-      'versions',
-      'list',
-      '--json',
-      '--config',
-      configPath,
-    ]);
+    const versions = await processAdapter.run(
+      'npx',
+      ['wrangler', 'versions', 'list', '--json', '--config', configPath],
+      { env: releaseEnvironment(request.resolved) },
+    );
     if (versions.exitCode !== 0 && !isAbsentWorkerError(versions.stderr)) {
       throw new Error('list-worker-versions failed.');
     }
@@ -464,7 +509,20 @@ export async function runDeployment(
       throw new Error('Unable to determine whether the Worker already exists.');
     }
     const isFirstDeployment = existingVersions.length === 0;
-    const source = (await io.sourceMetadata?.()) ?? { commit: 'unknown', branch: 'unknown' };
+    const [commit, branch] = await Promise.all([
+      processAdapter.run('git', ['rev-parse', '--verify', 'HEAD^{commit}'], {
+        cwd: resolveRepoRoot(),
+      }),
+      processAdapter.run('git', ['branch', '--show-current'], { cwd: resolveRepoRoot() }),
+    ]);
+    if (commit.exitCode !== 0 || branch.exitCode !== 0) {
+      throw new Error('Unable to determine release source metadata.');
+    }
+    const source = {
+      commit: (commit.stdout ?? '').trim(),
+      branch: (branch.stdout ?? '').trim() || 'detached',
+    };
+    if (source.commit.length === 0) throw new Error('Unable to determine release source metadata.');
     const manifest = buildVersionManifest(request.resolved.applicationConfig, {
       branch: source.branch,
       commit: source.commit,
@@ -473,10 +531,10 @@ export async function runDeployment(
     const manifestArguments = ['--message', manifest.message, '--tag', manifest.tag];
     steps = planDeploymentSteps(request, { firstDeployment: isFirstDeployment });
     if (isFirstDeployment) {
-      io.log(
+      console.log(
         `first deployment for worker=${request.resolved.workerName} will activate its first version; Cloudflare does not support an inactive initial version`,
       );
-      if ((await io.confirmFirstDeployment?.(request.resolved.workerName)) !== true) {
+      if (!(await confirmFirstDeployment(request.resolved.workerName))) {
         throw new Error(
           'First deployment cancelled; explicit activation confirmation is required.',
         );
@@ -485,50 +543,66 @@ export async function runDeployment(
     // Administration SPA assets (ticket #124, ADR-0012): rebuild `admin/dist`
     // from versioned sources before any remote mutation so every deployment
     // serves the current built assets through the materialized ASSETS binding.
-    await runStep('build-admin-assets', 'npm', ['run', 'build:admin'], runner);
+    const commandOptions = {
+      env: releaseEnvironment(request.resolved),
+      output: 'inherit' as const,
+    };
+    await runStep(
+      'build-admin-assets',
+      'npm',
+      ['run', 'build:admin'],
+      processAdapter,
+      commandOptions,
+    );
     // Local migration validation uses the base config (no --config): it
     // proves the versioned migrations apply before any remote mutation.
     await runStep(
       'validate-migrations-local',
       'npx',
       ['wrangler', 'd1', 'migrations', 'apply', 'DB', '--local'],
-      runner,
+      processAdapter,
+      commandOptions,
     );
     await runStep(
       'migrate-remote',
       'npx',
       ['wrangler', 'd1', 'migrations', 'apply', 'DB', '--remote', '--config', configPath],
-      runner,
+      processAdapter,
+      commandOptions,
     );
     if (isFirstDeployment) {
       await runStep(
         'deploy-worker',
         'npx',
         ['wrangler', 'deploy', ...manifestArguments, '--config', configPath],
-        runner,
+        processAdapter,
+        commandOptions,
       );
     } else {
       await runStep(
         'deploy-worker',
         'npx',
         ['wrangler', 'versions', 'upload', ...manifestArguments, '--config', configPath],
-        runner,
+        processAdapter,
+        commandOptions,
       );
     }
     await runStep(
       'record-deployment',
       'npx',
       ['wrangler', 'deployments', 'list', '--config', configPath],
-      runner,
+      processAdapter,
+      commandOptions,
     );
     if (request.resolved.environment === 'sandbox' && isFirstDeployment) {
-      await runSandboxSmokeWithDiagnostics(request.resolved, configPath, io, runner);
+      await runSandboxSmokeWithDiagnostics(request.resolved, configPath, processAdapter);
     } else if (request.resolved.environment === 'sandbox') {
-      io.log('candidate uploaded; stable-origin smoke is deferred until promotion');
+      console.log('candidate uploaded; stable-origin smoke is deferred until promotion');
     }
-    io.log(`deployed worker=${request.resolved.workerName}`);
+    console.log(`deployed worker=${request.resolved.workerName}`);
     return { workerName: request.resolved.workerName, steps };
   } finally {
-    io.cleanup(configPath);
+    if (configPath !== undefined) removeTempWranglerConfig(configPath);
+    removeTempReleaseDirectory(directory);
   }
 }

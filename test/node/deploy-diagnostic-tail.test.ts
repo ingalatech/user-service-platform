@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LOCAL_PROFILE } from '../../src/config/index.js';
 import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -18,14 +18,13 @@ import {
   summarizeSessionFailures,
   withTimeout,
 } from '../../scripts/deploy/diagnostic-tail.js';
-import {
-  planDeploymentSteps,
-  runDeployment,
-  type DeployCommandRunner,
-  type DeployIo,
-} from '../../scripts/deploy/orchestrate.js';
+import { planDeploymentSteps, runDeployment } from '../../scripts/deploy/orchestrate.js';
 import type { ResolvedDeployment } from '../../scripts/deploy/environment-config.js';
 import { CONTRACT_SANDBOX_DATABASE_ID } from './deploy-test-utils.js';
+import {
+  TestReleaseProcess,
+  type TestReleaseProcessOptions,
+} from './release-process-test-adapter.js';
 
 // Seams under test (ticket #96, ADR-0009):
 // 1. `scripts/deploy/diagnostic-tail.ts` — pure whitelist boundary for the
@@ -59,6 +58,38 @@ const DIRECT = JSON.stringify({
   requestId: 'req-123',
   environment: 'sandbox',
 });
+const diagnosticLogs: string[] = [];
+
+beforeEach(() => {
+  diagnosticLogs.length = 0;
+  vi.spyOn(console, 'log').mockImplementation((...args: unknown[]) => {
+    diagnosticLogs.push(args.map(String).join(' '));
+  });
+});
+
+afterEach(() => vi.restoreAllMocks());
+
+function diagnosticProcess(
+  options: {
+    readonly smokeFails?: boolean;
+    readonly startSessionFailureTail?: TestReleaseProcessOptions['startSessionFailureTail'];
+  } = {},
+): TestReleaseProcess {
+  return new TestReleaseProcess({
+    respond: ({ command, args }) => {
+      if (args.includes('versions') && args.includes('list')) {
+        return { exitCode: 0, stdout: '[]' };
+      }
+      if (command === 'npm' && args.includes('smoke:health')) {
+        return { exitCode: options.smokeFails === true ? 1 : 0 };
+      }
+      return undefined;
+    },
+    ...(options.startSessionFailureTail === undefined
+      ? {}
+      : { startSessionFailureTail: options.startSessionFailureTail }),
+  });
+}
 
 function envelopeWith(message: string): string {
   return JSON.stringify({
@@ -221,9 +252,7 @@ describe('session failure tail bounds (ticket #96)', () => {
 
 describe('sandbox smoke diagnostic tail lifecycle (ticket #96)', () => {
   interface TailHarness {
-    io: DeployIo;
-    runner: DeployCommandRunner;
-    logs: string[];
+    process: TestReleaseProcess;
     started: number;
     stopped: number;
     tailLines: string[];
@@ -235,51 +264,49 @@ describe('sandbox smoke diagnostic tail lifecycle (ticket #96)', () => {
     tailLines?: string[];
     startFails?: boolean;
   }): TailHarness {
-    const harness: TailHarness = {
-      io: undefined as unknown as DeployIo,
-      runner: (command, args) => {
-        if (args.includes('versions') && args.includes('list')) {
-          return Promise.resolve({ exitCode: 0, stdout: '[]' });
-        }
-        if (command === 'npm' && args.join(' ').includes('smoke:health')) {
-          if (options.smokeFails === true) {
-            return Promise.resolve({ exitCode: 1 });
-          }
-          return Promise.resolve({ exitCode: 0 });
-        }
-        return Promise.resolve({ exitCode: 0 });
-      },
-      logs: [],
+    const state = {
       started: 0,
       stopped: 0,
       tailLines: options.tailLines ?? [],
       startFails: options.startFails ?? false,
     };
-    harness.io = {
-      materialize: () => '/tmp/wrangler.tail-test.json',
-      cleanup: () => undefined,
-      preflight: () => Promise.resolve(undefined),
-      confirmFirstDeployment: () => Promise.resolve(true),
-      log: (message) => {
-        harness.logs.push(message);
+    const process = new TestReleaseProcess({
+      respond: ({ command, args }) => {
+        if (args.includes('versions') && args.includes('list')) {
+          return { exitCode: 0, stdout: '[]' };
+        }
+        if (command === 'npm' && args.includes('smoke:health')) {
+          return { exitCode: options.smokeFails === true ? 1 : 0 };
+        }
+        return undefined;
       },
       startSessionFailureTail: () => {
-        harness.started += 1;
-        if (harness.startFails) {
+        state.started += 1;
+        if (state.startFails) {
           return Promise.reject(new Error('tail unavailable'));
         }
         return Promise.resolve({
           exitedBeforeSmoke: false,
           isLive: () => true,
-          peekLines: () => [...harness.tailLines],
+          peekLines: () => [...state.tailLines],
           stop: () => {
-            harness.stopped += 1;
-            return Promise.resolve([...harness.tailLines]);
+            state.stopped += 1;
+            return Promise.resolve([...state.tailLines]);
           },
         });
       },
+    });
+    return {
+      process,
+      get started() {
+        return state.started;
+      },
+      get stopped() {
+        return state.stopped;
+      },
+      tailLines: state.tailLines,
+      startFails: state.startFails,
     };
-    return harness;
   }
 
   it('keeps sandbox smoke as the last planned step', () => {
@@ -291,28 +318,28 @@ describe('sandbox smoke diagnostic tail lifecycle (ticket #96)', () => {
       smokeFails: true,
       tailLines: [JSON.stringify({ event: 'session.resolve-failed', phase: 'session' })],
     });
-    await expect(runDeployment({ resolved: SANDBOX }, harness.io, harness.runner)).rejects.toThrow(
-      /smoke-sandbox/,
-    );
+    await expect(
+      runDeployment({ resolved: SANDBOX }, harness.process, () => Promise.resolve(true)),
+    ).rejects.toThrow(/smoke-sandbox/);
     expect(harness.started).toBe(1);
     expect(harness.stopped).toBe(1);
-    expect(harness.logs.join('\n')).toMatch(/session/);
+    expect(diagnosticLogs.join('\n')).toMatch(/session/);
   });
 
   it('reports phase unavailable instead of dumping unfiltered logs when smoke fails with no event', async () => {
     const harness = createTailHarness({ smokeFails: true, tailLines: [] });
-    await expect(runDeployment({ resolved: SANDBOX }, harness.io, harness.runner)).rejects.toThrow(
-      /smoke-sandbox/,
-    );
+    await expect(
+      runDeployment({ resolved: SANDBOX }, harness.process, () => Promise.resolve(true)),
+    ).rejects.toThrow(/smoke-sandbox/);
     expect(harness.stopped).toBe(1);
-    const transcript = harness.logs.join('\n');
+    const transcript = diagnosticLogs.join('\n');
     expect(transcript).toMatch(/phase unavailable/i);
   });
 
   it('does not fail a successful smoke when no diagnostic event was observed', async () => {
     const harness = createTailHarness({ smokeFails: false, tailLines: [] });
     await expect(
-      runDeployment({ resolved: SANDBOX }, harness.io, harness.runner),
+      runDeployment({ resolved: SANDBOX }, harness.process, () => Promise.resolve(true)),
     ).resolves.toMatchObject({ workerName: SANDBOX.workerName });
     expect(harness.started).toBe(1);
     expect(harness.stopped).toBe(1);
@@ -321,7 +348,7 @@ describe('sandbox smoke diagnostic tail lifecycle (ticket #96)', () => {
   it('still runs smoke when tail startup fails', async () => {
     const harness = createTailHarness({ smokeFails: false, startFails: true });
     await expect(
-      runDeployment({ resolved: SANDBOX }, harness.io, harness.runner),
+      runDeployment({ resolved: SANDBOX }, harness.process, () => Promise.resolve(true)),
     ).resolves.toMatchObject({ workerName: SANDBOX.workerName });
     expect(harness.started).toBe(1);
     expect(harness.stopped).toBe(0);
@@ -337,8 +364,8 @@ describe('sandbox smoke diagnostic tail lifecycle (ticket #96)', () => {
     };
     await runDeployment(
       { resolved: production, confirm: production.workerName },
-      harness.io,
-      harness.runner,
+      harness.process,
+      () => Promise.resolve(true),
     );
     expect(harness.started).toBe(0);
     expect(harness.stopped).toBe(0);
@@ -647,47 +674,32 @@ describe('smoke failure liveness (ticket #100)', () => {
   });
 
   it('rejects a failed smoke after an asynchronous tail stop with the diagnostic first', async () => {
-    const logs: string[] = [];
     let stopped = 0;
-    const io: DeployIo = {
-      materialize: () => '/tmp/wrangler.tail-liveness.json',
-      cleanup: () => undefined,
-      preflight: () => Promise.resolve(undefined),
-      confirmFirstDeployment: () => Promise.resolve(true),
-      log: (message) => {
-        logs.push(message);
-      },
-      startSessionFailureTail: () =>
-        Promise.resolve({
-          exitedBeforeSmoke: false,
-          isLive: () => true,
-          peekLines: () => [],
-          stop: () => {
-            stopped += 1;
-            // Teardown is asynchronous in production (SIGTERM grace, stream
-            // flush); the deploy must stay alive through it and still reject.
-            return new Promise<readonly string[]>((resolvePromise) => {
-              setTimeout(() => {
-                resolvePromise([
-                  JSON.stringify({ event: 'session.resolve-failed', phase: 'session' }),
-                ]);
-              }, 50);
-            });
-          },
-        }),
-    };
-    const runner: DeployCommandRunner = (command, args) => {
-      if (args.includes('versions') && args.includes('list')) {
-        return Promise.resolve({ exitCode: 0, stdout: '[]' });
-      }
-      if (command === 'npm' && args.join(' ').includes('smoke:health')) {
-        return Promise.resolve({ exitCode: 1 });
-      }
-      return Promise.resolve({ exitCode: 0 });
-    };
-    await expect(runDeployment({ resolved: SANDBOX }, io, runner)).rejects.toThrow(/smoke-sandbox/);
+    const processAdapter = diagnosticProcess({
+      smokeFails: true,
+      startSessionFailureTail: () => ({
+        exitedBeforeSmoke: false,
+        isLive: () => true,
+        peekLines: () => [],
+        stop: () => {
+          stopped += 1;
+          // Teardown is asynchronous in production (SIGTERM grace, stream
+          // flush); the deploy must stay alive through it and still reject.
+          return new Promise<readonly string[]>((resolvePromise) => {
+            setTimeout(() => {
+              resolvePromise([
+                JSON.stringify({ event: 'session.resolve-failed', phase: 'session' }),
+              ]);
+            }, 50);
+          });
+        },
+      }),
+    });
+    await expect(
+      runDeployment({ resolved: SANDBOX }, processAdapter, () => Promise.resolve(true)),
+    ).rejects.toThrow(/smoke-sandbox/);
     expect(stopped).toBe(1);
-    const transcript = logs.join('\n');
+    const transcript = diagnosticLogs.join('\n');
     expect(transcript).toMatch(/sandbox smoke diagnostic/);
     expect(transcript).toMatch(/session/);
     // The failure path rethrows before the success summary: no green
@@ -706,26 +718,6 @@ describe('sandbox diagnostic tail post-failure drain (ticket #102)', () => {
   const EXIT_IMMEDIATELY = 'process.exit(1);';
   const DELAYED_EVENT = (delayMs: number, phase = 'session'): string =>
     `setTimeout(() => console.log(JSON.stringify({ event: 'session.resolve-failed', phase: '${phase}' })), ${String(delayMs)}); setInterval(() => undefined, 50);`;
-
-  function failingRunner(): DeployCommandRunner {
-    return (command, args) => {
-      if (args.includes('versions') && args.includes('list')) {
-        return Promise.resolve({ exitCode: 0, stdout: '[]' });
-      }
-      if (command === 'npm' && args.join(' ').includes('smoke:health')) {
-        return Promise.resolve({ exitCode: 1 });
-      }
-      return Promise.resolve({ exitCode: 0 });
-    };
-  }
-
-  function passingRunner(): DeployCommandRunner {
-    return (_command, args) =>
-      Promise.resolve({
-        exitCode: 0,
-        ...(args.includes('versions') && args.includes('list') ? { stdout: '[]' } : {}),
-      });
-  }
 
   it('declares a small bounded drain window well inside existing lifecycle bounds', async () => {
     const module = await import('../../scripts/deploy/diagnostic-tail.js');
@@ -876,183 +868,142 @@ describe('sandbox diagnostic tail post-failure drain (ticket #102)', () => {
   });
 
   it('captures an event that arrives after the smoke process already returned nonzero', async () => {
-    const logs: string[] = [];
     let stopped = 0;
     // Fake tail whose event materializes only after the smoke runner resolved:
     // the first peek is empty, the second (during drain) carries the envelope.
     let peeks = 0;
-    const io: DeployIo = {
-      materialize: () => '/tmp/wrangler.tail-drain.json',
-      cleanup: () => undefined,
-      preflight: () => Promise.resolve(undefined),
-      confirmFirstDeployment: () => Promise.resolve(true),
-      log: (message) => {
-        logs.push(message);
-      },
-      startSessionFailureTail: () =>
-        Promise.resolve({
-          exitedBeforeSmoke: false,
-          isLive: () => true,
-          peekLines: () => {
-            peeks += 1;
-            if (peeks === 1) {
-              return [];
-            }
-            return [
-              JSON.stringify({
-                outcome: 'ok',
-                logs: [
-                  {
-                    message: [JSON.stringify({ event: 'session.resolve-failed', phase: 'config' })],
-                  },
-                ],
-              }),
-            ];
-          },
-          stop: () => {
-            stopped += 1;
-            return Promise.resolve([
-              JSON.stringify({
-                outcome: 'ok',
-                logs: [
-                  {
-                    message: [JSON.stringify({ event: 'session.resolve-failed', phase: 'config' })],
-                  },
-                ],
-              }),
-            ]);
-          },
-        }),
-    };
-    await expect(runDeployment({ resolved: SANDBOX }, io, failingRunner())).rejects.toThrow(
-      /smoke-sandbox/,
-    );
+    const processAdapter = diagnosticProcess({
+      smokeFails: true,
+      startSessionFailureTail: () => ({
+        exitedBeforeSmoke: false,
+        isLive: () => true,
+        peekLines: () => {
+          peeks += 1;
+          if (peeks === 1) {
+            return [];
+          }
+          return [
+            JSON.stringify({
+              outcome: 'ok',
+              logs: [
+                {
+                  message: [JSON.stringify({ event: 'session.resolve-failed', phase: 'config' })],
+                },
+              ],
+            }),
+          ];
+        },
+        stop: () => {
+          stopped += 1;
+          return Promise.resolve([
+            JSON.stringify({
+              outcome: 'ok',
+              logs: [
+                {
+                  message: [JSON.stringify({ event: 'session.resolve-failed', phase: 'config' })],
+                },
+              ],
+            }),
+          ]);
+        },
+      }),
+    });
+    await expect(
+      runDeployment({ resolved: SANDBOX }, processAdapter, () => Promise.resolve(true)),
+    ).rejects.toThrow(/smoke-sandbox/);
     expect(stopped).toBe(1);
-    expect(logs.join('\n')).toMatch(/phase=config/);
-    expect(logs.join('\n')).not.toMatch(/phase unavailable/i);
+    expect(diagnosticLogs.join('\n')).toMatch(/phase=config/);
+    expect(diagnosticLogs.join('\n')).not.toMatch(/phase unavailable/i);
   });
 
   it('reports phase unavailable with liveness proof when the drain expires with no event', async () => {
-    const logs: string[] = [];
-    const io: DeployIo = {
-      materialize: () => '/tmp/wrangler.tail-drain-empty.json',
-      cleanup: () => undefined,
-      preflight: () => Promise.resolve(undefined),
-      confirmFirstDeployment: () => Promise.resolve(true),
-      log: (message) => {
-        logs.push(message);
-      },
-      startSessionFailureTail: () =>
-        Promise.resolve({
-          exitedBeforeSmoke: false,
-          isLive: () => true,
-          peekLines: () => [],
-          stop: () => Promise.resolve([]),
-        }),
-    };
-    await expect(runDeployment({ resolved: SANDBOX }, io, failingRunner())).rejects.toThrow(
-      /smoke-sandbox/,
-    );
-    const transcript = logs.join('\n');
+    const processAdapter = diagnosticProcess({
+      smokeFails: true,
+      startSessionFailureTail: () => ({
+        exitedBeforeSmoke: false,
+        isLive: () => true,
+        peekLines: () => [],
+        stop: () => Promise.resolve([]),
+      }),
+    });
+    await expect(
+      runDeployment({ resolved: SANDBOX }, processAdapter, () => Promise.resolve(true)),
+    ).rejects.toThrow(/smoke-sandbox/);
+    const transcript = diagnosticLogs.join('\n');
     expect(transcript).toMatch(/phase unavailable/i);
     expect(transcript).toMatch(/live through.*drain/i);
     expect(transcript).not.toMatch(/deployed worker=/);
   });
 
   it('classifies a tail that exited before smoke as unavailable without raw text', async () => {
-    const logs: string[] = [];
     let stopped = 0;
-    const io: DeployIo = {
-      materialize: () => '/tmp/wrangler.tail-exited.json',
-      cleanup: () => undefined,
-      preflight: () => Promise.resolve(undefined),
-      confirmFirstDeployment: () => Promise.resolve(true),
-      log: (message) => {
-        logs.push(message);
-      },
-      startSessionFailureTail: () =>
-        Promise.resolve({
-          exitedBeforeSmoke: true,
-          isLive: () => false,
-          peekLines: () => [],
-          stop: () => {
-            stopped += 1;
-            return Promise.resolve([]);
-          },
-        }),
-    };
-    await expect(runDeployment({ resolved: SANDBOX }, io, failingRunner())).rejects.toThrow(
-      /smoke-sandbox/,
-    );
+    const processAdapter = diagnosticProcess({
+      smokeFails: true,
+      startSessionFailureTail: () => ({
+        exitedBeforeSmoke: true,
+        isLive: () => false,
+        peekLines: () => [],
+        stop: () => {
+          stopped += 1;
+          return Promise.resolve([]);
+        },
+      }),
+    });
+    await expect(
+      runDeployment({ resolved: SANDBOX }, processAdapter, () => Promise.resolve(true)),
+    ).rejects.toThrow(/smoke-sandbox/);
     expect(stopped).toBe(1);
-    const transcript = logs.join('\n');
+    const transcript = diagnosticLogs.join('\n');
     expect(transcript).toMatch(/exited before smoke/i);
     expect(transcript).not.toMatch(/Error: |boom|token|@/i);
   });
 
   it('does not delay a successful smoke waiting for a failure event', async () => {
-    const logs: string[] = [];
     let drainPeeks = 0;
-    const io: DeployIo = {
-      materialize: () => '/tmp/wrangler.tail-success.json',
-      cleanup: () => undefined,
-      preflight: () => Promise.resolve(undefined),
-      confirmFirstDeployment: () => Promise.resolve(true),
-      log: (message) => {
-        logs.push(message);
-      },
-      startSessionFailureTail: () =>
-        Promise.resolve({
-          exitedBeforeSmoke: false,
-          isLive: () => true,
-          peekLines: () => {
-            drainPeeks += 1;
-            return [];
-          },
-          stop: () => Promise.resolve([]),
-        }),
-    };
-    const started = Date.now();
-    await expect(runDeployment({ resolved: SANDBOX }, io, passingRunner())).resolves.toMatchObject({
-      workerName: SANDBOX.workerName,
+    const processAdapter = diagnosticProcess({
+      startSessionFailureTail: () => ({
+        exitedBeforeSmoke: false,
+        isLive: () => true,
+        peekLines: () => {
+          drainPeeks += 1;
+          return [];
+        },
+        stop: () => Promise.resolve([]),
+      }),
     });
+    const started = Date.now();
+    await expect(
+      runDeployment({ resolved: SANDBOX }, processAdapter, () => Promise.resolve(true)),
+    ).resolves.toMatchObject({ workerName: SANDBOX.workerName });
     expect(Date.now() - started).toBeLessThan(1500);
     expect(drainPeeks).toBe(0);
-    expect(logs.join('\n')).toMatch(/no session\.resolve-failed event observed/);
+    expect(diagnosticLogs.join('\n')).toMatch(/no session\.resolve-failed event observed/);
   });
 
   it('never exposes raw tail payloads on the failure path', async () => {
-    const logs: string[] = [];
-    const io: DeployIo = {
-      materialize: () => '/tmp/wrangler.tail-redaction.json',
-      cleanup: () => undefined,
-      preflight: () => Promise.resolve(undefined),
-      confirmFirstDeployment: () => Promise.resolve(true),
-      log: (message) => {
-        logs.push(message);
-      },
-      startSessionFailureTail: () =>
-        Promise.resolve({
-          exitedBeforeSmoke: false,
-          isLive: () => true,
-          peekLines: () => [],
-          stop: () =>
-            Promise.resolve([
-              JSON.stringify({
-                event: 'session.resolve-failed',
-                phase: 'session',
-                requestId: 'req-drain-1',
-                environment: 'sandbox',
-                secret: 'must-never-surface',
-                cookie: 'better-auth.session_token=abc',
-              }),
-            ]),
-        }),
-    };
-    await expect(runDeployment({ resolved: SANDBOX }, io, failingRunner())).rejects.toThrow(
-      /smoke-sandbox/,
-    );
-    const transcript = logs.join('\n');
+    const processAdapter = diagnosticProcess({
+      smokeFails: true,
+      startSessionFailureTail: () => ({
+        exitedBeforeSmoke: false,
+        isLive: () => true,
+        peekLines: () => [],
+        stop: () =>
+          Promise.resolve([
+            JSON.stringify({
+              event: 'session.resolve-failed',
+              phase: 'session',
+              requestId: 'req-drain-1',
+              environment: 'sandbox',
+              secret: 'must-never-surface',
+              cookie: 'better-auth.session_token=abc',
+            }),
+          ]),
+      }),
+    });
+    await expect(
+      runDeployment({ resolved: SANDBOX }, processAdapter, () => Promise.resolve(true)),
+    ).rejects.toThrow(/smoke-sandbox/);
+    const transcript = diagnosticLogs.join('\n');
     expect(transcript).toMatch(/phase=session/);
     expect(transcript).not.toMatch(/must-never-surface|better-auth|@/i);
   });
