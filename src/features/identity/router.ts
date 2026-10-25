@@ -3,6 +3,7 @@ import type { Context } from 'hono';
 import type { Env } from '../../env.js';
 import { PROBLEM_JSON, createProblem, type ProblemCode } from '../../shared/problem.js';
 import { createAdminUserReader } from './admin-users.js';
+import type { AccountDetails, UpdateAccountDetails } from './contract.js';
 import {
   bootstrapAdminUser,
   type BootstrapCreateUser,
@@ -18,6 +19,7 @@ import type { IdentityRuntime } from './identity-runtime.js';
 import { createPasswordPolicyProblemDetails } from './problem.js';
 import {
   adminBootstrapRoute,
+  accountDetailsRoute,
   adminMeRoute,
   adminUserDetailRoute,
   adminUsersRoute,
@@ -32,6 +34,7 @@ import {
   requestVerificationRoute,
   resetPasswordRoute,
   signOutRoute,
+  updateAccountDetailsRoute,
   verifyEmailRoute,
 } from './route.js';
 
@@ -193,6 +196,51 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
   for (const path of CONSUMER_CORS_PATHS) {
     router.use(path, consumerCors);
   }
+
+  router.openapi(accountDetailsRoute, async (c) => {
+    c.header('Cache-Control', 'private, no-store');
+    const runtime = requestIdentityRuntime(c, override);
+    const session = await runtime.resolveSessionContext(c.req.raw.headers, c.get('requestId'));
+    if (session === null) return problem(c, 401, 'unauthenticated', 'Unauthenticated');
+    const result = await c.env.DB.prepare(
+      'SELECT first_name, last_name, birth_date, phone, image FROM "user" WHERE id = ?1',
+    )
+      .bind(session.user.id)
+      .first();
+    if (result === null) return problem(c, 401, 'unauthenticated', 'Unauthenticated');
+    return c.json(accountDetailsProjection(result), 200);
+  });
+
+  router.openapi(updateAccountDetailsRoute, async (c) => {
+    c.header('Cache-Control', 'private, no-store');
+    const runtime = requestIdentityRuntime(c, override);
+    const rejected = guardCookieMutation(c, runtime, 'private, no-store');
+    if (rejected !== null) return rejected;
+    const session = await runtime.resolveSessionContext(c.req.raw.headers, c.get('requestId'));
+    if (session === null) return problem(c, 401, 'unauthenticated', 'Unauthenticated');
+    const patch: UpdateAccountDetails = c.req.valid('json');
+    const columns = {
+      firstName: 'first_name',
+      lastName: 'last_name',
+      birthDate: 'birth_date',
+      phone: 'phone',
+      image: 'image',
+    } as const;
+    const entries = (Object.keys(columns) as (keyof typeof columns)[]).filter((key) =>
+      Object.hasOwn(patch, key),
+    );
+    const assignments = entries.map(
+      (key, index) => `"${columns[key]}" = ?${(index + 1).toString()}`,
+    );
+    const values = entries.map((key) => patch[key] ?? null);
+    const updated = await c.env.DB.prepare(
+      `UPDATE "user" SET ${assignments.join(', ')}, updated_at = unixepoch() * 1000 WHERE id = ?${(values.length + 1).toString()} RETURNING first_name, last_name, birth_date, phone, image`,
+    )
+      .bind(...values, session.user.id)
+      .first();
+    if (updated === null) return problem(c, 401, 'unauthenticated', 'Unauthenticated');
+    return c.json(accountDetailsProjection(updated), 200);
+  });
 
   router.openapi(registerRoute, async (c) => {
     const runtime = requestIdentityRuntime(c, override);
@@ -501,4 +549,14 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
   });
 
   return router;
+}
+
+function accountDetailsProjection(row: Record<string, unknown>): AccountDetails {
+  return {
+    firstName: typeof row.first_name === 'string' ? row.first_name : null,
+    lastName: typeof row.last_name === 'string' ? row.last_name : null,
+    birthDate: typeof row.birth_date === 'string' ? row.birth_date : null,
+    phone: typeof row.phone === 'string' ? row.phone : null,
+    image: typeof row.image === 'string' ? row.image : null,
+  };
 }

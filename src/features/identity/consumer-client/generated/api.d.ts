@@ -19,6 +19,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/account-details": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the current User account details
+         * @description Returns only the current User’s optional Account Details through the live service session.
+         */
+        get: operations["getAccountDetails"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Partially update the current User account details
+         * @description Atomically updates only explicitly allowed Account Details for the current User.
+         */
+        patch: operations["updateAccountDetails"];
+        trace?: never;
+    };
     "/v1/auth/register": {
         parameters: {
             query?: never;
@@ -373,16 +397,12 @@ export interface components {
             /** @example /v1/does-not-exist */
             instance?: string;
         };
-        RegisteredUser: {
-            /** @example abc123 */
-            id: string;
-            /**
-             * Format: email
-             * @example ada@example.com
-             */
-            email: string;
-            /** @example false */
-            emailVerified: boolean;
+        AccountDetails: {
+            firstName: string | null;
+            lastName: string | null;
+            birthDate: string | null;
+            phone: string | null;
+            image: string | null;
         };
         IdentityProblemDetails: {
             /** @example urn:problem:not-found */
@@ -411,6 +431,24 @@ export interface components {
                 minDigits: number;
                 minSymbols: number;
             };
+        };
+        UpdateAccountDetails: {
+            firstName?: string | null;
+            lastName?: string | null;
+            birthDate?: string | null;
+            phone?: string | null;
+            image?: "" | string | null;
+        };
+        RegisteredUser: {
+            /** @example abc123 */
+            id: string;
+            /**
+             * Format: email
+             * @example ada@example.com
+             */
+            email: string;
+            /** @example false */
+            emailVerified: boolean;
         };
         RegisterRequest: {
             /** @example Ada Lovelace */
@@ -692,6 +730,68 @@ export interface operations {
                 };
                 content: {
                     "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    getAccountDetails: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The current User’s Account Details. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountDetails"];
+                };
+            };
+            /** @description Authentication failure as RFC 9457 Problem Details. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+        };
+    };
+    updateAccountDetails: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["UpdateAccountDetails"];
+            };
+        };
+        responses: {
+            /** @description The updated Account Details. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountDetails"];
+                };
+            };
+            /** @description Validation or authentication failure as RFC 9457 Problem Details. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
                 };
             };
         };

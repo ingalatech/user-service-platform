@@ -189,6 +189,14 @@ function sharedOptions(
     secret,
     logger: createRedactingLogger(),
     database: drizzleAdapter(database, { provider: 'sqlite', schema: identitySchema }),
+    user: {
+      additionalFields: {
+        firstName: { type: 'string' as const, required: false as const, input: false as const },
+        lastName: { type: 'string' as const, required: false as const, input: false as const },
+        birthDate: { type: 'string' as const, required: false as const, input: false as const },
+        phone: { type: 'string' as const, required: false as const, input: false as const },
+      },
+    },
     // Service-only session cookie (spec #164, ADR-0013): pinned HttpOnly and
     // SameSite=Lax with no `domain`, so the renewal credential is host-only
     // to the service Worker and is never shared with the parent editorial

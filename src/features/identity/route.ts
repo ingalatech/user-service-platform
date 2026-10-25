@@ -14,6 +14,8 @@ import {
   ConsumerJwksResponseSchema,
   ReaderStateResponseSchema,
   CurrentUserSchema,
+  AccountDetailsSchema,
+  UpdateAccountDetailsSchema,
   LoginRequestSchema,
   LoginResultSchema,
   RegisterRequestSchema,
@@ -154,6 +156,40 @@ export const currentUserRoute = createRoute({
       description: 'The authenticated current User.',
     },
     ...problemResponses('Authentication failure as RFC 9457 Problem Details.'),
+  },
+});
+
+export const accountDetailsRoute = createRoute({
+  method: 'get',
+  path: '/account-details',
+  operationId: 'getAccountDetails',
+  summary: 'Read the current User account details',
+  description:
+    'Returns only the current User’s optional Account Details through the live service session.',
+  tags: ['identity'],
+  responses: {
+    200: {
+      content: { 'application/json': { schema: AccountDetailsSchema } },
+      description: 'The current User’s Account Details.',
+    },
+    ...problemResponses('Authentication failure as RFC 9457 Problem Details.'),
+  },
+});
+
+export const updateAccountDetailsRoute = createRoute({
+  method: 'patch',
+  path: '/account-details',
+  operationId: 'updateAccountDetails',
+  summary: 'Partially update the current User account details',
+  description: 'Atomically updates only explicitly allowed Account Details for the current User.',
+  tags: ['identity'],
+  request: { body: { content: { 'application/json': { schema: UpdateAccountDetailsSchema } } } },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: AccountDetailsSchema } },
+      description: 'The updated Account Details.',
+    },
+    ...problemResponses('Validation or authentication failure as RFC 9457 Problem Details.'),
   },
 });
 

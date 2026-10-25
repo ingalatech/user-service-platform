@@ -73,28 +73,50 @@
           "code"
         ]
       },
-      "RegisteredUser": {
+      "AccountDetails": {
         "type": "object",
         "properties": {
-          "id": {
-            "type": "string",
-            "example": "abc123"
+          "firstName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 100
           },
-          "email": {
-            "type": "string",
-            "maxLength": 254,
-            "format": "email",
-            "example": "ada@example.com"
+          "lastName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 100
           },
-          "emailVerified": {
-            "type": "boolean",
-            "example": false
+          "birthDate": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "phone": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 40
+          },
+          "image": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 2048
           }
         },
         "required": [
-          "id",
-          "email",
-          "emailVerified"
+          "firstName",
+          "lastName",
+          "birthDate",
+          "phone",
+          "image"
         ]
       },
       "IdentityProblemDetails": {
@@ -178,6 +200,82 @@
           "title",
           "status",
           "code"
+        ]
+      },
+      "UpdateAccountDetails": {
+        "type": "object",
+        "properties": {
+          "firstName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 100
+          },
+          "lastName": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 100
+          },
+          "birthDate": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+          },
+          "phone": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 40
+          },
+          "image": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  ""
+                ]
+              },
+              {
+                "type": "string",
+                "maxLength": 2048,
+                "format": "uri"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "RegisteredUser": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "example": "abc123"
+          },
+          "email": {
+            "type": "string",
+            "maxLength": 254,
+            "format": "email",
+            "example": "ada@example.com"
+          },
+          "emailVerified": {
+            "type": "boolean",
+            "example": false
+          }
+        },
+        "required": [
+          "id",
+          "email",
+          "emailVerified"
         ]
       },
       "RegisterRequest": {
@@ -787,6 +885,77 @@
               "application/problem+json": {
                 "schema": {
                   "$ref": "#/components/schemas/ProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/account-details": {
+      "get": {
+        "operationId": "getAccountDetails",
+        "summary": "Read the current User account details",
+        "description": "Returns only the current User’s optional Account Details through the live service session.",
+        "tags": [
+          "identity"
+        ],
+        "responses": {
+          "200": {
+            "description": "The current User’s Account Details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDetails"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Authentication failure as RFC 9457 Problem Details.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "operationId": "updateAccountDetails",
+        "summary": "Partially update the current User account details",
+        "description": "Atomically updates only explicitly allowed Account Details for the current User.",
+        "tags": [
+          "identity"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateAccountDetails"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The updated Account Details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDetails"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Validation or authentication failure as RFC 9457 Problem Details.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
                 }
               }
             }

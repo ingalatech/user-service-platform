@@ -14,9 +14,9 @@ import { resolveConsumerOrigins } from './origin-guard.js';
 // with the Origin/Fetch Metadata guard (`origin-guard.ts`).
 export const CONSUMER_CORS_PREFLIGHT_MAX_AGE_SECONDS = 600;
 
-// Methods the consumer identity operations actually use: POST for auth
-// mutations and GET for `/v1/me` and the public JWKS document.
-export const CONSUMER_CORS_ALLOWED_METHODS = ['GET', 'POST'] as const;
+// Methods the consumer identity operations use: POST for auth mutations,
+// PATCH for Account Details, and GET for `/v1/me` and the public JWKS document.
+export const CONSUMER_CORS_ALLOWED_METHODS = ['GET', 'PATCH', 'POST'] as const;
 
 // JSON operations use `content-type`. `authorization` remains in the accepted
 // preflight set for compatibility with the existing direct-browser contract;
@@ -65,6 +65,7 @@ export function areRequestedHeadersAllowed(raw: string | null): boolean {
 // public identity operation plus `/v1/me`. The administrative surface is
 // deliberately excluded — it stays same-origin and is not a consumer grant.
 export const CONSUMER_CORS_PATHS = [
+  '/account-details',
   '/auth/register',
   '/auth/login',
   '/auth/verify-email',

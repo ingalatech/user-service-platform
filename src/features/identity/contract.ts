@@ -119,6 +119,63 @@ export const CurrentUserSchema = z
   })
   .openapi('CurrentUser');
 
+const accountDetailValue = (maximum: number) =>
+  z
+    .string()
+    .trim()
+    .max(maximum)
+    .transform((value) => (value.length === 0 ? null : value))
+    .nullable();
+
+const birthDateValue = z
+  .string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, { error: 'Expected a calendar date in YYYY-MM-DD format.' })
+  .refine(
+    (value) => {
+      const [yearText, monthText, dayText] = value.split('-');
+      const year = Number(yearText);
+      const month = Number(monthText);
+      const day = Number(dayText);
+      if (year < 1 || month < 1 || month > 12) return false;
+      const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+      const daysByMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+      const daysInMonth = daysByMonth[month - 1];
+      return daysInMonth !== undefined && day >= 1 && day <= daysInMonth;
+    },
+    { error: 'Expected a real calendar date.' },
+  )
+  .nullable();
+
+const imageValue = z
+  .union([z.literal(''), z.url({ protocol: /^https$/ }).max(2048)])
+  .transform((value) => (value === '' ? null : value))
+  .nullable();
+
+export const AccountDetailsSchema = z
+  .object({
+    firstName: z.string().max(100).nullable(),
+    lastName: z.string().max(100).nullable(),
+    birthDate: z.string().nullable(),
+    phone: z.string().max(40).nullable(),
+    image: z.string().max(2048).nullable(),
+  })
+  .openapi('AccountDetails');
+
+export const UpdateAccountDetailsSchema = z
+  .object({
+    firstName: accountDetailValue(100).optional(),
+    lastName: accountDetailValue(100).optional(),
+    birthDate: birthDateValue.optional(),
+    phone: accountDetailValue(40).optional(),
+    image: imageValue.optional(),
+  })
+  .strict()
+  .refine((value) => Object.keys(value).length > 0, { error: 'At least one detail is required.' })
+  .openapi('UpdateAccountDetails');
+
+export type AccountDetails = z.infer<typeof AccountDetailsSchema>;
+export type UpdateAccountDetails = z.infer<typeof UpdateAccountDetailsSchema>;
+
 export const RequestPasswordResetRequestSchema = z
   .object({
     email: emailField,
