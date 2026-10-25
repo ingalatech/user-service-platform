@@ -57,6 +57,21 @@ export default {
         return Response.json({ beforeResult, staleAfterRename, staleAfterDrop });
       }
       if (input.action === 'explicitTransaction') {
+        const readState = async () => {
+          const [sqliteMaster, catalog, ledger, records] = await Promise.all([
+            env.DB.prepare('SELECT name, type, sql FROM sqlite_master ORDER BY type, name').all(),
+            env.DB.prepare('SELECT * FROM "schema_catalog" ORDER BY collection_id').all(),
+            env.DB.prepare('SELECT * FROM "operation_ledger" ORDER BY operation_id').all(),
+            env.DB.prepare('SELECT * FROM "records" ORDER BY id').all(),
+          ]);
+          return {
+            sqliteMaster: sqliteMaster.results,
+            catalog: catalog.results,
+            ledger: ledger.results,
+            records: records.results,
+          };
+        };
+        const before = await readState();
         const results = {};
         for (const sql of ['BEGIN', 'COMMIT']) {
           try {
@@ -65,7 +80,7 @@ export default {
             results[sql] = { error: String(error.message) };
           }
         }
-        return Response.json(results);
+        return Response.json({ results, before, after: await readState() });
       }
       if (input.action === 'crashAfterCommit') {
         const prior = await env.DB.prepare('SELECT operation_id FROM "operation_ledger" WHERE operation_id = ?')
@@ -768,13 +783,33 @@ try {
     (result) => [
       check(
         'explicit BEGIN rejected by D1 binding',
-        result.BEGIN?.error?.includes('D1_ERROR') ?? false,
+        result.results?.BEGIN?.error?.includes('D1_ERROR') ?? false,
         true,
       ),
       check(
         'explicit COMMIT rejected by D1 binding',
-        result.COMMIT?.error?.includes('D1_ERROR') ?? false,
+        result.results?.COMMIT?.error?.includes('D1_ERROR') ?? false,
         true,
+      ),
+      check(
+        'rejected commands left sqlite_master unchanged',
+        result.after?.sqliteMaster,
+        result.before?.sqliteMaster,
+      ),
+      check(
+        'rejected commands left catalog unchanged',
+        result.after?.catalog,
+        result.before?.catalog,
+      ),
+      check(
+        'rejected commands left operation ledger unchanged',
+        result.after?.ledger,
+        result.before?.ledger,
+      ),
+      check(
+        'rejected commands left record rows unchanged',
+        result.after?.records,
+        result.before?.records,
       ),
     ],
   );
