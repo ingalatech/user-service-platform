@@ -21,36 +21,21 @@
 // for the selected target Worker. This command never reads, prints, commits
 // or uploads secret values; Cloudflare credentials pass to Wrangler through
 // process inheritance only.
-import { execFile, spawn } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
-import { promisify } from 'node:util';
 import { DEPLOY_HELP, parseDeployArgs, type DeployArgs } from './deploy/cli.js';
 import type { DeployableEnvironment } from './deploy/naming.js';
-import {
-  buildTargetWranglerConfig,
-  removeTempWranglerConfig,
-  writeTempWranglerConfig,
-} from './deploy/materialize.js';
+import { buildTargetWranglerConfig } from './deploy/materialize.js';
 import {
   environmentFilePath,
   loadEnvironmentFile,
   resolveEnvironmentDeployment,
 } from './deploy/environment-config.js';
-import { formatPreflightError, preflightFailed, runPreflight } from './deploy/preflight.js';
-import { runDeployment, type DeployCommandOptions, type DeployIo } from './deploy/orchestrate.js';
-import { startSessionFailureTail } from './deploy/diagnostic-tail.js';
-import type { ResolvedDeployment } from './deploy/environment-config.js';
+import { runDeployment } from './deploy/orchestrate.js';
+import { createChildProcessReleaseAdapter } from './deploy/process.js';
 import { selectWithKeys } from './deploy/prompt.js';
-
-const execFileAsync = promisify(execFile);
-
-function executable(name: string): string {
-  return process.platform === 'win32' ? `${name}.cmd` : name;
-}
 
 function repoRoot(): string {
   return dirname(dirname(fileURLToPath(import.meta.url)));
@@ -58,6 +43,22 @@ function repoRoot(): string {
 
 function isInteractive(): boolean {
   return process.stdin.isTTY && process.stdout.isTTY;
+}
+
+async function confirmFirstDeployment(workerName: string): Promise<boolean> {
+  if (!isInteractive()) return false;
+  const readline = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const expected = `FIRST DEPLOY ${workerName}`;
+    console.log(
+      'Cloudflare activates a Worker’s first version immediately; no inactive candidate is possible.',
+    );
+    return (
+      (await readline.question(`Type exactly "${expected}" to continue: `)).trim() === expected
+    );
+  } finally {
+    readline.close();
+  }
 }
 
 type SelectEnvironment = (question: string, choices: readonly string[]) => Promise<number>;
@@ -86,43 +87,6 @@ export async function promptDeploySelection(
   const environment = environments[await select(question, environments)];
   if (environment === undefined) throw new Error('No deployment environment selected.');
   return { ...args, environment };
-}
-
-// Runs a deployment step with inherited stdio so the operator sees Wrangler
-// output directly. Credentials pass through process inheritance only; this
-// command never reads secret values.
-function runInherited(
-  command: string,
-  commandArgs: string[],
-  accountId?: string,
-  options?: DeployCommandOptions,
-): Promise<{ exitCode: number }> {
-  return new Promise((resolvePromise) => {
-    const child = spawn(executable(command), commandArgs, {
-      env:
-        options?.env ??
-        (accountId === undefined
-          ? process.env
-          : { ...process.env, CLOUDFLARE_ACCOUNT_ID: accountId }),
-      // Provider stderr is never operator output. Discovery captures it for
-      // code classification; mutating commands expose only their exit code.
-      stdio: ['inherit', 'inherit', 'ignore'],
-    });
-    child.on('error', () => {
-      resolvePromise({ exitCode: 1 });
-    });
-    child.on('close', (code) => {
-      resolvePromise({ exitCode: code ?? 1 });
-    });
-  });
-}
-
-function processStderr(error: unknown): string {
-  if (typeof error === 'object' && error !== null && 'stderr' in error) {
-    const stderr = (error as { readonly stderr?: unknown }).stderr;
-    return typeof stderr === 'string' ? stderr : '';
-  }
-  return '';
 }
 
 async function main(): Promise<void> {
@@ -163,99 +127,10 @@ async function main(): Promise<void> {
     return;
   }
 
-  const directory = mkdtempSync(join(tmpdir(), 'user-service-deploy-'));
-  const deployRepoRoot = repoRoot();
-  const io: DeployIo = {
-    materialize: (target) =>
-      writeTempWranglerConfig(target, directory, { repoRoot: deployRepoRoot }),
-    cleanup: (path) => {
-      removeTempWranglerConfig(path);
-      try {
-        rmSync(directory, { recursive: true, force: true });
-      } catch {
-        // Temporary-directory hygiene never fails a deployment.
-      }
-    },
-    preflight: async (target: ResolvedDeployment) => {
-      const checks = await runPreflight(
-        { resolved: target },
-        {
-          nodeVersion: process.version,
-          commands: [],
-          run: async (command, commandArgs) => {
-            try {
-              const { stdout } = await execFileAsync(command, commandArgs, {
-                env:
-                  target.accountId === ''
-                    ? process.env
-                    : { ...process.env, CLOUDFLARE_ACCOUNT_ID: target.accountId },
-              });
-              return { exitCode: 0, stdout };
-            } catch (error: unknown) {
-              return { exitCode: 1, stdout: '', stderr: processStderr(error) };
-            }
-          },
-        },
-      );
-      if (preflightFailed(checks)) {
-        throw formatPreflightError(checks);
-      }
-    },
-    log: (message: string) => {
-      console.log(message);
-    },
-    sourceMetadata: async () => {
-      const [commit, branch] = await Promise.all([
-        execFileAsync('git', ['rev-parse', '--verify', 'HEAD^{commit}'], { cwd: deployRepoRoot }),
-        execFileAsync('git', ['branch', '--show-current'], { cwd: deployRepoRoot }),
-      ]);
-      return { commit: commit.stdout.trim(), branch: branch.stdout.trim() || 'detached' };
-    },
-    confirmFirstDeployment: async (workerName) => {
-      if (!isInteractive()) {
-        return false;
-      }
-      const readline = createInterface({ input: process.stdin, output: process.stdout });
-      try {
-        const expected = `FIRST DEPLOY ${workerName}`;
-        console.log(
-          'Cloudflare activates a Worker’s first version immediately; no inactive candidate is possible.',
-        );
-        return (
-          (await readline.question(`Type exactly "${expected}" to continue: `)).trim() === expected
-        );
-      } finally {
-        readline.close();
-      }
-    },
-    // Diagnostic tailing is retained for the full privileged sandbox smoke;
-    // bootstrap and public readiness do not inspect runtime secret state.
-    startSessionFailureTail: (target: ResolvedDeployment, configPath: string) => {
-      if (target.environment !== 'sandbox') {
-        return Promise.reject(new Error('Diagnostic tailing is sandbox-only.'));
-      }
-      return startSessionFailureTail(target, configPath);
-    },
-  };
   const outcome = await runDeployment(
     { resolved, confirm: args.confirm, dryRun: args.dryRun },
-    io,
-    async (command, commandArgs, options) => {
-      if (commandArgs.includes('list') && commandArgs.includes('--json')) {
-        try {
-          const { stdout } = await execFileAsync(command, commandArgs, {
-            env:
-              resolved.accountId === ''
-                ? process.env
-                : { ...process.env, CLOUDFLARE_ACCOUNT_ID: resolved.accountId },
-          });
-          return { exitCode: 0, stdout };
-        } catch (error: unknown) {
-          return { exitCode: 1, stdout: '', stderr: processStderr(error) };
-        }
-      }
-      return runInherited(command, commandArgs, resolved.accountId, options);
-    },
+    createChildProcessReleaseAdapter(),
+    confirmFirstDeployment,
   );
   console.log(`deployment complete worker=${outcome.workerName}`);
 }
