@@ -2,12 +2,13 @@
 // Run with: npx tsx scripts/prototypes/d1-schema-219.mjs
 // Every query runs inside workerd through Wrangler local mode's D1 binding.
 import { spawn } from 'node:child_process';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { once } from 'node:events';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 
 const scratch = await mkdtemp(join(tmpdir(), 'd1-schema-219-'));
-const evidencePath = join(scratch, 'evidence.json');
+const evidencePath = join(tmpdir(), `${basename(scratch)}-evidence.json`);
 const workerPath = join(scratch, 'worker.mjs');
 const configPath = join(scratch, 'wrangler.jsonc');
 const databaseId = '21900000-0000-4000-8000-000000000001';
@@ -82,29 +83,10 @@ export default {
 };
 `;
 
-await writeFile(workerPath, worker);
-await writeFile(
-  configPath,
-  `${JSON.stringify(
-    {
-      name: 'd1-schema-219-prototype',
-      main: 'worker.mjs',
-      compatibility_date: '2026-10-25',
-      d1_databases: [
-        {
-          binding: 'DB',
-          database_name: 'd1-schema-219-scratch',
-          database_id: databaseId,
-        },
-      ],
-    },
-    null,
-    2,
-  )}\n`,
-);
-
 let workerProcess;
 let baseUrl;
+const faultyLoop = globalThis.process.argv.slice(2).includes('--faulty');
+let faultyCheckInjected = false;
 
 const evidence = {
   prototype: 'PROTOTYPE issue #219 — disposable local Wrangler/Miniflare/workerd D1 binding',
@@ -115,8 +97,11 @@ const evidence = {
     workerRuntime: 'Wrangler local mode -> Miniflare/workerd',
     databaseId: 'synthetic-local-id-only',
     scratchDirectory: scratch,
+    scratchCleanup:
+      'the mkdtemp root is removed in finally; evidence JSON is kept separately in OS tmp',
     evidencePath,
     cloudflareRemoteAccess: false,
+    faultInjection: faultyLoop ? '--faulty (expected non-zero exit)' : null,
   },
   cloudflareDocumentedLimits: {
     columnsPerTable: 100,
@@ -143,7 +128,7 @@ const call = async (body) => {
   return response.status === 200 ? result : { httpStatus: response.status, body: result };
 };
 
-const record = async (name, operation, check = undefined) => {
+const record = async (name, operation, validate = () => []) => {
   const result = await operation();
   const snapshot = await call({
     action: 'statements',
@@ -156,15 +141,64 @@ const record = async (name, operation, check = undefined) => {
       { sql: 'PRAGMA quick_check', mode: 'all' },
     ],
   });
-  evidence.states.push({ name, result, snapshot, check: check ?? null });
-  globalThis.console.log(JSON.stringify(evidence.states.at(-1)));
+  const checks = await validate(result, snapshot);
+  if (faultyLoop && !faultyCheckInjected && checks.length > 0) {
+    checks[0] = { ...checks[0], passed: false, injected: true };
+    faultyCheckInjected = true;
+  }
+  const state = {
+    name,
+    result,
+    snapshot,
+    verdict: checks.every((item) => item.passed) ? 'pass' : 'fail',
+    checks,
+  };
+  evidence.states.push(state);
+  globalThis.console.log(JSON.stringify(state));
+  if (state.verdict === 'fail') {
+    throw new Error(`Prototype observation failed checks for ${name}`);
+  }
   return result;
 };
+
+const check = (name, actual, expected, passed = undefined) => ({
+  name,
+  passed:
+    passed ?? (Object.is(actual, expected) || JSON.stringify(actual) === JSON.stringify(expected)),
+  expected,
+  actual,
+});
+
+const rows = (response, resultIndex = 0) => response?.results?.[resultIndex]?.results ?? [];
 
 const exec = (sql, values = undefined, mode = 'run') =>
   call({ action: 'statements', statements: [{ sql, values, mode }] });
 
 try {
+  const args = globalThis.process.argv.slice(2);
+  if (args.some((argument) => argument !== '--faulty')) {
+    throw new Error('Supported optional argument: --faulty');
+  }
+  await writeFile(workerPath, worker);
+  await writeFile(
+    configPath,
+    `${JSON.stringify(
+      {
+        name: 'd1-schema-219-prototype',
+        main: 'worker.mjs',
+        compatibility_date: '2026-10-25',
+        d1_databases: [
+          {
+            binding: 'DB',
+            database_name: 'd1-schema-219-scratch',
+            database_id: databaseId,
+          },
+        ],
+      },
+      null,
+      2,
+    )}\n`,
+  );
   const wranglerPath = new globalThis.URL(
     '../../node_modules/wrangler/bin/wrangler.js',
     import.meta.url,
@@ -226,23 +260,40 @@ try {
   });
   evidence.environment.localWorkerUrl = baseUrl;
 
-  await record('bootstrap-catalog-and-ledger', () =>
-    call({
-      action: 'batch',
-      statements: [
-        {
-          sql: 'CREATE TABLE "schema_catalog" (collection_id TEXT PRIMARY KEY, name TEXT NOT NULL, revision INTEGER NOT NULL)',
-        },
-        {
-          sql: 'CREATE TABLE "operation_ledger" (operation_id TEXT PRIMARY KEY, revision INTEGER NOT NULL UNIQUE)',
-        },
-        { sql: 'INSERT INTO "schema_catalog" VALUES (?, ?, ?)', values: ['coll_219', 'sample', 0] },
-        { sql: 'CREATE TABLE "records" (id TEXT PRIMARY KEY, value TEXT NOT NULL)' },
-        { sql: 'CREATE UNIQUE INDEX "records_value_unique" ON "records" (value)' },
-        { sql: 'CREATE INDEX "records_id_idx" ON "records" (id)' },
-        { sql: 'INSERT INTO "records" VALUES (?, ?)', values: ['r1', 'preserve-me'] },
-      ],
-    }),
+  await record(
+    'bootstrap-catalog-and-ledger',
+    () =>
+      call({
+        action: 'batch',
+        statements: [
+          {
+            sql: 'CREATE TABLE "schema_catalog" (collection_id TEXT PRIMARY KEY, name TEXT NOT NULL, revision INTEGER NOT NULL)',
+          },
+          {
+            sql: 'CREATE TABLE "operation_ledger" (operation_id TEXT PRIMARY KEY, revision INTEGER NOT NULL UNIQUE)',
+          },
+          {
+            sql: 'INSERT INTO "schema_catalog" VALUES (?, ?, ?)',
+            values: ['coll_219', 'sample', 0],
+          },
+          { sql: 'CREATE TABLE "records" (id TEXT PRIMARY KEY, value TEXT NOT NULL)' },
+          { sql: 'CREATE UNIQUE INDEX "records_value_unique" ON "records" (value)' },
+          { sql: 'CREATE INDEX "records_id_idx" ON "records" (id)' },
+          { sql: 'INSERT INTO "records" VALUES (?, ?)', values: ['r1', 'preserve-me'] },
+        ],
+      }),
+    async (result) => [
+      check(
+        'all bootstrap batch statements succeeded',
+        result.results?.every((item) => item.success) ?? false,
+        true,
+      ),
+      check(
+        'sample row was inserted',
+        rows(await exec('SELECT id, value FROM "records" WHERE id = ?', ['r1'], 'all')),
+        [{ id: 'r1', value: 'preserve-me' }],
+      ),
+    ],
   );
 
   await record('dynamic-identifiers-validated-quoted-values-bound', async () => {
@@ -284,11 +335,39 @@ try {
           { sql: 'CREATE INDEX "records_id_idx" ON "records" (id)' },
         ],
       }),
-    'SQLite has no ALTER INDEX RENAME; modeled physical index rename as transactional drop/create.',
+    (result, snapshot) => [
+      check(
+        'index drop/create batch succeeded',
+        result.results?.every((item) => item.success) ?? false,
+        true,
+      ),
+      check(
+        'replacement index exists after logical rename',
+        rows(snapshot, 0).some((item) => item.name === 'records_id_idx'),
+        true,
+      ),
+    ],
   );
 
-  await record('prepared-statements-across-rename-add-drop', () =>
-    call({ action: 'preparedAcrossDdl' }),
+  await record(
+    'prepared-statements-across-rename-add-drop',
+    () => call({ action: 'preparedAcrossDdl' }),
+    (result) => [
+      check('prepared query initially read the original row', result.beforeResult, {
+        id: 'r1',
+        value: 'preserve-me',
+      }),
+      check(
+        'prepared query invalidated by column rename',
+        result.staleAfterRename?.error?.includes('no such column: value') ?? false,
+        true,
+      ),
+      check(
+        'prepared query invalidated by column drop',
+        result.staleAfterDrop?.error?.includes('no such column: temporary') ?? false,
+        true,
+      ),
+    ],
   );
 
   await record('rename-column-and-add-column', () =>
@@ -301,44 +380,60 @@ try {
     }),
   );
 
-  await record('rebuild-incompatible-type-change-and-verify-data', async () => {
-    const before = await exec(
-      'SELECT id, value, added FROM "records" ORDER BY id',
-      undefined,
-      'all',
-    );
-    const rebuild = await call({
-      action: 'batch',
-      statements: [
-        {
-          sql: 'CREATE TABLE "records_next" (id TEXT PRIMARY KEY, value INTEGER NOT NULL, added TEXT NOT NULL DEFAULT \'defaulted\')',
-        },
-        {
-          sql: 'INSERT INTO "records_next" (id, value, added) SELECT id, length(value), added FROM "records"',
-        },
-        { sql: 'DROP TABLE "records"' },
-        { sql: 'ALTER TABLE "records_next" RENAME TO "records"' },
-        { sql: 'CREATE UNIQUE INDEX "records_value_unique" ON "records" (value)' },
-        { sql: 'CREATE INDEX "records_id_idx" ON "records" (id)' },
-      ],
-    });
-    const after = await exec(
-      'SELECT id, value, added FROM "records" ORDER BY id',
-      undefined,
-      'all',
-    );
-    return {
-      rebuild,
-      before,
-      after,
-      dataTransformed: after.results?.[0]?.results?.[0]?.value === 11,
-    };
-  });
+  await record(
+    'rebuild-incompatible-type-change-and-verify-data',
+    async () => {
+      const before = await exec(
+        'SELECT id, value, added FROM "records" ORDER BY id',
+        undefined,
+        'all',
+      );
+      const rebuild = await call({
+        action: 'batch',
+        statements: [
+          {
+            sql: 'CREATE TABLE "records_next" (id TEXT PRIMARY KEY, value INTEGER NOT NULL, added TEXT NOT NULL DEFAULT \'defaulted\')',
+          },
+          {
+            sql: 'INSERT INTO "records_next" (id, value, added) SELECT id, length(value), added FROM "records"',
+          },
+          { sql: 'DROP TABLE "records"' },
+          { sql: 'ALTER TABLE "records_next" RENAME TO "records"' },
+          { sql: 'CREATE UNIQUE INDEX "records_value_unique" ON "records" (value)' },
+          { sql: 'CREATE INDEX "records_id_idx" ON "records" (id)' },
+        ],
+      });
+      const after = await exec(
+        'SELECT id, value, added FROM "records" ORDER BY id',
+        undefined,
+        'all',
+      );
+      return {
+        rebuild,
+        before,
+        after,
+        dataTransformed: after.results?.[0]?.results?.[0]?.value === 11,
+      };
+    },
+    (result) => [
+      check(
+        'incompatible rebuild batch succeeded',
+        result.rebuild.results?.every((item) => item.success) ?? false,
+        true,
+      ),
+      check('source row before rebuild', rows(result.before), [
+        { id: 'r1', value: 'preserve-me', added: 'defaulted' },
+      ]),
+      check('row and converted value after rebuild', rows(result.after), [
+        { id: 'r1', value: 11, added: 'defaulted' },
+      ]),
+    ],
+  );
 
   await record(
     'batch-ddl-catalog-rollback-injected-failure',
-    () =>
-      call({
+    async () => {
+      const batch = await call({
         action: 'batch',
         statements: [
           { sql: 'CREATE TABLE "rollback_probe" (id TEXT PRIMARY KEY)' },
@@ -348,44 +443,138 @@ try {
           },
           { sql: 'CREATE TABLE "records" (id TEXT)' },
         ],
-      }),
-    'D1 batch returns failure; following snapshot proves prior DDL/catalog not visible',
-  );
-
-  await record('two-concurrent-revision-cas-attempts', async () => {
-    const contender = (operationId) =>
-      call({
-        action: 'batch',
+      });
+      const after = await call({
+        action: 'statements',
         statements: [
           {
-            sql: 'UPDATE "schema_catalog" SET revision = revision + 1 WHERE collection_id = ? AND revision = ?',
-            values: ['coll_219', 0],
+            sql: 'SELECT name FROM sqlite_master WHERE type = ? AND name = ?',
+            values: ['table', 'rollback_probe'],
+            mode: 'all',
           },
           {
-            sql: 'INSERT INTO "operation_ledger" (operation_id, revision) SELECT ?, 1 WHERE changes() = 1 ON CONFLICT(operation_id) DO NOTHING',
-            values: [operationId],
+            sql: 'SELECT collection_id FROM "schema_catalog" WHERE collection_id = ?',
+            values: ['rollback'],
+            mode: 'all',
           },
+          { sql: 'SELECT id, value FROM "records" WHERE id = ?', values: ['r1'], mode: 'all' },
         ],
       });
-    const attempts = await Promise.all([contender('attempt_a'), contender('attempt_b')]);
-    return {
-      attempts,
-      catalog: await exec('SELECT * FROM "schema_catalog"', undefined, 'all'),
-      ledger: await exec(
-        'SELECT * FROM "operation_ledger" ORDER BY operation_id',
-        undefined,
-        'all',
+      return {
+        batch,
+        rollbackTable: rows(after, 0),
+        rollbackCatalog: rows(after, 1),
+        preservedRecord: rows(after, 2),
+      };
+    },
+    (result) => [
+      check(
+        'injected DDL failure reported',
+        result.batch.error?.includes('already exists') ?? false,
+        true,
       ),
-    };
-  });
+      check('failed batch did not create rollback table', result.rollbackTable, []),
+      check('failed batch did not insert catalog row', result.rollbackCatalog, []),
+      check('pre-existing record remains unchanged', result.preservedRecord, [
+        { id: 'r1', value: 11 },
+      ]),
+    ],
+  );
 
-  const committed = await record('simulated-crash-after-commit-before-ack', () =>
-    call({ action: 'crashAfterCommit', operationId: 'crash_recovery', revision: 99 }),
+  await record(
+    'two-concurrent-revision-cas-attempts',
+    async () => {
+      const contender = (operationId) =>
+        call({
+          action: 'batch',
+          statements: [
+            {
+              sql: 'UPDATE "schema_catalog" SET revision = revision + 1 WHERE collection_id = ? AND revision = ?',
+              values: ['coll_219', 0],
+            },
+            {
+              sql: 'INSERT INTO "operation_ledger" (operation_id, revision) SELECT ?, 1 WHERE changes() = 1 ON CONFLICT(operation_id) DO NOTHING',
+              values: [operationId],
+            },
+          ],
+        });
+      const attempts = await Promise.all([contender('attempt_a'), contender('attempt_b')]);
+      return {
+        attempts,
+        catalog: await exec('SELECT * FROM "schema_catalog"', undefined, 'all'),
+        ledger: await exec(
+          'SELECT * FROM "operation_ledger" ORDER BY operation_id',
+          undefined,
+          'all',
+        ),
+      };
+    },
+    (result) => {
+      const ledger = rows(result.ledger);
+      const catalog = rows(result.catalog);
+      const changedAttempts = result.attempts.filter(
+        (attempt) => attempt.results?.[0]?.meta?.changes === 1,
+      ).length;
+      return [
+        check('exactly one CAS attempt changed the revision', changedAttempts, 1),
+        check(
+          'one operation ledger row at revision 1',
+          ledger,
+          [{ operation_id: ledger[0]?.operation_id, revision: 1 }],
+          ledger.length === 1 && ledger[0]?.revision === 1,
+        ),
+        check('catalog revision is exactly 1', catalog[0]?.revision ?? null, 1),
+      ];
+    },
+  );
+
+  const committed = await record(
+    'simulated-crash-after-commit-before-ack',
+    async () => {
+      const response = await call({
+        action: 'crashAfterCommit',
+        operationId: 'crash_recovery',
+        revision: 99,
+      });
+      const ledger = await exec(
+        'SELECT operation_id, revision FROM "operation_ledger" WHERE operation_id = ?',
+        ['crash_recovery'],
+        'all',
+      );
+      return { response, ledger: rows(ledger) };
+    },
+    (result) => [
+      check('first invocation lost its response after commit', result.response.httpStatus, 503),
+      check('operation was committed before response loss', result.ledger, [
+        { operation_id: 'crash_recovery', revision: 99 },
+      ]),
+    ],
   );
   await record(
     'retry-after-simulated-crash-is-idempotent',
-    () => call({ action: 'crashAfterCommit', operationId: 'crash_recovery', revision: 99 }),
-    `first HTTP status ${committed.httpStatus}; retry must discover committed operation`,
+    async () => {
+      const retry = await call({
+        action: 'crashAfterCommit',
+        operationId: 'crash_recovery',
+        revision: 99,
+      });
+      const ledger = await exec(
+        'SELECT operation_id, revision FROM "operation_ledger" WHERE operation_id = ?',
+        ['crash_recovery'],
+        'all',
+      );
+      return { first: committed.response, retry, ledger: rows(ledger) };
+    },
+    (result) => [
+      check(
+        'retry acknowledged pre-existing idempotency key',
+        result.retry.status,
+        'already-committed',
+      ),
+      check('retry did not duplicate committed operation', result.ledger, [
+        { operation_id: 'crash_recovery', revision: 99 },
+      ]),
+    ],
   );
 
   await record('sqlite-master-and-pragma-introspection', async () =>
@@ -402,23 +591,64 @@ try {
     }),
   );
 
-  await record('documented-100-column-limit-local-observation', async () => {
-    const columns = Array.from({ length: 100 }, (_, index) => `"c${index}" TEXT`).join(', ');
-    const create = await exec(`CREATE TABLE "column_limit_probe" (${columns})`);
-    const at100 = await exec('PRAGMA table_xinfo("column_limit_probe")', undefined, 'all');
-    const hundredFirst = await exec('ALTER TABLE "column_limit_probe" ADD COLUMN "c100" TEXT');
-    const drop = await exec('DROP TABLE IF EXISTS "column_limit_probe"');
-    return {
-      create,
-      localColumnCountAt100: at100.results?.[0]?.results?.length ?? null,
-      attempt101: hundredFirst,
-      drop,
-      note: 'D1 documents max 100; this is local Miniflare observation only and does not establish remote parity.',
-    };
-  });
+  await record(
+    'documented-100-column-limit-local-observation',
+    async () => {
+      const columns = Array.from({ length: 100 }, (_, index) => `"c${index}" TEXT`).join(', ');
+      const create = await exec(`CREATE TABLE "column_limit_probe" (${columns})`);
+      const at100 = await exec('PRAGMA table_xinfo("column_limit_probe")', undefined, 'all');
+      const hundredFirst = await exec('ALTER TABLE "column_limit_probe" ADD COLUMN "c100" TEXT');
+      const after101 = await exec('PRAGMA table_xinfo("column_limit_probe")', undefined, 'all');
+      const drop = await exec('DROP TABLE IF EXISTS "column_limit_probe"');
+      return {
+        create,
+        localColumnCountAt100: rows(at100).length,
+        attempt101: hundredFirst,
+        localColumnCountAfter101Attempt: rows(after101).length,
+        drop,
+        note: 'D1 documents max 100; this is local Miniflare observation only and does not establish remote parity.',
+      };
+    },
+    (result) => [
+      check(
+        'local table creation at 100 columns succeeded',
+        result.create.results?.[0]?.success ?? false,
+        true,
+      ),
+      check('local table has 100 physical columns', result.localColumnCountAt100, 100),
+      check(
+        'local 101st-column attempt was rejected',
+        result.attempt101.error?.includes('too many columns') ?? false,
+        true,
+      ),
+      check(
+        'local table remains at 100 columns after rejected alter',
+        result.localColumnCountAfter101Attempt,
+        100,
+      ),
+      check(
+        'local column-limit scratch table was dropped',
+        result.drop.results?.[0]?.success ?? false,
+        true,
+      ),
+    ],
+  );
 
-  await record('explicit-begin-commit-attempt-results', () =>
-    call({ action: 'explicitTransaction' }),
+  await record(
+    'explicit-begin-commit-attempt-results',
+    () => call({ action: 'explicitTransaction' }),
+    (result) => [
+      check(
+        'explicit BEGIN rejected by D1 binding',
+        result.BEGIN?.error?.includes('D1_ERROR') ?? false,
+        true,
+      ),
+      check(
+        'explicit COMMIT rejected by D1 binding',
+        result.COMMIT?.error?.includes('D1_ERROR') ?? false,
+        true,
+      ),
+    ],
   );
 
   await record('drop-index-column-and-table', async () => {
@@ -435,17 +665,45 @@ try {
     'The retry-after-simulated-crash scenario checks a durable ledger before repeating the write.',
     'Every state snapshot includes sqlite_master, catalog, and quick_check; dedicated PRAGMAs are captured separately.',
   );
+  if (faultyLoop && !faultyCheckInjected) {
+    throw new Error('Fault injection did not reach a check to invert');
+  }
 } catch (error) {
   evidence.fatalError = { name: error.name, message: error.message };
+  globalThis.process.exitCode = 1;
   globalThis.console.error(JSON.stringify(evidence.fatalError));
 } finally {
-  await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`);
-  globalThis.console.log(
-    JSON.stringify({
-      evidencePath,
-      finalStateCount: evidence.states.length,
-      fatalError: evidence.fatalError ?? null,
-    }),
+  evidence.finalVerdict =
+    evidence.fatalError || evidence.states.some((state) => state.verdict === 'fail')
+      ? 'fail'
+      : 'pass';
+  evidence.completedCheckCount = evidence.states.reduce(
+    (count, state) => count + state.checks.filter((item) => item.passed).length,
+    0,
   );
-  workerProcess?.kill('SIGTERM');
+  evidence.failedCheckCount = evidence.states.reduce(
+    (count, state) => count + state.checks.filter((item) => !item.passed).length,
+    0,
+  );
+  try {
+    await writeFile(evidencePath, `${JSON.stringify(evidence, null, 2)}\n`);
+    globalThis.console.log(
+      JSON.stringify({
+        evidencePath,
+        finalStateCount: evidence.states.length,
+        finalVerdict: evidence.finalVerdict,
+        fatalError: evidence.fatalError ?? null,
+      }),
+    );
+  } finally {
+    try {
+      if (workerProcess && workerProcess.exitCode === null && workerProcess.signalCode === null) {
+        const stopped = once(workerProcess, 'exit');
+        workerProcess.kill('SIGTERM');
+        await stopped;
+      }
+    } finally {
+      await rm(scratch, { recursive: true, force: true });
+    }
+  }
 }
