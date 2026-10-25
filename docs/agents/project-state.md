@@ -1,127 +1,62 @@
 # Project state checkpoint
 
-Last verified: 2026-10-21
+Last verified: 2026-10-24
 
-This file is a durable operational checkpoint. It is an index and handoff, not
-a replacement for `GLOSSARY.md`, accepted ADRs, current issue/PR bodies, CI, or
-the live repository state.
-
-## Authority and bootstrap
-
-Use canonical sources in this order for their respective concerns:
-
-1. `GLOSSARY.md` for domain vocabulary.
-2. Accepted ADRs under `docs/adr/` for architecture and technical decisions.
-3. Current specification and ticket bodies plus comments for product intent.
-4. Current repository HEAD, GitHub PR/issue state, and CI for implementation truth.
-5. `AGENTS.md` and `docs/agents/` for engineering process.
-6. This file only as a cross-session handoff.
-
-Fresh substantial sessions read `AGENTS.md`, this file, `GLOSSARY.md`, the
-current ticket/spec, relevant ADRs, and any applicable project-local skill.
-
-## Operating agreement
-
-The current local workflow is:
-
-```text
-p2 implements or corrects -> p3 reviews directly -> p1 coordinates
-                              p1 checks CI, merges, and operates releases
-```
-
-P2 works on one approved `ready-for-agent` implementation ticket in an
-isolated branch/worktree. P3 performs direct Standards and Spec review against
-the exact branch commit. P2 applies valid corrections and reruns repository
-gates. P1 coordinates the handoff, checks CI, performs the authorized merge,
-and controls sandbox/production releases.
-
-No repository command launches reviewer or correction subagents. There is no
-automated review/correction cycle, review marker, or GitHub-hosted agent
-workflow in the current execution path.
-
-## GitHub Actions and releases
-
-GitHub Actions contains only `.github/workflows/ci.yml`. It runs pinned
-dependency installation, lint, formatting, typecheck, generated-contract
-drift checks, Worker tests, and harness tests with read-only repository
-permissions. It does not run agents, reviewers, correction loops, approval
-automation, deployment, or promotion.
-
-Sandbox and production release commands are explicit local P1 operations. The
-deployment and promotion boundaries remain unchanged. `review:safe-push` is a
-narrow, independently tested branch-publication guard; it does not merge,
-deploy, or coordinate review.
+This is a concise operational handoff, not a replacement for the glossary,
+accepted ADRs, current issues/PRs, CI or live repository state.
 
 ## Current repository state
 
-Main is currently verified at `8af475dc13251ee2765dac27a26281be781588dc`.
-Identity and the read-only administrative panel are accepted in sandbox.
-Subscription billing is not implemented. Product planning and implementation
-tickets remain authoritative in GitHub; do not infer product behavior from
-this checkpoint.
+- `main` is verified at `bcc5e7f8918d5b97c978ac39c9227fefc9d30a2a` (PR #241).
+- PRs #235–#241 are merged. Together they restore auth/bootstrap invariants,
+  centralize Identity runtime and operation behavior (including the #231
+  password-policy correction), narrow the Consumer Identity surface, deepen
+  local release execution and generate browser-safe Admin contracts.
+- PR #241's CI run succeeded for its reviewed head; the main CI run for
+  `bcc5e7f` has since completed successfully.
+- Sandbox: #14 records accepted Identity deployment and smoke acceptance on
+  `f3377b2`. In #201, Reader State candidate `e696391` was deployed as an
+  inactive Version and passed readiness/CORS probes, but was not promoted; its
+  review records the prior Version as still active then. Current active sandbox
+  status is unverified (no current GitHub deployment record); no production
+  activation is evidenced. No release was performed for #242.
+- Configurable Profile and the D1 collections engine remain in planning under
+  Wayfinder issues #208 and #216. Billing is not implemented.
 
-The repository is a single-context User Service for the first consumer. The
-frontend owns site integration, content, UI, and paywall policy. This backend
-owns Identity and provider-independent subscription/billing contracts. No
-consumer JWT, paid entitlement, social login, or billing behavior should be
-claimed as implemented unless confirmed by current source and CI evidence.
+## Operating agreement
 
-## Architecture baseline
+```text
+p2 implements or corrects -> p3 reviews directly -> p1 coordinates, checks CI,
+                              merges and operates releases
+```
 
-Canonical detail lives in `GLOSSARY.md` and accepted ADRs.
+P2 works one approved `ready-for-agent` ticket per isolated worktree and may
+commit locally; it does not push, merge or deploy. P3 reviews the exact HEAD
+directly. P1 coordinates the handoff, checks CI, performs authorized merges,
+and controls sandbox/production operations. No automated review/correction
+workers or release commands run from repository CI.
 
-- Cloudflare Workers + Hono.
-- Contract-first vertical slices under `/v1`.
-- Zod + `@hono/zod-openapi`; generated OpenAPI and consumer TypeScript contracts.
-- RFC 9457-compatible Problem Details with stable machine codes.
-- D1 for relational data; object storage for binary files.
-- Better Auth behind application-owned identity/session boundaries.
-- Deployment-owned `AuthPolicy`.
-- Verified email before initial email/password login/session.
-- Production transport behind the application-owned `AuthMailer` adapter.
-- Local, sandbox, and production are isolated operational contexts.
-- Credentials, cookies, session tokens, action URLs, and email bodies stay out
-  of ordinary logs.
+## Architecture and toolchain
 
-## Toolchain
+- One-context User Service; frontend owns site integration, presentation and
+  paywall policy. The service owns Identity and provider-independent contracts.
+- Cloudflare Workers + Hono; contract-first vertical slices; Zod source
+  contracts generate OpenAPI and consumer/Admin artifacts. Generated files are
+  checked for drift, never hand-edited.
+- Reader State is presentation-only and never authorizes User Service or a
+  receiving API. The host-only HttpOnly session remains authoritative.
+- Node.js `24.22.1` (`nvm use`), pinned TypeScript, ESLint and Prettier.
+- Versioned `config/environments/.env.<environment>` files contain complete
+  non-secret deployment configuration, including `AUTH_VERIFY_EMAIL_ACTION_URL`
+  and `AUTH_RESET_PASSWORD_ACTION_URL`; runtime secrets remain out-of-band.
+  Full delivered Auth Action URLs containing verification/reset tokens, token
+  values, cookies and credentials stay out of files, arguments and logs. The
+  ignored root `.env` is local-only.
 
-ADR-0006 is authoritative:
+## Release boundary
 
-- Node.js `24.22.1` from `.nvmrc`.
-- TypeScript 6.x, ESLint flat config, and Prettier as the sole formatter.
-- Semicolons, single quotes, two-space indentation, 100-column print width.
-- npm with the repository-pinned versions.
-
-## Direct-browser consumer transport (2026-10-15)
-
-Decision #163 is resolved (operator delegated the choice, 2026-10-15) and the
-successor spec is #164: direct browser calls to a separate same-site service
-Worker with exact credentialed CORS and a service-only host-only HttpOnly
-session cookie; no Astro gateway/proxy and no per-page Identity lookup.
-ADR-0013 records the transport amendment. Slice #165 ("Authenticate directly
-from an approved browser origin with service-only session cookies") is the
-first executable slice; #166 is the shipped-client slice and is blocked by
-accepted #165 and #152. PR #154's branch is preserved and was not modified.
-
-#165/#167 are accepted and merged. Main commit `2e8d450` contains exact
-credentialed consumer CORS, retained Origin/Fetch Metadata authorization,
-service-only host-only/HttpOnly/SameSite=Lax sessions and real distinct-origin
-browser evidence. Direct-browser requests reuse the Better Auth/D1 session.
-
-Spec #195 supersedes the former single consumer-JWT semantics. Ticket #196 is
-the current presentation-only Reader State slice: explicit
-`POST /v1/auth/reader-state`, a Reader-State-specific audience, verified-only
-deployment-scoped `localStorage`, cross-tab replacement/logout, manual refresh
-and lazy single-flight renewal. Reader State never authenticates an endpoint.
-Resource-bound Access Tokens and receiving-backend use remain #197/#198 and
-are not part of #196.
-
-No live sandbox Reader State issuer/audience, DNS/TLS activation, deployment
-or promotion is established by #196. `usuarios.rugbychampagneweb.com` remains
-a selected desired production hostname rather than proof of activation.
-
-## Maintaining this checkpoint
-
-Update this file when the product frontier, execution workflow, environment
-terminology, release authority, or a cross-session blocker changes materially.
-Do not duplicate volatile model assignments or full issue/spec bodies here.
+Deploy, promotion and provisioning are explicit local P1 operations. CI runs
+deterministic lint, formatting, typecheck, generated-contract checks, Worker
+tests and harness tests only; it does not mutate Cloudflare. A Worker rollback
+does not roll back D1; destructive data recovery requires the separate
+operator runbook and confirmation.
