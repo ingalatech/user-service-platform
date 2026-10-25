@@ -14,11 +14,12 @@ accepted ADRs, current issues/PRs, CI or live repository state.
   local release execution and generate browser-safe Admin contracts.
 - PR #241's CI run succeeded for its reviewed head; the main CI run for
   `bcc5e7f` has since completed successfully.
-- Reader State is implemented and sandbox-specific issuer/audience/TTL/origin
-  configuration was merged in #201. That is configuration evidence, not proof
-  of a live rollout. No GitHub sandbox deployment record was present during
-  this check, so sandbox activation is unverified; no production activation is
-  established. No release was performed for #242.
+- Sandbox: #14 records accepted Identity deployment and smoke acceptance on
+  `f3377b2`. In #201, Reader State candidate `e696391` was deployed as an
+  inactive Version and passed readiness/CORS probes, but was not promoted; its
+  review records the prior Version as still active then. Current active sandbox
+  status is unverified (no current GitHub deployment record); no production
+  activation is evidenced. No release was performed for #242.
 - Configurable Profile and the D1 collections engine remain in planning under
   Wayfinder issues #208 and #216. Billing is not implemented.
 
@@ -45,9 +46,12 @@ workers or release commands run from repository CI.
 - Reader State is presentation-only and never authorizes User Service or a
   receiving API. The host-only HttpOnly session remains authoritative.
 - Node.js `24.22.1` (`nvm use`), pinned TypeScript, ESLint and Prettier.
-- Credentials, cookies, tokens, action URLs and secret values stay out of logs
-  and versioned environment files. Remote release configuration is owned by
-  `config/environments/.env.<environment>`; root `.env` is local-only.
+- Versioned `config/environments/.env.<environment>` files contain complete
+  non-secret deployment configuration, including `AUTH_VERIFY_EMAIL_ACTION_URL`
+  and `AUTH_RESET_PASSWORD_ACTION_URL`; runtime secrets remain out-of-band.
+  Full delivered Auth Action URLs containing verification/reset tokens, token
+  values, cookies and credentials stay out of files, arguments and logs. The
+  ignored root `.env` is local-only.
 
 ## Release boundary
 
