@@ -191,10 +191,14 @@ function sharedOptions(
     database: drizzleAdapter(database, { provider: 'sqlite', schema: identitySchema }),
     user: {
       additionalFields: {
-        firstName: { type: 'string' as const, required: false as const, input: false as const },
-        lastName: { type: 'string' as const, required: false as const, input: false as const },
-        birthDate: { type: 'string' as const, required: false as const, input: false as const },
-        phone: { type: 'string' as const, required: false as const, input: false as const },
+        // The application-owned Account Details operation is the only mounted
+        // mutation path. Its strict contract is the allowlist before it calls
+        // Better Auth's supported `updateUser` API; Better Auth's generic
+        // router is never mounted on the Worker.
+        firstName: { type: 'string' as const, required: false as const, input: true as const },
+        lastName: { type: 'string' as const, required: false as const, input: true as const },
+        birthDate: { type: 'string' as const, required: false as const, input: true as const },
+        phone: { type: 'string' as const, required: false as const, input: true as const },
       },
     },
     // Service-only session cookie (spec #164, ADR-0013): pinned HttpOnly and

@@ -3,7 +3,7 @@ import type { Context } from 'hono';
 import type { Env } from '../../env.js';
 import { PROBLEM_JSON, createProblem, type ProblemCode } from '../../shared/problem.js';
 import { createAdminUserReader } from './admin-users.js';
-import type { AccountDetails, UpdateAccountDetails } from './contract.js';
+import { createAccountDetailsOperations } from './account-details-operations.js';
 import {
   bootstrapAdminUser,
   type BootstrapCreateUser,
@@ -200,15 +200,14 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
   router.openapi(accountDetailsRoute, async (c) => {
     c.header('Cache-Control', 'private, no-store');
     const runtime = requestIdentityRuntime(c, override);
-    const session = await runtime.resolveSessionContext(c.req.raw.headers, c.get('requestId'));
-    if (session === null) return problem(c, 401, 'unauthenticated', 'Unauthenticated');
-    const result = await c.env.DB.prepare(
-      'SELECT first_name, last_name, birth_date, phone, image FROM "user" WHERE id = ?1',
-    )
-      .bind(session.user.id)
-      .first();
-    if (result === null) return problem(c, 401, 'unauthenticated', 'Unauthenticated');
-    return c.json(accountDetailsProjection(result), 200);
+    const result = await createAccountDetailsOperations(runtime).read(c.req.raw.headers);
+    if (result.kind === 'unauthenticated') {
+      return problem(c, 401, 'unauthenticated', 'Unauthenticated');
+    }
+    if (result.kind === 'internal-error') {
+      return problem(c, 500, 'internal-error', 'Internal Server Error');
+    }
+    return c.json(result.value, 200);
   });
 
   router.openapi(updateAccountDetailsRoute, async (c) => {
@@ -216,30 +215,19 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     const runtime = requestIdentityRuntime(c, override);
     const rejected = guardCookieMutation(c, runtime, 'private, no-store');
     if (rejected !== null) return rejected;
-    const session = await runtime.resolveSessionContext(c.req.raw.headers, c.get('requestId'));
-    if (session === null) return problem(c, 401, 'unauthenticated', 'Unauthenticated');
-    const patch: UpdateAccountDetails = c.req.valid('json');
-    const columns = {
-      firstName: 'first_name',
-      lastName: 'last_name',
-      birthDate: 'birth_date',
-      phone: 'phone',
-      image: 'image',
-    } as const;
-    const entries = (Object.keys(columns) as (keyof typeof columns)[]).filter((key) =>
-      Object.hasOwn(patch, key),
+    const result = await createAccountDetailsOperations(runtime).update(
+      c.req.raw.headers,
+      c.req.valid('json'),
     );
-    const assignments = entries.map(
-      (key, index) => `"${columns[key]}" = ?${(index + 1).toString()}`,
-    );
-    const values = entries.map((key) => patch[key] ?? null);
-    const updated = await c.env.DB.prepare(
-      `UPDATE "user" SET ${assignments.join(', ')}, updated_at = unixepoch() * 1000 WHERE id = ?${(values.length + 1).toString()} RETURNING first_name, last_name, birth_date, phone, image`,
-    )
-      .bind(...values, session.user.id)
-      .first();
-    if (updated === null) return problem(c, 401, 'unauthenticated', 'Unauthenticated');
-    return c.json(accountDetailsProjection(updated), 200);
+    if (result.kind === 'unauthenticated') {
+      return problem(c, 401, 'unauthenticated', 'Unauthenticated');
+    }
+    if (result.kind === 'bad-request') return problem(c, 400, 'bad-request', 'Bad Request');
+    if (result.kind === 'internal-error') {
+      return problem(c, 500, 'internal-error', 'Internal Server Error');
+    }
+    forwardSessionCookies(c, result.cookies);
+    return c.json(result.value, 200);
   });
 
   router.openapi(registerRoute, async (c) => {
@@ -549,14 +537,4 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
   });
 
   return router;
-}
-
-function accountDetailsProjection(row: Record<string, unknown>): AccountDetails {
-  return {
-    firstName: typeof row.first_name === 'string' ? row.first_name : null,
-    lastName: typeof row.last_name === 'string' ? row.last_name : null,
-    birthDate: typeof row.birth_date === 'string' ? row.birth_date : null,
-    phone: typeof row.phone === 'string' ? row.phone : null,
-    image: typeof row.image === 'string' ? row.image : null,
-  };
 }

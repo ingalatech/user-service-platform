@@ -100,6 +100,7 @@ describe('Account Details HTTP boundary', () => {
     expect(typeof legacyUser.id).toBe('string');
     expect(legacyUser.email).toBe('details@example.com');
     expect(legacyUser.emailVerified).toBe(true);
+    const updateStartedAtSeconds = Math.floor(Date.now() / 1000);
 
     const updated = await request('/v1/account-details', {
       method: 'PATCH',
@@ -119,11 +120,33 @@ describe('Account Details HTTP boundary', () => {
       phone: '+44 20 7946 0958',
       image: 'https://images.example.test/ada.png',
     });
+    const storedUser = await workerEnv.DB.prepare('SELECT updated_at FROM "user" WHERE id = ?1')
+      .bind(legacyUser.id)
+      .first<{ updated_at: number }>();
+    expect(storedUser).not.toBeNull();
+    expect(storedUser?.updated_at).toBeGreaterThanOrEqual(updateStartedAtSeconds - 1);
+    expect(storedUser?.updated_at).toBeLessThanOrEqual(Math.floor(Date.now() / 1000) + 1);
+    const updatedSessionCookie = updated.headers.get('set-cookie');
+    expect(updatedSessionCookie).not.toBeNull();
+    const patchCookie = updatedSessionCookie?.split(';')[0] ?? cookie;
+    const sessionAfterPatch = await request('/v1/me', { cookie: patchCookie });
+    expect(sessionAfterPatch.status).toBe(200);
+    expect(await sessionAfterPatch.json()).toMatchObject({ email: 'details@example.com' });
 
     const rejected = await request('/v1/account-details', {
       method: 'PATCH',
       cookie,
-      body: { lastName: 'Lovelace', role: 'admin' },
+      body: {
+        lastName: 'Lovelace',
+        firstName: 'Injected',
+        email: 'attacker@example.com',
+        emailVerified: false,
+        name: 'Injected Identity Name',
+        role: 'admin',
+        banned: true,
+        banReason: 'malicious patch',
+        banExpires: 1,
+      },
     });
     expect(rejected.status).toBe(400);
     expect(await rejected.json()).toMatchObject({ code: 'bad-request', status: 400 });
@@ -131,6 +154,19 @@ describe('Account Details HTTP boundary', () => {
       firstName: 'Ada',
       lastName: null,
     });
+    const unchangedIdentity = await request('/v1/me', { cookie });
+    expect(await unchangedIdentity.json()).toEqual({
+      id: legacyUser.id,
+      email: 'details@example.com',
+      emailVerified: true,
+    });
+    expect((await request('/v1/admin/me', { cookie })).status).toBe(403);
+    const engineRouter = await request('/api/auth/update-user', {
+      method: 'POST',
+      cookie,
+      body: { firstName: 'Unscoped mutation' },
+    });
+    expect(engineRouter.status).toBe(404);
 
     const cleared = await request('/v1/account-details', {
       method: 'PATCH',
