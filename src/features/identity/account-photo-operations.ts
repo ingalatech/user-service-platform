@@ -247,6 +247,8 @@ async function boundedImageStream(
                 validator.finish();
               } catch {
                 validation.invalidStructure = true;
+                controller.error(new Error('Invalid account photo structure.'));
+                return;
               }
             }
             ended = true;
@@ -264,6 +266,9 @@ async function boundedImageStream(
             if (!validation.invalidStructure) validator.write(next.value);
           } catch {
             validation.invalidStructure = true;
+            await reader.cancel().catch(() => undefined);
+            controller.error(new Error('Invalid account photo structure.'));
+            return;
           }
           controller.enqueue(next.value);
         } catch (error) {
@@ -535,6 +540,7 @@ export function createAccountPhotoOperations(input: PhotoOperationsInput) {
     if (initialSession === null) return { kind: 'unauthenticated' };
     if (input.files === undefined) return { kind: 'service-unavailable' };
 
+    const uploadAbort = new AbortController();
     const prepared = await boundedImageStream(body, contentType, contentLength);
     if ('kind' in prepared) return prepared;
 
@@ -556,7 +562,6 @@ export function createAccountPhotoOperations(input: PhotoOperationsInput) {
       return { kind: 'conflict' };
     }
 
-    const uploadAbort = new AbortController();
     const heartbeat = startPhotoLockHeartbeat(input.db, lock, lockTiming, () => {
       uploadAbort.abort(new Error('Account Photo upload lost its D1 lease.'));
     });
@@ -616,13 +621,15 @@ export function createAccountPhotoOperations(input: PhotoOperationsInput) {
       try {
         const fixed = new fixedLengthStreamGlobal.FixedLengthStream(prepared.contentLength);
         const transfer = prepared.stream.pipeTo(fixed.writable, { signal: uploadAbort.signal });
-        const [object] = await Promise.all([
+        const [putResult, transferResult] = await Promise.allSettled([
           input.files.put(objectKey, fixed.readable, {
             httpMetadata: { contentType: prepared.contentType },
           }),
           transfer,
         ]);
-        uploadedSize = object.size;
+        if (putResult.status === 'rejected') throw putResult.reason;
+        if (transferResult.status === 'rejected') throw transferResult.reason;
+        uploadedSize = putResult.value.size;
       } catch (error) {
         if (cleanupCandidateCreated) {
           await cancelPhotoCleanupCandidate(input.db, session.userId, photoId).catch(
@@ -639,9 +646,11 @@ export function createAccountPhotoOperations(input: PhotoOperationsInput) {
         });
         return heartbeat.isLost()
           ? { kind: 'conflict' }
-          : error instanceof PayloadTooLargeError || prepared.validation.payloadTooLarge
-            ? { kind: 'payload-too-large' }
-            : { kind: 'service-unavailable' };
+          : prepared.validation.invalidStructure
+            ? { kind: 'bad-request' }
+            : error instanceof PayloadTooLargeError || prepared.validation.payloadTooLarge
+              ? { kind: 'payload-too-large' }
+              : { kind: 'service-unavailable' };
       }
       if (prepared.validation.invalidStructure) {
         if (cleanupCandidateCreated) {
@@ -713,6 +722,23 @@ export function createAccountPhotoOperations(input: PhotoOperationsInput) {
           objectKey,
         });
         return { kind: 'service-unavailable' };
+      }
+
+      if (heartbeat.isLost() || !(await photoLockStillOwned(input.db, lock))) {
+        if (cleanupCandidateCreated) {
+          await cancelPhotoCleanupCandidate(input.db, session.userId, photoId).catch(
+            () => undefined,
+          );
+          cleanupCandidateCreated = false;
+        }
+        await deleteStagedObject({
+          db: input.db,
+          files: input.files,
+          userId: session.userId,
+          photoId,
+          objectKey,
+        });
+        return { kind: 'conflict' };
       }
 
       const updated = await writePhotoReference(input, headers, photoReference(photoId));

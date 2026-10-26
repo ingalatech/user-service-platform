@@ -1,6 +1,11 @@
 import { applyD1Migrations, env } from 'cloudflare:test';
 import type { D1Migration } from 'cloudflare:test';
-import type { ExecutionContext, R2Bucket, ScheduledController } from '@cloudflare/workers-types';
+import type {
+  ExecutionContext,
+  FixedLengthStream as FixedLengthStreamType,
+  R2Bucket,
+  ScheduledController,
+} from '@cloudflare/workers-types';
 import { beforeAll, describe, expect, it } from 'vitest';
 import { createApp } from '../../app.js';
 import type { Env } from '../../env.js';
@@ -8,6 +13,9 @@ import worker from '../../index.js';
 import { InMemoryAuthMailer } from './mailer.js';
 
 const workerEnv = env as typeof env & { readonly FILES: R2Bucket };
+const fixedLengthStreamGlobal = globalThis as typeof globalThis & {
+  readonly FixedLengthStream: new (length: number) => FixedLengthStreamType;
+};
 const testMigrations = env.TEST_MIGRATIONS as D1Migration[];
 const mailer = new InMemoryAuthMailer();
 let failPhotoReferenceResponseAfterCommit = false;
@@ -352,6 +360,75 @@ describe('Account Photo HTTP boundary', () => {
       image: string;
     };
     expect((await request(details.image, { cookie })).status).toBe(200);
+  });
+
+  it('aborts the R2 stream on structural corruption discovered after streaming begins', async () => {
+    const cookie = await signedInUser();
+    expect((await upload(cookie, jpegPayload())).status).toBe(204);
+    const before = (await (await request('/v1/account-details', { cookie })).json()) as {
+      image: string;
+    };
+    const corrupted = VALID_PNG.slice();
+    const iend = corrupted.findIndex(
+      (byte, index) =>
+        byte === 0x49 &&
+        corrupted[index + 1] === 0x45 &&
+        corrupted[index + 2] === 0x4e &&
+        corrupted[index + 3] === 0x44,
+    );
+    if (iend < 0) throw new Error('PNG fixture has no IEND chunk.');
+    corrupted[iend] = 0x58;
+
+    let receivedBytes = 0;
+    const filesWithObservedStream = {
+      ...workerEnv.FILES,
+      put: async (_key: string, value: Parameters<R2Bucket['put']>[1]) => {
+        if (typeof value !== 'object' || value === null || !('getReader' in value)) {
+          throw new Error('Expected a streamed R2 upload.');
+        }
+        const reader = (value as unknown as ReadableStream<Uint8Array>).getReader();
+        try {
+          for (;;) {
+            const next = await reader.read();
+            if (next.done) break;
+            receivedBytes += next.value.byteLength;
+          }
+        } finally {
+          reader.releaseLock();
+        }
+        throw new Error('Corrupt stream unexpectedly completed.');
+      },
+    };
+    const chunks = [corrupted.subarray(0, 12), corrupted.subarray(12, 40), corrupted.subarray(40)];
+    let chunkIndex = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        const chunk = chunks[chunkIndex++];
+        if (chunk === undefined) controller.close();
+        else controller.enqueue(chunk);
+      },
+    });
+    const response = await app.request(
+      '/v1/account-photo',
+      {
+        method: 'POST',
+        headers: {
+          cookie,
+          'content-type': 'image/png',
+          'content-length': String(corrupted.byteLength),
+        },
+        body,
+      },
+      testEnv({ FILES: filesWithObservedStream }),
+    );
+
+    expect(response.status).toBe(400);
+    expect(receivedBytes).toBeLessThan(corrupted.byteLength);
+    const after = (await (await request('/v1/account-details', { cookie })).json()) as {
+      image: string;
+    };
+    expect(after.image).toBe(before.image);
+    expect((await request(before.image, { cookie })).status).toBe(200);
   });
 
   it('replaces and removes photos through the owner session and does not expose an absent object', async () => {
@@ -763,9 +840,39 @@ describe('Account Photo HTTP boundary', () => {
         value: Parameters<R2Bucket['put']>[1],
         options?: Parameters<R2Bucket['put']>[2],
       ) => {
-        signalPutStarted();
-        await putGate;
-        return workerEnv.FILES.put(key, value, options);
+        // Buffer only this tiny fixture so the local R2 binding can be held
+        // mid-write after receiving its first byte; production stays streamed.
+        if (typeof value !== 'object' || value === null || !('getReader' in value)) {
+          throw new Error('Expected a streamed R2 upload in the long-lease test.');
+        }
+        const reader = (value as unknown as ReadableStream<Uint8Array>).getReader();
+        const chunks: Uint8Array[] = [];
+        let totalBytes = 0;
+        for (;;) {
+          const next = await reader.read();
+          if (next.done) break;
+          const chunk = next.value.slice();
+          chunks.push(chunk);
+          totalBytes += chunk.byteLength;
+        }
+        const payload = new Uint8Array(totalBytes);
+        let offset = 0;
+        for (const chunk of chunks) {
+          payload.set(chunk, offset);
+          offset += chunk.byteLength;
+        }
+        const fixed = new fixedLengthStreamGlobal.FixedLengthStream(totalBytes);
+        const put = workerEnv.FILES.put(key, fixed.readable, options);
+        const write = async () => {
+          const writer = fixed.writable.getWriter();
+          await writer.write(payload.subarray(0, 1));
+          signalPutStarted();
+          await putGate;
+          await writer.write(payload.subarray(1));
+          await writer.close();
+        };
+        const [object] = await Promise.all([put, write()]);
+        return object;
       },
     };
     const shortLeaseApp = createApp({
