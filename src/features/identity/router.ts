@@ -6,6 +6,7 @@ import { createAdminUserReader } from './admin-users.js';
 import { createAdminAccountDetailsOperations } from './admin-account-details.js';
 import { createAccountDetailsOperations } from './account-details-operations.js';
 import { createAccountPhotoOperations } from './account-photo-operations.js';
+import type { AccountPhotoReferenceWriter } from './account-photo-operations.js';
 import {
   bootstrapAdminUser,
   type BootstrapCreateUser,
@@ -54,6 +55,9 @@ export interface IdentityRouterOptions {
   // Test seam: an explicitly provided mailer (in-memory in tests) takes
   // precedence over environment resolution.
   readonly authMailer?: AuthMailer;
+  // Identity-engine seam for proving post-commit response failures on Account
+  // Photo reference writes. Production uses Better Auth directly.
+  readonly accountPhotoReferenceWriter?: AccountPhotoReferenceWriter;
   // Deterministic lease-clock and engine-failure seams for Worker-runtime tests.
   readonly now?: () => number;
   readonly bootstrapLeaseTtlMs?: number;
@@ -304,6 +308,9 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
       runtime,
       db: c.env.DB,
       files: c.env.FILES,
+      ...(options.accountPhotoReferenceWriter === undefined
+        ? {}
+        : { referenceWriter: options.accountPhotoReferenceWriter }),
       background: (task) => {
         c.executionCtx.waitUntil(task);
       },
@@ -422,6 +429,9 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
       runtime,
       db: c.env.DB,
       files: c.env.FILES,
+      ...(options.accountPhotoReferenceWriter === undefined
+        ? {}
+        : { referenceWriter: options.accountPhotoReferenceWriter }),
       background: (task) => {
         c.executionCtx.waitUntil(task);
       },

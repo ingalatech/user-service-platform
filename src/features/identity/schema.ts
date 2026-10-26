@@ -141,8 +141,16 @@ export const userPhoto = sqliteTable(
     byteLength: integer('byte_length').notNull(),
     state: text('state').notNull(),
     createdAt: integer('created_at').notNull(),
+    attemptCount: integer('attempt_count').notNull().default(0),
+    nextAttemptAt: integer('next_attempt_at').notNull().default(0),
   },
-  (table) => [index('user_photo_state_created_idx').on(table.state, table.createdAt)],
+  (table) => [
+    index('user_photo_state_next_created_idx').on(
+      table.state,
+      table.nextAttemptAt,
+      table.createdAt,
+    ),
+  ],
 );
 
 // A short-lived per-User mutation lease serializes photo replacement/removal
@@ -169,8 +177,16 @@ export const userPhotoCleanup = sqliteTable(
     replacementPhotoId: text('replacement_photo_id'),
     state: text('state').notNull(),
     createdAt: integer('created_at').notNull(),
+    attemptCount: integer('attempt_count').notNull().default(0),
+    nextAttemptAt: integer('next_attempt_at').notNull().default(0),
   },
-  (table) => [index('user_photo_cleanup_state_created_idx').on(table.state, table.createdAt)],
+  (table) => [
+    index('user_photo_cleanup_state_next_created_idx').on(
+      table.state,
+      table.nextAttemptAt,
+      table.createdAt,
+    ),
+  ],
 );
 
 // Adapter-facing schema object for Better Auth's Drizzle adapter. Kept next

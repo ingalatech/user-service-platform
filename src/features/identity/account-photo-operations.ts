@@ -4,12 +4,17 @@ import type {
   R2Bucket,
 } from '@cloudflare/workers-types';
 import { callIdentityEngine, readIdentityEngineFailure, responseCookies } from './engine-result.js';
+import { createAccountPhotoStructureValidator } from './account-photo-structure.js';
 import type { IdentityRuntime } from './identity-runtime.js';
 
 export const MAX_ACCOUNT_PHOTO_BYTES = 2 * 1024 * 1024;
 const PHOTO_KEY_PREFIX = 'account-photos/';
 const PHOTO_LOCK_TTL_MS = 15 * 60 * 1000;
 const STAGED_CLEANUP_GRACE_MS = PHOTO_LOCK_TTL_MS;
+const PHOTO_CLEANUP_PAGE_SIZE = 100;
+const PHOTO_CLEANUP_MAX_PER_RUN = 500;
+const PHOTO_CLEANUP_RETRY_BASE_MS = 60 * 1000;
+const PHOTO_CLEANUP_RETRY_MAX_MS = 15 * 60 * 1000;
 const PHOTO_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const MEDIA_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 
@@ -37,11 +42,21 @@ export type AccountPhotoReadOutcome =
 export type AccountPhotoRemoveOutcome =
   { readonly kind: 'success'; readonly cookies: readonly string[] } | PhotoFailure;
 
+export type AccountPhotoReferenceWriteOutcome =
+  | { readonly kind: 'success'; readonly cookies: readonly string[] }
+  | { readonly kind: 'unauthenticated' }
+  | { readonly kind: 'internal-error' };
+
+export type AccountPhotoReferenceWriter = (
+  write: () => Promise<AccountPhotoReferenceWriteOutcome>,
+) => Promise<AccountPhotoReferenceWriteOutcome>;
+
 interface PhotoOperationsInput {
   readonly runtime: IdentityRuntime;
   readonly db: D1Database;
   readonly files?: R2Bucket;
   readonly background?: (task: Promise<unknown>) => void;
+  readonly referenceWriter?: AccountPhotoReferenceWriter;
 }
 
 interface PhotoReference {
@@ -77,6 +92,8 @@ interface PhotoCleanupRow {
   readonly replacement_photo_id: string | null;
   readonly state: 'staged' | 'pending' | 'orphan';
   readonly created_at: number;
+  readonly attempt_count: number;
+  readonly next_attempt_at: number;
 }
 
 class PayloadTooLargeError extends Error {
@@ -84,6 +101,11 @@ class PayloadTooLargeError extends Error {
     super('Account photo is larger than the permitted size.');
     this.name = 'PayloadTooLargeError';
   }
+}
+
+function cleanupRetryAt(attemptCount: number, now: number): number {
+  const exponent = Math.min(attemptCount, 4);
+  return now + Math.min(PHOTO_CLEANUP_RETRY_BASE_MS * 2 ** exponent, PHOTO_CLEANUP_RETRY_MAX_MS);
 }
 
 const fixedLengthStreamGlobal = globalThis as typeof globalThis & {
@@ -151,6 +173,7 @@ async function boundedImageStream(
       readonly stream: ReadableStream<Uint8Array>;
       readonly contentType: string;
       readonly contentLength: number;
+      readonly validation: { payloadTooLarge: boolean; invalidStructure: boolean };
     }
   | PhotoFailure
 > {
@@ -188,6 +211,15 @@ async function boundedImageStream(
       await reader.cancel();
       return { kind: 'bad-request' };
     }
+    const validation = { payloadTooLarge: false, invalidStructure: false };
+    const validator = createAccountPhotoStructureValidator(contentType, contentLength);
+    try {
+      validator.write(signature.subarray(0, signatureLength));
+      for (const chunk of initial) validator.write(chunk);
+    } catch {
+      await reader.cancel().catch(() => undefined);
+      return { kind: 'bad-request' };
+    }
     initial.unshift(signature.subarray(0, signatureLength));
     let totalBytes = initialLength;
     const bounded = new ReadableStream<Uint8Array>({
@@ -204,15 +236,28 @@ async function boundedImageStream(
         try {
           const next = await reader.read();
           if (next.done) {
+            if (!validation.invalidStructure) {
+              try {
+                validator.finish();
+              } catch {
+                validation.invalidStructure = true;
+              }
+            }
             ended = true;
             controller.close();
             return;
           }
           totalBytes += next.value.byteLength;
           if (totalBytes > MAX_ACCOUNT_PHOTO_BYTES) {
+            validation.payloadTooLarge = true;
             await reader.cancel();
             controller.error(new PayloadTooLargeError());
             return;
+          }
+          try {
+            if (!validation.invalidStructure) validator.write(next.value);
+          } catch {
+            validation.invalidStructure = true;
           }
           controller.enqueue(next.value);
         } catch (error) {
@@ -223,7 +268,7 @@ async function boundedImageStream(
         await reader.cancel(reason);
       },
     });
-    return { stream: bounded, contentType, contentLength };
+    return { stream: bounded, contentType, contentLength, validation };
   } catch (error) {
     await reader.cancel(error).catch(() => undefined);
     return error instanceof PayloadTooLargeError
@@ -348,11 +393,24 @@ async function activatePhotoReference(
   ]);
 }
 
+async function cancelPhotoCleanupCandidate(
+  db: D1Database,
+  userId: string,
+  replacementPhotoId: string,
+): Promise<void> {
+  await db
+    .prepare(
+      'DELETE FROM "user_photo_cleanup" WHERE user_id = ?1 AND replacement_photo_id = ?2 AND state = \'staged\'',
+    )
+    .bind(userId, replacementPhotoId)
+    .run();
+}
+
 async function persistPhotoReference(input: {
   readonly runtime: IdentityRuntime;
   readonly headers: Headers;
   readonly image: string | null;
-}): Promise<{ readonly kind: 'success'; readonly cookies: readonly string[] } | PhotoFailure> {
+}): Promise<AccountPhotoReferenceWriteOutcome> {
   const outcome = await callIdentityEngine(() =>
     input.runtime.administration().api.updateUser({
       body: { image: input.image },
@@ -368,6 +426,19 @@ async function persistPhotoReference(input: {
     return failure.status === 401 ? { kind: 'unauthenticated' } : { kind: 'internal-error' };
   }
   return { kind: 'success', cookies: responseCookies(outcome) };
+}
+
+async function writePhotoReference(
+  input: PhotoOperationsInput,
+  headers: Headers,
+  image: string | null,
+): Promise<AccountPhotoReferenceWriteOutcome> {
+  const write = () => persistPhotoReference({ runtime: input.runtime, headers, image });
+  try {
+    return input.referenceWriter === undefined ? await write() : await input.referenceWriter(write);
+  } catch {
+    return { kind: 'internal-error' };
+  }
 }
 
 export function createAccountPhotoOperations(input: PhotoOperationsInput) {
@@ -386,64 +457,24 @@ export function createAccountPhotoOperations(input: PhotoOperationsInput) {
 
     const photoId = crypto.randomUUID();
     const objectKey = `${PHOTO_KEY_PREFIX}${crypto.randomUUID()}`;
-    let uploadedSize: number;
-    try {
-      const fixed = new fixedLengthStreamGlobal.FixedLengthStream(prepared.contentLength);
-      const transfer = prepared.stream.pipeTo(fixed.writable);
-      const [object] = await Promise.all([
-        input.files.put(objectKey, fixed.readable, {
-          httpMetadata: { contentType: prepared.contentType },
-        }),
-        transfer,
-      ]);
-      uploadedSize = object.size;
-    } catch (error) {
-      await deleteStagedObject({
-        db: input.db,
-        files: input.files,
-        userId: initialSession.userId,
-        photoId,
-        objectKey,
-      });
-      return error instanceof PayloadTooLargeError
-        ? { kind: 'payload-too-large' }
-        : { kind: 'service-unavailable' };
-    }
-
     let lock: PhotoLock | null;
     try {
       lock = await acquirePhotoLock(input.db, initialSession.userId);
     } catch {
-      await deleteStagedObject({
-        db: input.db,
-        files: input.files,
-        userId: initialSession.userId,
-        photoId,
-        objectKey,
-      });
+      await prepared.stream.cancel().catch(() => undefined);
       return { kind: 'service-unavailable' };
     }
     if (lock === null) {
-      await deleteStagedObject({
-        db: input.db,
-        files: input.files,
-        userId: initialSession.userId,
-        photoId,
-        objectKey,
-      });
+      await prepared.stream.cancel().catch(() => undefined);
       return { kind: 'conflict' };
     }
 
+    let intentCreated = false;
+    let cleanupCandidateCreated = false;
     try {
       const session = await accountSession(input.runtime, headers);
       if (session?.userId !== initialSession.userId) {
-        await deleteStagedObject({
-          db: input.db,
-          files: input.files,
-          userId: initialSession.userId,
-          photoId,
-          objectKey,
-        });
+        await prepared.stream.cancel().catch(() => undefined);
         return { kind: 'unauthenticated' };
       }
       const oldReference = readPhotoReference(session.image);
@@ -452,21 +483,22 @@ export function createAccountPhotoOperations(input: PhotoOperationsInput) {
           ? null
           : await currentStoredPhoto(input.db, session.userId, oldReference.photoId);
       if (oldReference !== null && oldPhoto === null) {
-        await deleteStagedObject({
-          db: input.db,
-          files: input.files,
-          userId: session.userId,
-          photoId,
-          objectKey,
-        });
+        await prepared.stream.cancel().catch(() => undefined);
         return { kind: 'service-unavailable' };
       }
       const statements = [
         input.db
           .prepare(
-            'INSERT INTO "user_photo" (photo_id, user_id, object_key, content_type, byte_length, state, created_at) VALUES (?1, ?2, ?3, ?4, ?5, \'staged\', ?6)',
+            'INSERT INTO "user_photo" (photo_id, user_id, object_key, content_type, byte_length, state, created_at) VALUES (?1, ?2, ?3, ?4, ?5, \'uploading\', ?6)',
           )
-          .bind(photoId, session.userId, objectKey, prepared.contentType, uploadedSize, Date.now()),
+          .bind(
+            photoId,
+            session.userId,
+            objectKey,
+            prepared.contentType,
+            prepared.contentLength,
+            Date.now(),
+          ),
       ];
       if (oldPhoto !== null) {
         statements.push(
@@ -486,12 +518,79 @@ export function createAccountPhotoOperations(input: PhotoOperationsInput) {
         );
       }
       await input.db.batch(statements);
+      intentCreated = true;
+      cleanupCandidateCreated = oldPhoto !== null;
 
-      const updated = await persistPhotoReference({
-        runtime: input.runtime,
-        headers,
-        image: photoReference(photoId),
-      });
+      let uploadedSize: number;
+      try {
+        const fixed = new fixedLengthStreamGlobal.FixedLengthStream(prepared.contentLength);
+        const transfer = prepared.stream.pipeTo(fixed.writable);
+        const [object] = await Promise.all([
+          input.files.put(objectKey, fixed.readable, {
+            httpMetadata: { contentType: prepared.contentType },
+          }),
+          transfer,
+        ]);
+        uploadedSize = object.size;
+      } catch (error) {
+        if (cleanupCandidateCreated) {
+          await cancelPhotoCleanupCandidate(input.db, session.userId, photoId).catch(
+            () => undefined,
+          );
+          cleanupCandidateCreated = false;
+        }
+        await deleteStagedObject({
+          db: input.db,
+          files: input.files,
+          userId: session.userId,
+          photoId,
+          objectKey,
+        });
+        return error instanceof PayloadTooLargeError || prepared.validation.payloadTooLarge
+          ? { kind: 'payload-too-large' }
+          : { kind: 'service-unavailable' };
+      }
+      if (prepared.validation.invalidStructure) {
+        if (cleanupCandidateCreated) {
+          await cancelPhotoCleanupCandidate(input.db, session.userId, photoId).catch(
+            () => undefined,
+          );
+          cleanupCandidateCreated = false;
+        }
+        await deleteStagedObject({
+          db: input.db,
+          files: input.files,
+          userId: session.userId,
+          photoId,
+          objectKey,
+        });
+        return { kind: 'bad-request' };
+      }
+      try {
+        await input.db
+          .prepare(
+            "UPDATE \"user_photo\" SET byte_length = ?1, state = 'staged' WHERE photo_id = ?2 AND user_id = ?3 AND state = 'uploading'",
+          )
+          .bind(uploadedSize, photoId, session.userId)
+          .run();
+      } catch {
+        if (cleanupCandidateCreated) {
+          await cancelPhotoCleanupCandidate(input.db, session.userId, photoId).catch(
+            () => undefined,
+          );
+          cleanupCandidateCreated = false;
+        }
+        await deleteStagedObject({
+          db: input.db,
+          files: input.files,
+          userId: session.userId,
+          photoId,
+          objectKey,
+        });
+        return { kind: 'service-unavailable' };
+      }
+
+      const updated = await writePhotoReference(input, headers, photoReference(photoId));
       if (updated.kind !== 'success') {
         let storedImage: string | null | undefined;
         try {
@@ -541,13 +640,22 @@ export function createAccountPhotoOperations(input: PhotoOperationsInput) {
       scheduleCleanup(input);
       return { kind: 'success', cookies: updated.cookies };
     } catch {
-      await deleteStagedObject({
-        db: input.db,
-        files: input.files,
-        userId: initialSession.userId,
-        photoId,
-        objectKey,
-      });
+      if (intentCreated) {
+        if (cleanupCandidateCreated) {
+          await cancelPhotoCleanupCandidate(input.db, initialSession.userId, photoId).catch(
+            () => undefined,
+          );
+        }
+        await deleteStagedObject({
+          db: input.db,
+          files: input.files,
+          userId: initialSession.userId,
+          photoId,
+          objectKey,
+        });
+      } else {
+        await prepared.stream.cancel().catch(() => undefined);
+      }
       return { kind: 'service-unavailable' };
     } finally {
       await releasePhotoLock(input.db, lock).catch(() => undefined);
@@ -636,7 +744,7 @@ export function createAccountPhotoOperations(input: PhotoOperationsInput) {
           .bind(crypto.randomUUID(), current.userId, photo.object_key, photo.photo_id, Date.now())
           .run();
       }
-      const updated = await persistPhotoReference({ runtime: input.runtime, headers, image: null });
+      const updated = await writePhotoReference(input, headers, null);
       if (updated.kind !== 'success') {
         let storedImage: string | null | undefined;
         try {
@@ -796,132 +904,189 @@ export async function retryAccountPhotoCleanup(
   files: R2Bucket,
   now = Date.now(),
 ): Promise<void> {
-  const jobs = await db
-    .prepare(
-      "SELECT cleanup_id, user_id, object_key, photo_id, source_photo_id, replacement_photo_id, state, created_at FROM \"user_photo_cleanup\" WHERE state IN ('staged', 'pending', 'orphan') ORDER BY created_at LIMIT 100",
-    )
-    .all<PhotoCleanupRow>();
-  for (const job of jobs.results) {
-    const user = await db
-      .prepare('SELECT image FROM "user" WHERE id = ?1')
-      .bind(job.user_id)
-      .first<{ image: string | null }>();
-    const currentReference = readPhotoReference(user?.image ?? null);
-    if (job.state === 'orphan') {
-      if (currentReference?.photoId === job.replacement_photo_id) {
-        await db.batch([
-          db
+  let processed = 0;
+  const graceCutoff = now - STAGED_CLEANUP_GRACE_MS;
+  const activeUploadLock = `NOT EXISTS (SELECT 1 FROM "user_photo_lock" AS active_lock WHERE active_lock.user_id = user_photo_cleanup.user_id AND active_lock.expires_at > ?1)`;
+  const sourceStillCurrent = `EXISTS (SELECT 1 FROM "user" AS source_user WHERE source_user.id = user_photo_cleanup.user_id AND source_user.image = '/v1/account-photo/' || user_photo_cleanup.source_photo_id)`;
+  const replacementIsCurrent = `EXISTS (SELECT 1 FROM "user" AS replacement_user WHERE replacement_user.id = user_photo_cleanup.user_id AND replacement_user.image = '/v1/account-photo/' || user_photo_cleanup.replacement_photo_id)`;
+  const eligibleCleanup = `state = 'orphan' OR (state = 'pending' AND (source_photo_id IS NULL OR NOT ${sourceStillCurrent})) OR (state = 'staged' AND (created_at <= ?2 OR (replacement_photo_id IS NOT NULL AND ${replacementIsCurrent}) OR (replacement_photo_id IS NULL AND source_photo_id IS NOT NULL AND NOT ${sourceStillCurrent})))`;
+
+  while (processed < PHOTO_CLEANUP_MAX_PER_RUN) {
+    const limit = Math.min(PHOTO_CLEANUP_PAGE_SIZE, PHOTO_CLEANUP_MAX_PER_RUN - processed);
+    const page = await db
+      .prepare(
+        `SELECT cleanup_id, user_id, object_key, photo_id, source_photo_id, replacement_photo_id, state, created_at, attempt_count, next_attempt_at FROM "user_photo_cleanup" WHERE next_attempt_at <= ?1 AND ${activeUploadLock} AND (${eligibleCleanup}) ORDER BY next_attempt_at, created_at, cleanup_id LIMIT ?3`,
+      )
+      .bind(now, graceCutoff, limit)
+      .all<PhotoCleanupRow>();
+    if (page.results.length === 0) break;
+
+    for (const job of page.results) {
+      processed += 1;
+      try {
+        await processPhotoCleanupRow(db, files, job);
+      } catch {
+        await db
+          .prepare(
+            'UPDATE "user_photo_cleanup" SET attempt_count = attempt_count + 1, next_attempt_at = ?1 WHERE cleanup_id = ?2',
+          )
+          .bind(cleanupRetryAt(job.attempt_count, now), job.cleanup_id)
+          .run()
+          .catch(() => undefined);
+      }
+    }
+    if (page.results.length < limit) break;
+  }
+
+  processed = 0;
+  const activePhotoLock = `NOT EXISTS (SELECT 1 FROM "user_photo_lock" AS active_lock WHERE active_lock.user_id = user_photo.user_id AND active_lock.expires_at > ?1)`;
+  const photoReferenceCurrent = `EXISTS (SELECT 1 FROM "user" AS photo_user WHERE photo_user.id = user_photo.user_id AND photo_user.image = '/v1/account-photo/' || user_photo.photo_id)`;
+  while (processed < PHOTO_CLEANUP_MAX_PER_RUN) {
+    const limit = Math.min(PHOTO_CLEANUP_PAGE_SIZE, PHOTO_CLEANUP_MAX_PER_RUN - processed);
+    const photos = await db
+      .prepare(
+        `SELECT photo_id, user_id, object_key, state, created_at, attempt_count, next_attempt_at FROM "user_photo" WHERE state IN ('uploading', 'staged') AND next_attempt_at <= ?1 AND ${activePhotoLock} AND ((state = 'uploading' AND created_at <= ?2) OR (state = 'staged' AND (created_at <= ?2 OR ${photoReferenceCurrent}))) ORDER BY next_attempt_at, created_at, photo_id LIMIT ?3`,
+      )
+      .bind(now, graceCutoff, limit)
+      .all<{
+        readonly photo_id: string;
+        readonly user_id: string;
+        readonly object_key: string;
+        readonly state: 'uploading' | 'staged';
+        readonly created_at: number;
+        readonly attempt_count: number;
+        readonly next_attempt_at: number;
+      }>();
+    if (photos.results.length === 0) break;
+
+    for (const photo of photos.results) {
+      processed += 1;
+      try {
+        const user = await db
+          .prepare('SELECT image FROM "user" WHERE id = ?1')
+          .bind(photo.user_id)
+          .first<{ image: string | null }>();
+        if (readPhotoReference(user?.image ?? null)?.photoId === photo.photo_id) {
+          await db
             .prepare(
               'UPDATE "user_photo" SET state = \'current\' WHERE photo_id = ?1 AND user_id = ?2',
             )
-            .bind(job.photo_id, job.user_id),
-          db.prepare('DELETE FROM "user_photo_cleanup" WHERE cleanup_id = ?1').bind(job.cleanup_id),
-        ]);
-        continue;
+            .bind(photo.photo_id, photo.user_id)
+            .run();
+        } else {
+          await files.delete(photo.object_key);
+          await db
+            .prepare(
+              "DELETE FROM \"user_photo\" WHERE photo_id = ?1 AND user_id = ?2 AND state IN ('uploading', 'staged')",
+            )
+            .bind(photo.photo_id, photo.user_id)
+            .run();
+        }
+      } catch {
+        await db
+          .prepare(
+            'UPDATE "user_photo" SET attempt_count = attempt_count + 1, next_attempt_at = ?1 WHERE photo_id = ?2 AND user_id = ?3',
+          )
+          .bind(cleanupRetryAt(photo.attempt_count, now), photo.photo_id, photo.user_id)
+          .run()
+          .catch(() => undefined);
       }
-      await files.delete(job.object_key);
+    }
+    if (photos.results.length < limit) break;
+  }
+}
+
+async function processPhotoCleanupRow(
+  db: D1Database,
+  files: R2Bucket,
+  job: PhotoCleanupRow,
+): Promise<void> {
+  const user = await db
+    .prepare('SELECT image FROM "user" WHERE id = ?1')
+    .bind(job.user_id)
+    .first<{ image: string | null }>();
+  const currentReference = readPhotoReference(user?.image ?? null);
+  if (job.state === 'orphan') {
+    if (currentReference?.photoId === job.replacement_photo_id) {
       await db.batch([
         db
-          .prepare('DELETE FROM "user_photo" WHERE photo_id = ?1 AND user_id = ?2')
+          .prepare(
+            'UPDATE "user_photo" SET state = \'current\' WHERE photo_id = ?1 AND user_id = ?2',
+          )
           .bind(job.photo_id, job.user_id),
         db.prepare('DELETE FROM "user_photo_cleanup" WHERE cleanup_id = ?1').bind(job.cleanup_id),
       ]);
-      continue;
-    }
-
-    if (job.state === 'staged') {
-      const committed =
-        job.replacement_photo_id === null
-          ? currentReference?.photoId !== job.source_photo_id
-          : currentReference?.photoId === job.replacement_photo_id;
-      if (committed) {
-        await db.batch([
-          db
-            .prepare(
-              'UPDATE "user_photo" SET state = \'current\' WHERE photo_id = ?1 AND user_id = ?2',
-            )
-            .bind(job.replacement_photo_id, job.user_id),
-          db
-            .prepare('UPDATE "user_photo_cleanup" SET state = \'pending\' WHERE cleanup_id = ?1')
-            .bind(job.cleanup_id),
-        ]);
-      } else if (now - job.created_at >= STAGED_CLEANUP_GRACE_MS) {
-        const deletions = [];
-        if (job.replacement_photo_id !== null) {
-          const replacement = await currentStoredPhoto(db, job.user_id, job.replacement_photo_id);
-          if (replacement !== null) {
-            await files.delete(replacement.object_key);
-            deletions.push(
-              db
-                .prepare('DELETE FROM "user_photo" WHERE photo_id = ?1 AND user_id = ?2')
-                .bind(replacement.photo_id, job.user_id),
-            );
-          }
-        }
-        if (job.source_photo_id !== null && currentReference?.photoId !== job.source_photo_id) {
-          await files.delete(job.object_key);
-          deletions.push(
-            db
-              .prepare('DELETE FROM "user_photo" WHERE photo_id = ?1 AND user_id = ?2')
-              .bind(job.source_photo_id, job.user_id),
-          );
-        }
-        deletions.push(
-          db.prepare('DELETE FROM "user_photo_cleanup" WHERE cleanup_id = ?1').bind(job.cleanup_id),
-        );
-        await db.batch(deletions);
-        continue;
-      } else {
-        continue;
-      }
-    }
-
-    if (job.source_photo_id !== null && currentReference?.photoId === job.source_photo_id) {
-      // A pending delete must never remove the object still named by the
-      // authoritative Identity reference. Keep the durable row for retry.
-      continue;
+      return;
     }
     await files.delete(job.object_key);
     await db.batch([
-      ...(job.source_photo_id === null
-        ? []
-        : [
-            db
-              .prepare('DELETE FROM "user_photo" WHERE photo_id = ?1 AND user_id = ?2')
-              .bind(job.source_photo_id, job.user_id),
-          ]),
+      db
+        .prepare('DELETE FROM "user_photo" WHERE photo_id = ?1 AND user_id = ?2')
+        .bind(job.photo_id, job.user_id),
       db.prepare('DELETE FROM "user_photo_cleanup" WHERE cleanup_id = ?1').bind(job.cleanup_id),
     ]);
+    return;
   }
 
-  const stagedPhotos = await db
-    .prepare(
-      'SELECT photo_id, user_id, object_key, created_at FROM "user_photo" WHERE state = \'staged\' ORDER BY created_at LIMIT 100',
-    )
-    .all<{
-      readonly photo_id: string;
-      readonly user_id: string;
-      readonly object_key: string;
-      readonly created_at: number;
-    }>();
-  for (const photo of stagedPhotos.results) {
-    const user = await db
-      .prepare('SELECT image FROM "user" WHERE id = ?1')
-      .bind(photo.user_id)
-      .first<{ image: string | null }>();
-    if (readPhotoReference(user?.image ?? null)?.photoId === photo.photo_id) {
+  if (job.state === 'staged') {
+    const committed =
+      job.replacement_photo_id === null
+        ? currentReference?.photoId !== job.source_photo_id
+        : currentReference?.photoId === job.replacement_photo_id;
+    if (committed) {
+      await db.batch([
+        ...(job.replacement_photo_id === null
+          ? []
+          : [
+              db
+                .prepare(
+                  'UPDATE "user_photo" SET state = \'current\' WHERE photo_id = ?1 AND user_id = ?2',
+                )
+                .bind(job.replacement_photo_id, job.user_id),
+            ]),
+        db
+          .prepare('UPDATE "user_photo_cleanup" SET state = \'pending\' WHERE cleanup_id = ?1')
+          .bind(job.cleanup_id),
+      ]);
+      return;
+    }
+
+    if (job.replacement_photo_id !== null) {
+      const replacement = await currentStoredPhoto(db, job.user_id, job.replacement_photo_id);
+      if (replacement !== null) {
+        await files.delete(replacement.object_key);
+        await db
+          .prepare('DELETE FROM "user_photo" WHERE photo_id = ?1 AND user_id = ?2')
+          .bind(replacement.photo_id, job.user_id)
+          .run();
+      }
+    }
+    if (job.source_photo_id !== null && currentReference?.photoId !== job.source_photo_id) {
+      await files.delete(job.object_key);
       await db
-        .prepare('UPDATE "user_photo" SET state = \'current\' WHERE photo_id = ?1 AND user_id = ?2')
-        .bind(photo.photo_id, photo.user_id)
-        .run();
-    } else if (now - photo.created_at >= STAGED_CLEANUP_GRACE_MS) {
-      await files.delete(photo.object_key);
-      await db
-        .prepare(
-          'DELETE FROM "user_photo" WHERE photo_id = ?1 AND user_id = ?2 AND state = \'staged\'',
-        )
-        .bind(photo.photo_id, photo.user_id)
+        .prepare('DELETE FROM "user_photo" WHERE photo_id = ?1 AND user_id = ?2')
+        .bind(job.source_photo_id, job.user_id)
         .run();
     }
+    await db
+      .prepare('DELETE FROM "user_photo_cleanup" WHERE cleanup_id = ?1')
+      .bind(job.cleanup_id)
+      .run();
+    return;
   }
+
+  if (job.source_photo_id !== null && currentReference?.photoId === job.source_photo_id) {
+    return;
+  }
+  await files.delete(job.object_key);
+  await db.batch([
+    ...(job.source_photo_id === null
+      ? []
+      : [
+          db
+            .prepare('DELETE FROM "user_photo" WHERE photo_id = ?1 AND user_id = ?2')
+            .bind(job.source_photo_id, job.user_id),
+        ]),
+    db.prepare('DELETE FROM "user_photo_cleanup" WHERE cleanup_id = ?1').bind(job.cleanup_id),
+  ]);
 }

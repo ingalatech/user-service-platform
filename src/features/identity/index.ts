@@ -4,6 +4,7 @@ import {
   createIdentityV2Router,
   type IdentityRouterOptions,
 } from './router.js';
+export type { AccountPhotoReferenceWriter } from './account-photo-operations.js';
 
 // Public slice interface for the identity feature (AGENTS.md change rules).
 // Cross-feature consumers (including the application composition root) may

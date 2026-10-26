@@ -54,7 +54,7 @@ export interface paths {
         put?: never;
         /**
          * Upload the current User photo
-         * @description Streams a JPEG, PNG, or WebP request body with Content-Length of at most 2 MiB to private object storage. The service validates the image signature and stores only an opaque service-route reference in Identity.
+         * @description Streams a JPEG, PNG, or WebP request body with Content-Length of at most 2 MiB to private object storage. The service validates its bounded container structure and stores only an opaque service-route reference in Identity.
          */
         post: operations["uploadAccountPhoto"];
         /**

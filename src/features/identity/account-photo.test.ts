@@ -10,8 +10,28 @@ import { InMemoryAuthMailer } from './mailer.js';
 const workerEnv = env as typeof env & { readonly FILES: R2Bucket };
 const testMigrations = env.TEST_MIGRATIONS as D1Migration[];
 const mailer = new InMemoryAuthMailer();
-const app = createApp({ authMailer: mailer });
+let failPhotoReferenceResponseAfterCommit = false;
+const app = createApp({
+  authMailer: mailer,
+  accountPhotoReferenceWriter: async (write) => {
+    const outcome = await write();
+    if (failPhotoReferenceResponseAfterCommit && outcome.kind === 'success') {
+      failPhotoReferenceResponseAfterCommit = false;
+      return { kind: 'internal-error' };
+    }
+    return outcome;
+  },
+});
 const MAX_ACCOUNT_PHOTO_BYTES = 2 * 1024 * 1024;
+const VALID_JPEG = decodeBase64(
+  '/9j/4AAQSkZJRgABAQAAAQABAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////2wBDAf//////////////////////////////////////////////////////////////////////////////////////wAARCAABAAEDASIAAhEBAxEB/8QAFQABAQAAAAAAAAAAAAAAAAAAAAX/xAAUEAEAAAAAAAAAAAAAAAAAAAAA/9oADAMBAAIQAxAAAAFR/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABBQJ//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAwEBPwF//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAgEBPwF//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQAGPwJ//8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPyF//9k=',
+);
+const VALID_PNG = decodeBase64(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/Uj8AAAAASUVORK5CYII=',
+);
+const VALID_WEBP = decodeBase64(
+  'UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEAAUAmJaQAA3AA/v89WAAAAA==',
+).subarray(0, 42);
 
 function testEnv(overrides: Partial<Env> = {}): Env {
   return {
@@ -64,6 +84,16 @@ async function verificationFor(email: string) {
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
   throw new Error('Expected the fixture mailer to capture verification.');
+}
+
+async function runPhotoCleanup(files: R2Bucket = workerEnv.FILES): Promise<void> {
+  const tasks: Promise<unknown>[] = [];
+  worker.scheduled({} as ScheduledController, testEnv({ FILES: files }), {
+    waitUntil(task: Promise<unknown>) {
+      tasks.push(task);
+    },
+  } as unknown as ExecutionContext);
+  await Promise.all(tasks);
 }
 
 async function signedInUser(): Promise<string> {
@@ -124,11 +154,38 @@ async function signedInAdmin(): Promise<string> {
   );
 }
 
-function jpegPayload(size = 16): Uint8Array {
-  const bytes = new Uint8Array(size);
-  bytes.set([0xff, 0xd8, 0xff, 0xe0]);
-  bytes.set([0xff, 0xd9], size - 2);
-  return bytes;
+function decodeBase64(value: string): Uint8Array {
+  return Uint8Array.from(atob(value), (byte) => byte.charCodeAt(0));
+}
+
+function jpegPayload(size = VALID_JPEG.byteLength): Uint8Array {
+  if (size === VALID_JPEG.byteLength) return VALID_JPEG.slice();
+  if (size < VALID_JPEG.byteLength) throw new Error('JPEG fixture size is below its minimum.');
+  const scanOffset = VALID_JPEG.findIndex(
+    (byte, index) => byte === 0xff && VALID_JPEG[index + 1] === 0xda,
+  );
+  if (scanOffset < 0) throw new Error('JPEG fixture has no start-of-scan marker.');
+  const segments: Uint8Array[] = [];
+  let remaining = size - VALID_JPEG.byteLength;
+  while (remaining > 0) {
+    const segmentBytes = Math.min(65_537, remaining);
+    if (segmentBytes < 4) throw new Error('JPEG fixture padding cannot fit a marker segment.');
+    const segment = new Uint8Array(segmentBytes);
+    segment.set([0xff, 0xfe, (segmentBytes - 2) >>> 8, (segmentBytes - 2) & 0xff]);
+    segment.fill(0xa5, 4);
+    segments.push(segment);
+    remaining -= segmentBytes;
+  }
+  const total = new Uint8Array(size);
+  let offset = 0;
+  total.set(VALID_JPEG.subarray(0, scanOffset), offset);
+  offset += scanOffset;
+  for (const segment of segments) {
+    total.set(segment, offset);
+    offset += segment.byteLength;
+  }
+  total.set(VALID_JPEG.subarray(scanOffset), offset);
+  return total;
 }
 
 function upload(cookie: string, bytes: Uint8Array, contentType = 'image/jpeg'): Promise<Response> {
@@ -193,6 +250,24 @@ describe('Account Photo HTTP boundary', () => {
       'image/png',
     );
     expect(html.status).toBe(400);
+    const fakeJpegHeader = await upload(
+      cookie,
+      new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 0, 2, 0, 0, 0, 0, 0, 0]),
+      'image/jpeg',
+    );
+    expect(fakeJpegHeader.status).toBe(400);
+    const fakePngHeader = await upload(
+      cookie,
+      new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]),
+      'image/png',
+    );
+    expect(fakePngHeader.status).toBe(400);
+    const fakeWebpHeader = await upload(
+      cookie,
+      new Uint8Array([0x52, 0x49, 0x46, 0x46, 4, 0, 0, 0, 0x57, 0x45, 0x42, 0x50]),
+      'image/webp',
+    );
+    expect(fakeWebpHeader.status).toBe(400);
 
     expect((await upload(cookie, jpegPayload(MAX_ACCOUNT_PHOTO_BYTES))).status).toBe(204);
     const detailsAtLimit = await (await request('/v1/account-details', { cookie })).json();
@@ -210,7 +285,7 @@ describe('Account Photo HTTP boundary', () => {
       image: string;
     };
 
-    const png = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0]);
+    const png = VALID_PNG;
     expect((await upload(cookie, png, 'image/png')).status).toBe(204);
     const secondDetails = (await (await request('/v1/account-details', { cookie })).json()) as {
       image: string;
@@ -219,7 +294,7 @@ describe('Account Photo HTTP boundary', () => {
     expect((await request(firstDetails.image, { cookie })).status).toBe(404);
     expect((await request(secondDetails.image, { cookie })).status).toBe(200);
 
-    const webp = new Uint8Array([0x52, 0x49, 0x46, 0x46, 0, 0, 0, 0, 0x57, 0x45, 0x42, 0x50]);
+    const webp = VALID_WEBP;
     expect((await upload(cookie, webp, 'image/webp')).status).toBe(204);
     const thirdDetails = (await (await request('/v1/account-details', { cookie })).json()) as {
       image: string;
@@ -295,7 +370,7 @@ describe('Account Photo HTTP boundary', () => {
     const cookie = await signedInUser();
     const [first, second, edit, imageEdit] = await Promise.all([
       upload(cookie, jpegPayload()),
-      upload(cookie, new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]), 'image/png'),
+      upload(cookie, VALID_PNG, 'image/png'),
       request('/v1/account-details', {
         method: 'PATCH',
         cookie,
@@ -367,13 +442,14 @@ describe('Account Photo HTTP boundary', () => {
     expect(deletePreflight.status).toBe(204);
     expect(deletePreflight.headers.get('access-control-allow-methods')).toContain('DELETE');
 
+    const approvedBytes = jpegPayload();
     const approvedUpload = await request('/v1/account-photo', {
       method: 'POST',
       cookie,
-      body: jpegPayload(),
+      body: approvedBytes,
       headers: {
         'content-type': 'image/jpeg',
-        'content-length': '16',
+        'content-length': String(approvedBytes.byteLength),
         origin: allowedOrigin,
         'sec-fetch-site': 'cross-site',
       },
@@ -405,11 +481,7 @@ describe('Account Photo HTTP boundary', () => {
       "CREATE TRIGGER fail_staged_photo_cleanup BEFORE INSERT ON user_photo_cleanup WHEN NEW.state = 'staged' BEGIN SELECT RAISE(ABORT, 'injected D1 failure'); END",
     ).run();
     try {
-      const replacement = await upload(
-        cookie,
-        new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]),
-        'image/png',
-      );
+      const replacement = await upload(cookie, VALID_PNG, 'image/png');
       expect(replacement.status).toBe(503);
       const after = (await (await request('/v1/account-details', { cookie })).json()) as {
         image: string;
@@ -439,6 +511,18 @@ describe('Account Photo HTTP boundary', () => {
     }
   });
 
+  it('reconciles a remove whose Better Auth response fails after the user image update committed', async () => {
+    const cookie = await signedInUser();
+    expect((await upload(cookie, jpegPayload())).status).toBe(204);
+    failPhotoReferenceResponseAfterCommit = true;
+    const removed = await request('/v1/account-photo', { method: 'DELETE', cookie });
+    expect(removed.status).toBe(204);
+    const details = (await (await request('/v1/account-details', { cookie })).json()) as {
+      image: string | null;
+    };
+    expect(details.image).toBeNull();
+  });
+
   it('keeps failed R2 deletion durable and retries cleanup from the Worker scheduled event', async () => {
     const cookie = await signedInUser();
     expect((await upload(cookie, jpegPayload())).status).toBe(204);
@@ -460,14 +544,162 @@ describe('Account Photo HTTP boundary', () => {
     };
     expect(cleared.image).toBeNull();
 
-    const scheduledTasks: Promise<unknown>[] = [];
-    worker.scheduled({} as ScheduledController, testEnv(), {
-      waitUntil(task: Promise<unknown>) {
-        scheduledTasks.push(task);
-      },
-    } as unknown as ExecutionContext);
-    await Promise.all(scheduledTasks);
+    await runPhotoCleanup();
     expect((await request(details.image, { cookie })).status).toBe(404);
+  });
+
+  it('recovers interrupted R2 intents, respects live upload locks, and reconciles an already referenced photo', async () => {
+    const cookie = await signedInUser();
+    const { id: userId } = (await (await request('/v1/me', { cookie })).json()) as { id: string };
+    const createdAt = Date.now() - 16 * 60 * 1000;
+    const insertPhotoIntent = async (photoId: string, objectKey: string) =>
+      workerEnv.DB.prepare(
+        "INSERT INTO \"user_photo\" (photo_id, user_id, object_key, content_type, byte_length, state, created_at) VALUES (?1, ?2, ?3, 'image/jpeg', ?4, 'uploading', ?5)",
+      )
+        .bind(photoId, userId, objectKey, VALID_JPEG.byteLength, createdAt)
+        .run();
+    const putFixture = (key: string) =>
+      workerEnv.FILES.put(key, VALID_JPEG, { httpMetadata: { contentType: 'image/jpeg' } });
+
+    const interruptedId = crypto.randomUUID();
+    const interruptedKey = `account-photos/${crypto.randomUUID()}`;
+    await putFixture(interruptedKey);
+    await insertPhotoIntent(interruptedId, interruptedKey);
+    await runPhotoCleanup();
+    expect(await workerEnv.FILES.get(interruptedKey)).toBeNull();
+    expect(
+      await workerEnv.DB.prepare('SELECT photo_id FROM "user_photo" WHERE photo_id = ?1')
+        .bind(interruptedId)
+        .first(),
+    ).toBeNull();
+
+    const activeId = crypto.randomUUID();
+    const activeKey = `account-photos/${crypto.randomUUID()}`;
+    await putFixture(activeKey);
+    await insertPhotoIntent(activeId, activeKey);
+    await workerEnv.DB.prepare(
+      'INSERT INTO "user_photo_lock" (user_id, lock_token, expires_at) VALUES (?1, ?2, ?3)',
+    )
+      .bind(userId, crypto.randomUUID(), Date.now() + 60 * 60 * 1000)
+      .run();
+    await runPhotoCleanup();
+    expect(await workerEnv.FILES.get(activeKey)).not.toBeNull();
+    await workerEnv.DB.prepare('UPDATE "user_photo_lock" SET expires_at = 0 WHERE user_id = ?1')
+      .bind(userId)
+      .run();
+    await runPhotoCleanup();
+    expect(await workerEnv.FILES.get(activeKey)).toBeNull();
+
+    const referencedId = crypto.randomUUID();
+    const referencedKey = `account-photos/${crypto.randomUUID()}`;
+    await putFixture(referencedKey);
+    await insertPhotoIntent(referencedId, referencedKey);
+    await workerEnv.DB.prepare('UPDATE "user" SET image = ?1 WHERE id = ?2')
+      .bind(`/v1/account-photo/${referencedId}`, userId)
+      .run();
+    await runPhotoCleanup();
+    const repaired = await workerEnv.DB.prepare(
+      'SELECT state FROM "user_photo" WHERE photo_id = ?1',
+    )
+      .bind(referencedId)
+      .first<{ state: string }>();
+    expect(repaired?.state).toBe('current');
+    expect((await request(`/v1/account-photo/${referencedId}`, { cookie })).status).toBe(200);
+
+    let intentVisibleBeforeR2Put = false;
+    const filesWithIntentProbe = {
+      ...workerEnv.FILES,
+      put: async (
+        key: string,
+        value: Parameters<R2Bucket['put']>[1],
+        options?: Parameters<R2Bucket['put']>[2],
+      ) => {
+        const intent = await workerEnv.DB.prepare(
+          'SELECT state FROM "user_photo" WHERE object_key = ?1',
+        )
+          .bind(key)
+          .first<{ state: string }>();
+        intentVisibleBeforeR2Put = intent?.state === 'uploading';
+        return workerEnv.FILES.put(key, value, options);
+      },
+    };
+    const finalUpload = await request('/v1/account-photo', {
+      method: 'POST',
+      cookie,
+      body: VALID_JPEG,
+      headers: {
+        'content-type': 'image/jpeg',
+        'content-length': String(VALID_JPEG.byteLength),
+      },
+      env: { FILES: filesWithIntentProbe },
+    });
+    expect(finalUpload.status).toBe(204);
+    expect(intentVisibleBeforeR2Put).toBe(true);
+  });
+
+  it('moves past over 100 poisoned cleanup rows and still processes healthy R2/D1 work', async () => {
+    const cookie = await signedInUser();
+    const { id: userId } = (await (await request('/v1/me', { cookie })).json()) as { id: string };
+    const createdAt = Date.now() - 60_000;
+    const entries = [
+      ...Array.from({ length: 60 }, (_, index) => ({
+        id: `poison-r2-${String(index).padStart(3, '0')}`,
+        key: `poison-r2/${String(index).padStart(3, '0')}`,
+      })),
+      ...Array.from({ length: 60 }, (_, index) => ({
+        id: `poison-d1-${String(index).padStart(3, '0')}`,
+        key: `poison-d1/${String(index).padStart(3, '0')}`,
+      })),
+    ];
+    for (const [index, entry] of entries.entries()) {
+      await workerEnv.DB.prepare(
+        'INSERT INTO "user_photo_cleanup" (cleanup_id, user_id, object_key, state, created_at) VALUES (?1, ?2, ?3, \'pending\', ?4)',
+      )
+        .bind(entry.id, userId, entry.key, createdAt + index)
+        .run();
+    }
+    const healthyKey = `account-photos/${crypto.randomUUID()}`;
+    await workerEnv.FILES.put(healthyKey, VALID_JPEG, {
+      httpMetadata: { contentType: 'image/jpeg' },
+    });
+    await workerEnv.DB.prepare(
+      'INSERT INTO "user_photo_cleanup" (cleanup_id, user_id, object_key, state, created_at) VALUES (?1, ?2, ?3, \'pending\', ?4)',
+    )
+      .bind('healthy-cleanup', userId, healthyKey, createdAt + entries.length)
+      .run();
+    await workerEnv.DB.prepare(
+      "CREATE TRIGGER fail_poisoned_cleanup BEFORE DELETE ON user_photo_cleanup WHEN OLD.cleanup_id LIKE 'poison-d1-%' BEGIN SELECT RAISE(ABORT, 'injected row-specific D1 cleanup failure'); END",
+    ).run();
+    const filesWithPoisonedDeletes = {
+      ...workerEnv.FILES,
+      delete: (keys: string | string[]) => {
+        const requested = Array.isArray(keys) ? keys : [keys];
+        if (requested.some((key) => key.startsWith('poison-r2/'))) {
+          return Promise.reject(new Error('injected row-specific R2 cleanup failure'));
+        }
+        return workerEnv.FILES.delete(keys);
+      },
+    };
+    try {
+      await runPhotoCleanup(filesWithPoisonedDeletes);
+      expect(await workerEnv.FILES.get(healthyKey)).toBeNull();
+      expect(
+        await workerEnv.DB.prepare(
+          'SELECT cleanup_id FROM "user_photo_cleanup" WHERE cleanup_id = ?1',
+        )
+          .bind('healthy-cleanup')
+          .first(),
+      ).toBeNull();
+      expect(
+        await workerEnv.DB.prepare(
+          'SELECT COUNT(*) AS count FROM "user_photo_cleanup" WHERE cleanup_id LIKE \'poison-%\' AND next_attempt_at > ?1',
+        )
+          .bind(Date.now())
+          .first<{ count: number }>(),
+      ).toMatchObject({ count: 120 });
+    } finally {
+      await workerEnv.DB.prepare('DROP TRIGGER fail_poisoned_cleanup').run();
+    }
   });
 
   it('keeps the Worker operational when the optional R2 binding is not configured', async () => {
