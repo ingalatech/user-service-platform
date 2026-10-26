@@ -3,7 +3,6 @@ import type {
   FixedLengthStream as FixedLengthStreamType,
   R2Bucket,
 } from '@cloudflare/workers-types';
-import { callIdentityEngine, readIdentityEngineFailure, responseCookies } from './engine-result.js';
 import { createAccountPhotoStructureValidator } from './account-photo-structure.js';
 import type { IdentityRuntime } from './identity-runtime.js';
 
@@ -44,6 +43,7 @@ export type AccountPhotoRemoveOutcome =
 
 export type AccountPhotoReferenceWriteOutcome =
   | { readonly kind: 'success'; readonly cookies: readonly string[] }
+  | { readonly kind: 'conflict' }
   | { readonly kind: 'unauthenticated' }
   | { readonly kind: 'internal-error' };
 
@@ -495,33 +495,43 @@ async function cancelPhotoCleanupForSource(
 }
 
 async function persistPhotoReference(input: {
-  readonly runtime: IdentityRuntime;
-  readonly headers: Headers;
+  readonly db: D1Database;
+  readonly lock: PhotoLock;
+  readonly expectedImage: string | null;
   readonly image: string | null;
 }): Promise<AccountPhotoReferenceWriteOutcome> {
-  const outcome = await callIdentityEngine(() =>
-    input.runtime.administration().api.updateUser({
-      body: { image: input.image },
-      headers: input.headers,
-      asResponse: true,
-    }),
-  );
-  if (!(outcome instanceof Response)) {
-    return outcome.status === 401 ? { kind: 'unauthenticated' } : { kind: 'internal-error' };
-  }
-  if (!outcome.ok) {
-    const failure = await readIdentityEngineFailure(outcome);
-    return failure.status === 401 ? { kind: 'unauthenticated' } : { kind: 'internal-error' };
-  }
-  return { kind: 'success', cookies: responseCookies(outcome) };
+  const now = Date.now();
+  const updated = await input.db
+    .prepare(
+      'UPDATE "user" SET image = ?1, updated_at = ?2 WHERE id = ?3 AND image IS ?4 AND EXISTS (SELECT 1 FROM "user_photo_lock" WHERE user_id = ?3 AND lock_token = ?5 AND expires_at > ?6)',
+    )
+    .bind(
+      input.image,
+      Math.floor(now / 1000),
+      input.lock.userId,
+      input.expectedImage,
+      input.lock.token,
+      now,
+    )
+    .run();
+  if (updated.meta.changes !== 1) return { kind: 'conflict' };
+
+  const persisted = await input.db
+    .prepare('SELECT image FROM "user" WHERE id = ?1')
+    .bind(input.lock.userId)
+    .first<{ image: string | null }>();
+  if (persisted === null) return { kind: 'internal-error' };
+  if (persisted.image !== input.image) return { kind: 'conflict' };
+  return { kind: 'success', cookies: [] };
 }
 
 async function writePhotoReference(
   input: PhotoOperationsInput,
-  headers: Headers,
+  lock: PhotoLock,
+  expectedImage: string | null,
   image: string | null,
 ): Promise<AccountPhotoReferenceWriteOutcome> {
-  const write = () => persistPhotoReference({ runtime: input.runtime, headers, image });
+  const write = () => persistPhotoReference({ db: input.db, lock, expectedImage, image });
   try {
     return input.referenceWriter === undefined ? await write() : await input.referenceWriter(write);
   } catch {
@@ -741,7 +751,12 @@ export function createAccountPhotoOperations(input: PhotoOperationsInput) {
         return { kind: 'conflict' };
       }
 
-      const updated = await writePhotoReference(input, headers, photoReference(photoId));
+      const updated = await writePhotoReference(
+        input,
+        lock,
+        session.image,
+        photoReference(photoId),
+      );
       if (updated.kind !== 'success') {
         let storedImage: string | null | undefined;
         try {
@@ -896,8 +911,12 @@ export function createAccountPhotoOperations(input: PhotoOperationsInput) {
           .bind(crypto.randomUUID(), current.userId, photo.object_key, photo.photo_id, Date.now())
           .run();
       }
-      const updated = await writePhotoReference(input, headers, null);
+      const updated = await writePhotoReference(input, lock, current.image, null);
       if (updated.kind !== 'success') {
+        if (updated.kind === 'conflict') {
+          scheduleCleanup(input);
+          return updated;
+        }
         let storedImage: string | null | undefined;
         try {
           const persisted = await input.db

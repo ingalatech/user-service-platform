@@ -20,9 +20,13 @@ const testMigrations = env.TEST_MIGRATIONS as D1Migration[];
 const mailer = new InMemoryAuthMailer();
 let failPhotoReferenceResponseAfterCommit = false;
 let failAccountDetailsImageResponseAfterCommit = false;
+let beforePhotoReferenceWrite: (() => Promise<void>) | undefined;
 const app = createApp({
   authMailer: mailer,
   accountPhotoReferenceWriter: async (write) => {
+    const beforeWrite = beforePhotoReferenceWrite;
+    beforePhotoReferenceWrite = undefined;
+    await beforeWrite?.();
     const outcome = await write();
     if (failPhotoReferenceResponseAfterCommit && outcome.kind === 'success') {
       failPhotoReferenceResponseAfterCommit = false;
@@ -273,6 +277,7 @@ describe('Account Photo HTTP boundary', () => {
     const uploaded = await upload(cookie, payload);
 
     expect(uploaded.status).toBe(204);
+    expect(uploaded.headers.get('set-cookie')).toBeNull();
     expect(uploaded.headers.get('cache-control')).toBe('private, no-store');
     const details = (await (await request('/v1/account-details', { cookie })).json()) as {
       image: string | null;
@@ -291,6 +296,47 @@ describe('Account Photo HTTP boundary', () => {
     const otherOwner = await signedInUser();
     expect((await request(details.image, { cookie: otherOwner })).status).toBe(404);
     expect((await request(details.image)).status).toBe(401);
+  });
+
+  it('fences an upload reference commit after another lease owner commits a newer photo', async () => {
+    const cookie = await signedInUser();
+    expect((await upload(cookie, VALID_JPEG)).status).toBe(204);
+    let takeoverResponse: Response | undefined;
+    beforePhotoReferenceWrite = async () => {
+      await workerEnv.DB.prepare('UPDATE "user_photo_lock" SET expires_at = 0').run();
+      takeoverResponse = await createApp().request(
+        '/v1/account-photo',
+        {
+          method: 'POST',
+          headers: {
+            cookie,
+            'content-type': 'image/webp',
+            'content-length': String(VALID_WEBP.byteLength),
+          },
+          body: VALID_WEBP,
+        },
+        testEnv(),
+      );
+    };
+
+    let staleResponse: Response;
+    try {
+      staleResponse = await upload(cookie, VALID_PNG, 'image/png');
+    } finally {
+      beforePhotoReferenceWrite = undefined;
+    }
+
+    expect(takeoverResponse?.status).toBe(204);
+    expect(takeoverResponse?.headers.get('set-cookie')).toBeNull();
+    expect(staleResponse.status).toBe(409);
+    const details = (await (await request('/v1/account-details', { cookie })).json()) as {
+      image: string;
+    };
+    expect(details.image).toMatch(/^\/v1\/account-photo\//);
+    const currentPhoto = await request(details.image, { cookie });
+    expect(currentPhoto.status).toBe(200);
+    expect(currentPhoto.headers.get('content-type')).toBe('image/webp');
+    expect(new Uint8Array(await currentPhoto.arrayBuffer())).toEqual(VALID_WEBP);
   });
 
   it('rejects unsupported, mismatched, spoofed, and oversized file content without changing the current photo', async () => {
@@ -433,6 +479,16 @@ describe('Account Photo HTTP boundary', () => {
 
   it('replaces and removes photos through the owner session and does not expose an absent object', async () => {
     const cookie = await signedInUser();
+    expect(
+      (
+        await request('/v1/account-details', {
+          method: 'PATCH',
+          cookie,
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ firstName: 'Photo owner', phone: '+1 202 555 0199' }),
+        })
+      ).status,
+    ).toBe(204);
     expect((await upload(cookie, jpegPayload())).status).toBe(204);
     const firstDetails = (await (await request('/v1/account-details', { cookie })).json()) as {
       image: string;
@@ -457,11 +513,17 @@ describe('Account Photo HTTP boundary', () => {
     expect(webpPhoto.headers.get('content-type')).toBe('image/webp');
     expect(new Uint8Array(await webpPhoto.arrayBuffer())).toEqual(webp);
 
-    expect((await request('/v1/account-photo', { method: 'DELETE', cookie })).status).toBe(204);
+    const removed = await request('/v1/account-photo', { method: 'DELETE', cookie });
+    expect(removed.status).toBe(204);
+    expect(removed.headers.get('set-cookie')).toBeNull();
     const cleared = (await (await request('/v1/account-details', { cookie })).json()) as {
       image: string | null;
+      firstName: string | null;
+      phone: string | null;
     };
     expect(cleared.image).toBeNull();
+    expect(cleared.firstName).toBe('Photo owner');
+    expect(cleared.phone).toBe('+1 202 555 0199');
     expect((await request(thirdDetails.image, { cookie })).status).toBe(404);
     expect((await request('/v1/account-photo', { method: 'DELETE', cookie })).status).toBe(204);
   });

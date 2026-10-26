@@ -9,6 +9,17 @@ object key and validated metadata remain in D1. `GET /v1/account-photo/{photoId}
 and `DELETE /v1/account-photo` require the owner's live Better Auth session.
 Reader State and administrator sessions are not photo authority.
 
+The pinned Better Auth `updateUser` endpoint updates `user.image` by user ID but
+cannot compare the photo lease token or the image value observed by the lease
+holder. Photo upload and removal therefore commit `user.image` with one
+application-owned D1 conditional update that checks the user ID, prior image,
+current lock token, and unexpired lease in the same statement. The statement
+updates `updated_at` in the existing integer-seconds format, then the operation
+reads the persisted image back before completing its lifecycle transition. This
+narrow write changes no other Account Details fields and does not reissue or
+modify Better Auth session cookies; ordinary Account Details and administrator
+updates continue through Better Auth.
+
 Validation is bounded structural validation, not a decoder or malware scanner.
 Every format is limited to 8192 pixels on either axis and 40,000,000 total
 pixels:
