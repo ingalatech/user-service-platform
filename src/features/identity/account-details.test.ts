@@ -112,14 +112,9 @@ describe('Account Details HTTP boundary', () => {
         image: 'https://images.example.test/ada.png',
       },
     });
-    expect(updated.status).toBe(200);
-    expect(await updated.json()).toEqual({
-      firstName: 'Ada',
-      lastName: null,
-      birthDate: '1815-12-10',
-      phone: '+44 20 7946 0958',
-      image: 'https://images.example.test/ada.png',
-    });
+    expect(updated.status).toBe(204);
+    expect(await updated.text()).toBe('');
+    expect(updated.headers.get('cache-control')).toBe('private, no-store');
     const storedUser = await workerEnv.DB.prepare('SELECT updated_at FROM "user" WHERE id = ?1')
       .bind(legacyUser.id)
       .first<{ updated_at: number }>();
@@ -173,14 +168,56 @@ describe('Account Details HTTP boundary', () => {
       cookie,
       body: { firstName: null, birthDate: null, phone: null, image: null },
     });
-    expect(cleared.status).toBe(200);
-    expect(await cleared.json()).toEqual({
+    expect(cleared.status).toBe(204);
+    expect(await cleared.text()).toBe('');
+    const detailsAfterClear = await request('/v1/account-details', { cookie });
+    expect(await detailsAfterClear.json()).toEqual({
       firstName: null,
       lastName: null,
       birthDate: null,
       phone: null,
       image: null,
     });
+  });
+
+  it('commits Account Details and returns the session cookie when the post-commit session read would fail', async () => {
+    const cookie = await signedInUser('post-commit@example.com');
+
+    await workerEnv.DB.prepare(
+      'CREATE TRIGGER expire_session_after_account_details_update AFTER UPDATE OF first_name ON "user" BEGIN UPDATE "session" SET expires_at = 0 WHERE user_id = NEW.id; END',
+    ).run();
+
+    let updated: Response;
+    try {
+      updated = await request('/v1/account-details', {
+        method: 'PATCH',
+        cookie,
+        body: { firstName: 'Persisted despite read failure' },
+      });
+      expect(updated.status).toBe(204);
+      expect(await updated.text()).toBe('');
+      expect(updated.headers.get('cache-control')).toBe('private, no-store');
+      expect(updated.headers.get('set-cookie')).not.toBeNull();
+
+      const unreadableSession = await request('/v1/me', {
+        cookie: updated.headers.get('set-cookie')?.split(';')[0] ?? cookie,
+      });
+      expect(unreadableSession.status).toBe(401);
+    } finally {
+      await workerEnv.DB.prepare('DROP TRIGGER expire_session_after_account_details_update').run();
+    }
+
+    const freshLogin = await request('/v1/auth/login', {
+      method: 'POST',
+      body: { email: 'post-commit@example.com', password: 'Correct-horse-41' },
+    });
+    expect(freshLogin.status).toBe(200);
+    const freshCookie = sessionCookie(freshLogin);
+    const persisted = await request('/v1/account-details', {
+      cookie: freshCookie,
+    });
+    expect(persisted.status).toBe(200);
+    expect(await persisted.json()).toMatchObject({ firstName: 'Persisted despite read failure' });
   });
 
   it('rejects anonymous, revoked, Reader State-only and invalid calendar-date requests', async () => {
@@ -230,7 +267,7 @@ describe('Account Details HTTP boundary', () => {
       cookie: ownerCookie,
       body: { firstName: 'Private Name', phone: '+1 202 555 0147' },
     });
-    expect(saved.status).toBe(200);
+    expect(saved.status).toBe(204);
 
     const otherAccount = await request('/v1/account-details', { cookie: otherCookie });
     expect(await otherAccount.json()).toEqual({

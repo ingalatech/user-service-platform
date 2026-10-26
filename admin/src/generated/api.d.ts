@@ -776,14 +776,12 @@ export interface operations {
             };
         };
         responses: {
-            /** @description The updated Account Details. */
-            200: {
+            /** @description The Account Details update was committed. */
+            204: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/json": components["schemas"]["AccountDetails"];
-                };
+                content?: never;
             };
             /** @description Validation or authentication failure as RFC 9457 Problem Details. */
             default: {

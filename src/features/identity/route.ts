@@ -185,10 +185,7 @@ export const updateAccountDetailsRoute = createRoute({
   tags: ['identity'],
   request: { body: { content: { 'application/json': { schema: UpdateAccountDetailsSchema } } } },
   responses: {
-    200: {
-      content: { 'application/json': { schema: AccountDetailsSchema } },
-      description: 'The updated Account Details.',
-    },
+    204: { description: 'The Account Details update was committed.' },
     ...problemResponses('Validation or authentication failure as RFC 9457 Problem Details.'),
   },
 });

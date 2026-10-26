@@ -10,7 +10,6 @@ export type AccountDetailsReadOutcome =
 export type AccountDetailsUpdateOutcome =
   | {
       readonly kind: 'success';
-      readonly value: AccountDetails;
       readonly cookies: readonly string[];
     }
   | { readonly kind: 'unauthenticated' }
@@ -40,6 +39,11 @@ export function createAccountDetailsOperations(runtime: IdentityRuntime) {
     headers: Headers,
     patch: UpdateAccountDetails,
   ): Promise<AccountDetailsUpdateOutcome> {
+    // In pinned Better Auth 1.7.12, updateUser awaits the D1 adapter update
+    // before signing/reissuing its session cookie. Cookie/cache work can still
+    // fail after D1 commits; that commit and HTTP response delivery are not a
+    // distributed transaction. Once the engine returns success, don't perform
+    // another session read that could turn a committed write into a false error.
     const response = await callIdentityEngine(() =>
       auth.api.updateUser({
         body: patch,
@@ -59,11 +63,8 @@ export function createAccountDetailsOperations(runtime: IdentityRuntime) {
       return { kind: 'internal-error' };
     }
 
-    const account = await read(headers);
-    if (account.kind !== 'success') return account;
     return {
       kind: 'success',
-      value: account.value,
       cookies: responseCookies(response),
     };
   }

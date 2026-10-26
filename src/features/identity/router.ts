@@ -227,7 +227,7 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
       return problem(c, 500, 'internal-error', 'Internal Server Error');
     }
     forwardSessionCookies(c, result.cookies);
-    return c.json(result.value, 200);
+    return c.body(null, 204);
   });
 
   router.openapi(registerRoute, async (c) => {
