@@ -19,6 +19,7 @@ import {
   LoginRequestSchema,
   LoginResultSchema,
   RegisterRequestSchema,
+  RegisterWithoutNameRequestSchema,
   RegisteredUserSchema,
   RequestPasswordResetRequestSchema,
   RequestPasswordResetResultSchema,
@@ -62,6 +63,28 @@ export const registerRoute = createRoute({
   tags: ['identity'],
   request: {
     body: { content: { 'application/json': { schema: RegisterRequestSchema } } },
+  },
+  responses: {
+    201: {
+      content: { 'application/json': { schema: RegisteredUserSchema } },
+      description: 'The identity was created (unverified).',
+    },
+    ...problemResponses('Registration failure as RFC 9457 Problem Details.'),
+  },
+});
+
+export const registerWithoutNameRoute = createRoute({
+  method: 'post',
+  path: '/auth/register',
+  operationId: 'registerIdentityV2',
+  summary: 'Register an email identity without a public name',
+  description:
+    'Creates an unverified email/password identity from email and password only. ' +
+    'The full email address is used as Better Auth’s required technical name; ' +
+    'Account Details remain unset until explicitly provided through their own operations.',
+  tags: ['identity'],
+  request: {
+    body: { content: { 'application/json': { schema: RegisterWithoutNameRequestSchema } } },
   },
   responses: {
     201: {

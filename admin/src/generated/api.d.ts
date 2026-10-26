@@ -387,6 +387,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v2/auth/register": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Register an email identity without a public name
+         * @description Creates an unverified email/password identity from email and password only. The full email address is used as Better Auth’s required technical name; Account Details remain unset until explicitly provided through their own operations.
+         */
+        post: operations["registerIdentityV2"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -712,6 +732,15 @@ export interface components {
         AdminBootstrapRequest: {
             /** @example Ada Lovelace */
             name: string;
+            /**
+             * Format: email
+             * @example ada@example.com
+             */
+            email: string;
+            /** @example Correct-horse-41 */
+            password: string;
+        };
+        RegisterWithoutNameRequest: {
             /**
              * Format: email
              * @example ada@example.com
@@ -1380,6 +1409,39 @@ export interface operations {
                 };
             };
             /** @description Bootstrap failure as RFC 9457 Problem Details. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+        };
+    };
+    registerIdentityV2: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["RegisterWithoutNameRequest"];
+            };
+        };
+        responses: {
+            /** @description The identity was created (unverified). */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RegisteredUser"];
+                };
+            };
+            /** @description Registration failure as RFC 9457 Problem Details. */
             default: {
                 headers: {
                     [name: string]: unknown;

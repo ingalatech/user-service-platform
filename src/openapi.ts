@@ -9,6 +9,6 @@ export const openApiConfig = {
     version: '0.0.0',
     description:
       'Reusable user-service foundation for content-oriented web products. ' +
-      'Public operations are namespaced under /v1.',
+      'Public operations are namespaced under /v1; the no-name email registration transition is /v2/auth/register.',
   },
 } as const;

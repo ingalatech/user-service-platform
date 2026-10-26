@@ -5,6 +5,7 @@ import type {
   LoginRequest,
   LoginResult,
   RegisterRequest,
+  RegisterWithoutNameRequest,
   RegisteredUser,
   RequestPasswordResetRequest,
   RequestPasswordResetResult,
@@ -62,6 +63,10 @@ export interface CredentialOperations {
   validateBootstrapPassword(password: string): BootstrapCredentialValidation;
   register(
     input: RegisterRequest,
+    headers: Headers,
+  ): Promise<CredentialOperationOutcome<RegisteredUser>>;
+  registerWithoutName(
+    input: RegisterWithoutNameRequest,
     headers: Headers,
   ): Promise<CredentialOperationOutcome<RegisteredUser>>;
   login(input: LoginRequest, headers: Headers): Promise<CredentialOperationOutcome<LoginResult>>;
@@ -126,6 +131,31 @@ function readUser(payload: unknown): RegisteredUser | null {
 export function createCredentialOperations(input: CredentialOperationsInput): CredentialOperations {
   const { runtime, db } = input;
 
+  async function registerIdentity(
+    request: Pick<RegisterRequest, 'email' | 'password'>,
+    technicalName: string,
+    headers: Headers,
+  ): Promise<CredentialOperationOutcome<RegisteredUser>> {
+    const auth = runtime.authentication();
+    const policy = runtime.authPolicy;
+    if (!policy.emailPasswordEnabled) return failure({ kind: 'email-password-disabled' });
+    if (!policy.registrationEnabled) return failure({ kind: 'registration-disabled' });
+    const invalidPassword = passwordPolicyFailure(request.password, policy.passwordPolicy);
+    if (invalidPassword !== null) return failure(invalidPassword);
+
+    const outcome = await callIdentityEngine(() =>
+      auth.api.signUpEmail({
+        body: { name: technicalName, email: request.email, password: request.password },
+        headers,
+        asResponse: true,
+      }),
+    );
+    if (!(outcome instanceof Response)) return failure({ kind: 'internal-error' });
+    if (!outcome.ok) return failure({ kind: 'bad-request' });
+    const user = readUser(await outcome.json().catch(() => null));
+    return user === null ? failure({ kind: 'internal-error' }) : success(user);
+  }
+
   return {
     validateBootstrapPassword(password) {
       if (!runtime.authPolicy.emailPasswordEnabled) {
@@ -140,29 +170,13 @@ export function createCredentialOperations(input: CredentialOperationsInput): Cr
         : { kind: 'failure', failure: invalidPassword };
     },
 
-    async register(request, headers) {
-      const auth = runtime.authentication();
-      const policy = runtime.authPolicy;
-      if (!policy.emailPasswordEnabled) return failure({ kind: 'email-password-disabled' });
-      if (!policy.registrationEnabled) return failure({ kind: 'registration-disabled' });
-      const invalidPassword = passwordPolicyFailure(request.password, policy.passwordPolicy);
-      if (invalidPassword !== null) return failure(invalidPassword);
+    register(request, headers) {
+      const technicalName = request.name ?? request.email.slice(0, request.email.indexOf('@'));
+      return registerIdentity(request, technicalName, headers);
+    },
 
-      const outcome = await callIdentityEngine(() =>
-        auth.api.signUpEmail({
-          body: {
-            name: request.name ?? request.email.slice(0, request.email.indexOf('@')),
-            email: request.email,
-            password: request.password,
-          },
-          headers,
-          asResponse: true,
-        }),
-      );
-      if (!(outcome instanceof Response)) return failure({ kind: 'internal-error' });
-      if (!outcome.ok) return failure({ kind: 'bad-request' });
-      const user = readUser(await outcome.json().catch(() => null));
-      return user === null ? failure({ kind: 'internal-error' }) : success(user);
+    registerWithoutName(request, headers) {
+      return registerIdentity(request, request.email, headers);
     },
 
     async login(request, headers) {

@@ -1,12 +1,16 @@
 import { createAuthActionsRouter } from './auth-actions.js';
-import { createIdentityRouter, type IdentityRouterOptions } from './router.js';
+import {
+  createIdentityRouter,
+  createIdentityV2Router,
+  type IdentityRouterOptions,
+} from './router.js';
 
 // Public slice interface for the identity feature (AGENTS.md change rules).
 // Cross-feature consumers (including the application composition root) may
 // import only this module, the application-owned contracts, policy and mail
 // boundary. `auth.ts` (Better Auth wiring) and `schema.ts` (D1 rows) are
 // slice internals and must never be imported outside this directory.
-export { createIdentityRouter };
+export { createIdentityRouter, createIdentityV2Router };
 export { createAuthActionsRouter };
 export type { IdentityRouterOptions };
 export type {
@@ -26,6 +30,7 @@ export type {
   LoginRequest,
   LoginResult,
   RegisterRequest,
+  RegisterWithoutNameRequest,
   RegisteredUser,
   RequestPasswordResetRequest,
   RequestPasswordResetResult,

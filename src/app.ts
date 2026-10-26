@@ -8,6 +8,7 @@ import { createHealthRouter } from './features/health/index.js';
 import {
   createAuthActionsRouter,
   createIdentityRouter,
+  createIdentityV2Router,
   type IdentityRouterOptions,
 } from './features/identity/index.js';
 import { openApiConfig } from './openapi.js';
@@ -153,6 +154,9 @@ export function createApp(identityOptions: IdentityRouterOptions = {}) {
 
   app.route('/v1', createHealthRouter());
   app.route('/v1', createIdentityRouter(identityOptions));
+  // ADR-0007 versioned transition: only the no-public-name registration
+  // operation is mounted in V2; the accepted V1 Identity surface is unchanged.
+  app.route('/v2', createIdentityV2Router(identityOptions));
   // Service-owned fallback browser action pages (ticket #77). Plain HTML
   // handlers outside the versioned JSON API: they complete through the
   // existing POST `/v1` contracts and never enter the OpenAPI document.
@@ -163,7 +167,7 @@ export function createApp(identityOptions: IdentityRouterOptions = {}) {
   // Precedence is explicit: `/v1/*` and `/auth-actions/*` above keep their
   // behavior, asset misses under `/admin` fall back to the SPA entry so the
   // sign-in deep link survives refresh, and the fallback never applies
-  // outside `/admin` (unknown `/v1` routes stay JSON Problem Details).
+  // outside `/admin` (unknown versioned API routes stay JSON Problem Details).
   app.get('/admin', (c) => serveAdminAsset(c, '/admin/index.html'));
   app.get('/admin/*', (c) => serveAdminAsset(c, new URL(c.req.url).pathname));
 

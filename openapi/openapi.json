@@ -3,7 +3,7 @@
   "info": {
     "title": "User Service API",
     "version": "0.0.0",
-    "description": "Reusable user-service foundation for content-oriented web products. Public operations are namespaced under /v1."
+    "description": "Reusable user-service foundation for content-oriented web products. Public operations are namespaced under /v1; the no-name email registration transition is /v2/auth/register."
   },
   "components": {
     "schemas": {
@@ -855,6 +855,28 @@
           "email",
           "password"
         ]
+      },
+      "RegisterWithoutNameRequest": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "maxLength": 254,
+            "format": "email",
+            "example": "ada@example.com"
+          },
+          "password": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "example": "Correct-horse-41"
+          }
+        },
+        "required": [
+          "email",
+          "password"
+        ],
+        "additionalProperties": false
       }
     },
     "parameters": {}
@@ -1686,6 +1708,47 @@
           },
           "default": {
             "description": "Bootstrap failure as RFC 9457 Problem Details.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v2/auth/register": {
+      "post": {
+        "operationId": "registerIdentityV2",
+        "summary": "Register an email identity without a public name",
+        "description": "Creates an unverified email/password identity from email and password only. The full email address is used as Better Auth’s required technical name; Account Details remain unset until explicitly provided through their own operations.",
+        "tags": [
+          "identity"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterWithoutNameRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The identity was created (unverified).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegisteredUser"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Registration failure as RFC 9457 Problem Details.",
             "content": {
               "application/problem+json": {
                 "schema": {
