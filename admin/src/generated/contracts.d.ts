@@ -4,6 +4,8 @@ import type { components, operations } from './api.js';
 export type AdminMe = components['schemas']['AdminMe'];
 export type AdminUser = components['schemas']['AdminUser'];
 export type AdminUserList = components['schemas']['AdminUserList'];
+export type AccountDetails = components['schemas']['AccountDetails'];
+export type UpdateAccountDetails = components['schemas']['UpdateAccountDetails'];
 export type LoginRequest = components['schemas']['LoginRequest'];
 export type ProblemDetails = components['schemas']['ProblemDetails'];
 
@@ -21,9 +23,11 @@ export type AdminUserListQuery = {
 };
 
 export declare const AdminMeSchema: ZodType<AdminMe>;
+export declare const AccountDetailsSchema: ZodType<AccountDetails>;
 export declare const AdminUserDetailParamsSchema: ZodType<AdminUserDetailParams>;
 export declare const AdminUserSchema: ZodType<AdminUser>;
 export declare const AdminUserListSchema: ZodType<AdminUserList>;
 export declare const AdminUserListQuerySchema: ZodType<AdminUserListQuery>;
 export declare const LoginRequestSchema: ZodType<LoginRequest>;
 export declare const ProblemDetailsSchema: ZodType<ProblemDetails>;
+export declare const UpdateAccountDetailsSchema: ZodType<UpdateAccountDetails>;

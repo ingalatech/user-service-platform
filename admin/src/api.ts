@@ -1,4 +1,5 @@
 import {
+  AccountDetailsSchema,
   AdminMeSchema,
   AdminUserDetailParamsSchema,
   AdminUserListQuerySchema,
@@ -6,12 +7,13 @@ import {
   AdminUserSchema,
   LoginRequestSchema,
   ProblemDetailsSchema,
+  UpdateAccountDetailsSchema,
   type AdminMe,
   type AdminUserDetailParams,
   type AdminUser,
   type AdminUserList,
   type AdminUserListQuery,
-  type LoginRequest,
+  type AccountDetails,
 } from './generated/contracts.js';
 
 // Only application-owned status/code combinations become UI messages. Raw
@@ -45,13 +47,14 @@ export class ApiError extends Error {
 
 async function request(
   path: string,
-  body?: LoginRequest | Record<string, never>,
+  body?: unknown,
   signal?: AbortSignal,
+  method?: 'POST' | 'PATCH',
 ): Promise<unknown> {
   let response: Response;
   try {
     response = await fetch(path, {
-      method: body === undefined ? 'GET' : 'POST',
+      method: method ?? (body === undefined ? 'GET' : 'POST'),
       credentials: 'include',
       signal:
         signal === undefined
@@ -120,6 +123,43 @@ export async function adminUserDetail(
   if (!params.success) throw new ApiError(400);
   const parsed = AdminUserSchema.safeParse(
     await request(`/v1/admin/users/${encodeURIComponent(params.data.userId)}`, undefined, signal),
+  );
+  if (!parsed.success) throw new ApiError(502);
+  return parsed.data;
+}
+
+export async function adminUserAccountDetails(
+  id: AdminUserDetailParams['userId'],
+  signal?: AbortSignal,
+): Promise<AccountDetails> {
+  const params = AdminUserDetailParamsSchema.safeParse({ userId: id });
+  if (!params.success) throw new ApiError(400);
+  const parsed = AccountDetailsSchema.safeParse(
+    await request(
+      `/v1/admin/users/${encodeURIComponent(params.data.userId)}/account-details`,
+      undefined,
+      signal,
+    ),
+  );
+  if (!parsed.success) throw new ApiError(502);
+  return parsed.data;
+}
+
+export async function updateAdminUserAccountDetails(
+  id: AdminUserDetailParams['userId'],
+  values: unknown,
+  signal?: AbortSignal,
+): Promise<AccountDetails> {
+  const params = AdminUserDetailParamsSchema.safeParse({ userId: id });
+  const body = UpdateAccountDetailsSchema.safeParse(values);
+  if (!params.success || !body.success) throw new ApiError(400);
+  const parsed = AccountDetailsSchema.safeParse(
+    await request(
+      `/v1/admin/users/${encodeURIComponent(params.data.userId)}/account-details`,
+      body.data,
+      signal,
+      'PATCH',
+    ),
   );
   if (!parsed.success) throw new ApiError(502);
   return parsed.data;

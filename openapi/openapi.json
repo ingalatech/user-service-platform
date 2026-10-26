@@ -1555,6 +1555,107 @@
         }
       }
     },
+    "/v1/admin/users/{userId}/account-details": {
+      "get": {
+        "operationId": "getAdminUserAccountDetails",
+        "summary": "Read one User’s Account Details for administrators",
+        "description": "Returns only the selected User’s optional Account Details to an authorized Administrator. Anonymous or invalid sessions receive 401; non-administrators receive 403 before target existence is disclosed; authorized missing Users receive 404.",
+        "tags": [
+          "admin"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "Opaque administrative User identifier.",
+              "example": "abc123"
+            },
+            "required": true,
+            "description": "Opaque administrative User identifier.",
+            "name": "userId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The selected User’s Account Details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDetails"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Authorization or lookup failure as RFC 9457 Problem Details.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "operationId": "updateAdminUserAccountDetails",
+        "summary": "Update one User’s Account Details for administrators",
+        "description": "Atomically updates only allowlisted Account Details for the selected User. Unknown or Identity-owned fields reject the entire request.",
+        "tags": [
+          "admin"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "Opaque administrative User identifier.",
+              "example": "abc123"
+            },
+            "required": true,
+            "description": "Opaque administrative User identifier.",
+            "name": "userId",
+            "in": "path"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateAccountDetails"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The selected User’s updated Account Details.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDetails"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Validation, authorization or lookup failure as RFC 9457 Problem Details.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/auth/admin/bootstrap": {
       "post": {
         "operationId": "bootstrapAdmin",

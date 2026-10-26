@@ -343,6 +343,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/admin/users/{userId}/account-details": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read one User’s Account Details for administrators
+         * @description Returns only the selected User’s optional Account Details to an authorized Administrator. Anonymous or invalid sessions receive 401; non-administrators receive 403 before target existence is disclosed; authorized missing Users receive 404.
+         */
+        get: operations["getAdminUserAccountDetails"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /**
+         * Update one User’s Account Details for administrators
+         * @description Atomically updates only allowlisted Account Details for the selected User. Unknown or Identity-owned fields reject the entire request.
+         */
+        patch: operations["updateAdminUserAccountDetails"];
+        trace?: never;
+    };
     "/v1/auth/admin/bootstrap": {
         parameters: {
             query?: never;
@@ -1255,6 +1279,74 @@ export interface operations {
                 };
             };
             /** @description Authorization failure as RFC 9457 Problem Details. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+        };
+    };
+    getAdminUserAccountDetails: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Opaque administrative User identifier. */
+                userId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The selected User’s Account Details. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountDetails"];
+                };
+            };
+            /** @description Authorization or lookup failure as RFC 9457 Problem Details. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+        };
+    };
+    updateAdminUserAccountDetails: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Opaque administrative User identifier. */
+                userId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["UpdateAccountDetails"];
+            };
+        };
+        responses: {
+            /** @description The selected User’s updated Account Details. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AccountDetails"];
+                };
+            };
+            /** @description Validation, authorization or lookup failure as RFC 9457 Problem Details. */
             default: {
                 headers: {
                     [name: string]: unknown;

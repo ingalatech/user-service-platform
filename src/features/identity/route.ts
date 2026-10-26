@@ -411,6 +411,48 @@ export const adminUserDetailRoute = createRoute({
   },
 });
 
+export const adminUserAccountDetailsRoute = createRoute({
+  method: 'get',
+  path: '/admin/users/{userId}/account-details',
+  operationId: 'getAdminUserAccountDetails',
+  summary: 'Read one User’s Account Details for administrators',
+  description:
+    'Returns only the selected User’s optional Account Details to an authorized Administrator. ' +
+    'Anonymous or invalid sessions receive 401; non-administrators receive 403 before target ' +
+    'existence is disclosed; authorized missing Users receive 404.',
+  tags: ['admin'],
+  request: { params: AdminUserDetailParamsSchema },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: AccountDetailsSchema } },
+      description: 'The selected User’s Account Details.',
+    },
+    ...problemResponses('Authorization or lookup failure as RFC 9457 Problem Details.'),
+  },
+});
+
+export const updateAdminUserAccountDetailsRoute = createRoute({
+  method: 'patch',
+  path: '/admin/users/{userId}/account-details',
+  operationId: 'updateAdminUserAccountDetails',
+  summary: 'Update one User’s Account Details for administrators',
+  description:
+    'Atomically updates only allowlisted Account Details for the selected User. ' +
+    'Unknown or Identity-owned fields reject the entire request.',
+  tags: ['admin'],
+  request: {
+    params: AdminUserDetailParamsSchema,
+    body: { content: { 'application/json': { schema: UpdateAccountDetailsSchema } } },
+  },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: AccountDetailsSchema } },
+      description: 'The selected User’s updated Account Details.',
+    },
+    ...problemResponses('Validation, authorization or lookup failure as RFC 9457 Problem Details.'),
+  },
+});
+
 export const adminBootstrapRoute = createRoute({
   method: 'post',
   path: '/auth/admin/bootstrap',

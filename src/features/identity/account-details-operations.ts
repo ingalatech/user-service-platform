@@ -72,7 +72,7 @@ export function createAccountDetailsOperations(runtime: IdentityRuntime) {
   return { read, update };
 }
 
-function projectAccountDetails(user: {
+export function projectAccountDetails(user: {
   readonly firstName?: unknown;
   readonly lastName?: unknown;
   readonly birthDate?: unknown;

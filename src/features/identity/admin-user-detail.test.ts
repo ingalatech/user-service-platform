@@ -73,6 +73,21 @@ async function postWithCookie(
   );
 }
 
+async function patchWithCookie(
+  path: string,
+  body: unknown,
+  cookie: string | null,
+  overrides: Partial<Env> = {},
+): Promise<Response> {
+  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  if (cookie !== null && cookie.length > 0) headers.cookie = cookie;
+  return app.request(
+    path,
+    { method: 'PATCH', headers, body: JSON.stringify(body) },
+    testEnv(overrides),
+  );
+}
+
 function sessionCookieFrom(res: Response): string | null {
   const setCookie = res.headers.get('set-cookie');
   if (setCookie === null) {
@@ -350,5 +365,181 @@ describe('GET /v1/admin/users/{userId}', () => {
     expect(joined).not.toContain(adminId);
     const paths = loggedPaths(logs);
     expect(paths).toContain('/v1/admin/users/:userId');
+  });
+});
+
+describe('GET /v1/admin/users/{userId}/account-details', () => {
+  it('lets an authorized administrator inspect another User’s optional details', async () => {
+    const { cookie: adminCookie } = await bootstrapVerifiedAdmin();
+    const { userId } = await verifiedRegularCookie('account-details-target@example.com');
+
+    const res = await get(`/v1/admin/users/${encodeURIComponent(userId)}/account-details`, {
+      cookie: adminCookie,
+    });
+
+    expect(res.status).toBe(200);
+    expect(res.headers.get('cache-control')).toBe('private, no-store');
+    expect(await res.json()).toEqual({
+      firstName: null,
+      lastName: null,
+      birthDate: null,
+      phone: null,
+      image: null,
+    });
+  });
+
+  it('authorizes before target lookup and returns not-found only to an Administrator', async () => {
+    const { cookie: adminCookie } = await bootstrapVerifiedAdmin();
+    const { cookie: userCookie, userId } = await verifiedRegularCookie(
+      'account-details-reader@example.com',
+    );
+    const path = '/v1/admin/users/no-such-user-248/account-details';
+    const existingPath = `/v1/admin/users/${encodeURIComponent(userId)}/account-details`;
+
+    const anonymous = await get(path);
+    expect(anonymous.status).toBe(401);
+    expect(await anonymous.json()).toMatchObject({ code: 'unauthenticated' });
+
+    const ordinaryExisting = await get(existingPath, { cookie: userCookie });
+    const ordinaryMissing = await get(path, { cookie: userCookie });
+    expect(ordinaryExisting.status).toBe(403);
+    expect(ordinaryMissing.status).toBe(403);
+    expect(await ordinaryExisting.json()).toMatchObject({ code: 'forbidden' });
+    expect(await ordinaryMissing.json()).toMatchObject({ code: 'forbidden' });
+
+    const administrator = await get(path, { cookie: adminCookie });
+    expect(administrator.status).toBe(404);
+    expect(await administrator.json()).toMatchObject({ code: 'not-found' });
+  });
+});
+
+describe('PATCH /v1/admin/users/{userId}/account-details', () => {
+  it('updates only validated Account Details and keeps failed requests atomic', async () => {
+    const { cookie: adminCookie } = await bootstrapVerifiedAdmin();
+    const { cookie: userCookie, userId } = await verifiedRegularCookie(
+      'account-details-patch@example.com',
+    );
+    const path = `/v1/admin/users/${encodeURIComponent(userId)}/account-details`;
+
+    const updated = await patchWithCookie(
+      path,
+      {
+        firstName: '  Ada  ',
+        lastName: '',
+        birthDate: '2000-02-29',
+        phone: '  ',
+        image: 'https://images.example.test/ada.png',
+      },
+      adminCookie,
+    );
+    expect(updated.status).toBe(200);
+    expect(updated.headers.get('cache-control')).toBe('private, no-store');
+    expect(await updated.json()).toEqual({
+      firstName: 'Ada',
+      lastName: null,
+      birthDate: '2000-02-29',
+      phone: null,
+      image: 'https://images.example.test/ada.png',
+    });
+
+    const invalidDate = await patchWithCookie(
+      path,
+      { lastName: 'Lovelace', birthDate: '1900-02-29' },
+      adminCookie,
+    );
+    expect(invalidDate.status).toBe(400);
+    expect(invalidDate.headers.get('content-type')).toContain('application/problem+json');
+    expect(await invalidDate.json()).toMatchObject({ code: 'bad-request' });
+
+    const malicious = await patchWithCookie(
+      path,
+      {
+        firstName: 'Injected',
+        email: 'attacker@example.test',
+        emailVerified: false,
+        role: 'admin',
+        banned: true,
+        banReason: 'forged',
+        banExpires: 1,
+        name: 'Injected technical name',
+        password: 'replace-password',
+        session: { token: 'forged-session' },
+        arbitraryField: 'unexpected',
+      },
+      adminCookie,
+    );
+    expect(malicious.status).toBe(400);
+    expect(await malicious.json()).toMatchObject({ code: 'bad-request', status: 400 });
+
+    const genericEngineRouter = await postWithCookie(
+      '/api/auth/admin/update-user',
+      { userId, data: { role: 'admin' } },
+      adminCookie,
+    );
+    expect(genericEngineRouter.status).toBe(404);
+
+    const ordinaryUserWrite = await patchWithCookie(path, { firstName: 'Not allowed' }, userCookie);
+    expect(ordinaryUserWrite.status).toBe(403);
+    expect(await ordinaryUserWrite.json()).toMatchObject({ code: 'forbidden' });
+
+    const anonymousWrite = await patchWithCookie(path, { firstName: 'Not allowed' }, null);
+    expect(anonymousWrite.status).toBe(401);
+    expect(await anonymousWrite.json()).toMatchObject({ code: 'unauthenticated' });
+
+    const noTargetWrite = await patchWithCookie(
+      '/v1/admin/users/no-such-user-248/account-details',
+      { firstName: 'Not allowed' },
+      userCookie,
+    );
+    expect(noTargetWrite.status).toBe(403);
+    expect(await noTargetWrite.json()).toMatchObject({ code: 'forbidden' });
+
+    const afterFailures = await get(path, { cookie: adminCookie });
+    expect(afterFailures.status).toBe(200);
+    expect(await afterFailures.json()).toEqual({
+      firstName: 'Ada',
+      lastName: null,
+      birthDate: '2000-02-29',
+      phone: null,
+      image: 'https://images.example.test/ada.png',
+    });
+    expect((await get('/v1/admin/users', { cookie: adminCookie })).status).toBe(200);
+  });
+
+  it('rejects anonymous, ordinary and unknown-target writes without exposing target existence', async () => {
+    const { cookie: adminCookie } = await bootstrapVerifiedAdmin();
+    const { cookie: userCookie, userId } = await verifiedRegularCookie(
+      'account-details-denied@example.com',
+    );
+    const existingPath = `/v1/admin/users/${encodeURIComponent(userId)}/account-details`;
+    const missingPath = '/v1/admin/users/no-such-user-248/account-details';
+
+    const anonymous = await patchWithCookie(existingPath, { firstName: 'Intruder' }, null);
+    expect(anonymous.status).toBe(401);
+    expect(await anonymous.json()).toMatchObject({ code: 'unauthenticated' });
+
+    const ordinaryExisting = await patchWithCookie(
+      existingPath,
+      { firstName: 'Intruder' },
+      userCookie,
+    );
+    const ordinaryMissing = await patchWithCookie(
+      missingPath,
+      { firstName: 'Intruder' },
+      userCookie,
+    );
+    expect(ordinaryExisting.status).toBe(403);
+    expect(ordinaryMissing.status).toBe(403);
+    expect(await ordinaryExisting.json()).toMatchObject({ code: 'forbidden' });
+    expect(await ordinaryMissing.json()).toMatchObject({ code: 'forbidden' });
+
+    const adminMissing = await patchWithCookie(
+      missingPath,
+      { firstName: 'Missing target' },
+      adminCookie,
+    );
+    expect(adminMissing.status).toBe(404);
+    expect(await adminMissing.json()).toMatchObject({ code: 'not-found' });
+    expect((await get(existingPath, { cookie: adminCookie })).status).toBe(200);
   });
 });
