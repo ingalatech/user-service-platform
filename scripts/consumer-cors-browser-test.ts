@@ -108,6 +108,13 @@ interface RegisterResult {
   readonly registerStatus: number;
 }
 
+interface VersionedRegisterResult {
+  readonly registerStatus: number;
+  readonly responseKeys: string[];
+  readonly email: string | null;
+  readonly emailVerified: boolean | null;
+}
+
 interface VerifyResult {
   readonly verifyStatus: number;
   readonly emailVerified: boolean;
@@ -133,6 +140,7 @@ interface RevokeResult {
 interface HostileResult {
   readonly getMe: string;
   readonly login: string;
+  readonly registerV2: string;
 }
 
 export interface ConsumerCorsBrowserOptions {
@@ -346,6 +354,153 @@ export default {
       'actual verify-email from the approved origin succeeds',
     );
 
+    phase = 'versioned no-name registration strictness';
+    const rejectedNameEmail = 'consumer-v2-name-rejected@example.com';
+    const rejectedName = await page.evaluate<{
+      readonly status: number;
+      readonly code: string | null;
+    }>(
+      `(async () => {
+      const service = ${JSON.stringify(serviceBase)};
+      const response = await fetch(service + '/v2/auth/register', {
+        method: 'POST', credentials: 'include',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          name: 'Must be rejected',
+          email: ${JSON.stringify(rejectedNameEmail)},
+          password: ${JSON.stringify(password)}
+        })
+      });
+      const body = await response.json().catch(() => null);
+      return {
+        status: response.status,
+        code: body && typeof body.code === 'string' ? body.code : null
+      };
+    })()`,
+    );
+    assert(
+      rejectedName.status === 400 && rejectedName.code === 'bad-request',
+      'V2 rejects public name from the approved browser origin',
+    );
+    const rejectedNameLogin = await page.evaluate<{
+      readonly status: number;
+      readonly code: string | null;
+    }>(
+      `(async () => {
+      const service = ${JSON.stringify(serviceBase)};
+      const response = await fetch(service + '/v1/auth/login', {
+        method: 'POST', credentials: 'include',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ email: ${JSON.stringify(rejectedNameEmail)}, password: ${JSON.stringify(password)} })
+      });
+      const body = await response.json().catch(() => null);
+      return {
+        status: response.status,
+        code: body && typeof body.code === 'string' ? body.code : null
+      };
+    })()`,
+    );
+    assert(
+      rejectedNameLogin.status === 401 && rejectedNameLogin.code === 'invalid-credentials',
+      'V2 name rejection creates no User',
+    );
+
+    phase = 'versioned no-name registration from approved browser origin';
+    const versionedEmail = 'consumer-v2-browser@example.com';
+    const versionedRegistration = await page.evaluate<VersionedRegisterResult>(`(async () => {
+      const service = ${JSON.stringify(serviceBase)};
+      const response = await fetch(service + '/v2/auth/register', {
+        method: 'POST', credentials: 'include',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          email: ${JSON.stringify(versionedEmail)},
+          password: ${JSON.stringify(password)}
+        })
+      });
+      const body = await response.json().catch(() => null);
+      return {
+        registerStatus: response.status,
+        responseKeys: body && typeof body === 'object' ? Object.keys(body).sort() : [],
+        email: body && typeof body.email === 'string' ? body.email : null,
+        emailVerified: body && typeof body.emailVerified === 'boolean' ? body.emailVerified : null
+      };
+    })()`);
+    assert(
+      versionedRegistration.registerStatus === 201,
+      'V2 credentialed POST and automatic CORS preflight succeed in Chromium',
+    );
+    assert(
+      versionedRegistration.responseKeys.join(',') === 'email,emailVerified,id' &&
+        versionedRegistration.email === versionedEmail &&
+        versionedRegistration.emailVerified === false,
+      'V2 returns only the application-owned unverified identity projection',
+    );
+
+    const versionedMailResponse = await http('/__fixture/verification-mail');
+    const versionedMail = (await versionedMailResponse.json()) as { token?: unknown };
+    assert(
+      versionedMailResponse.ok && typeof versionedMail.token === 'string',
+      'V2 verification message captured',
+    );
+    const versionedLifecycle = await page.evaluate<{
+      readonly verifyStatus: number;
+      readonly loginStatus: number;
+      readonly meStatus: number;
+      readonly meEmail: string | null;
+      readonly accountDetailsStatus: number;
+      readonly accountDetailsAreEmpty: boolean;
+      readonly scriptReadableSessionCookie: boolean;
+    }>(`(async () => {
+      const service = ${JSON.stringify(serviceBase)};
+      const json = { 'content-type': 'application/json' };
+      const verification = await fetch(service + '/v1/auth/verify-email', {
+        method: 'POST', credentials: 'include', headers: json,
+        body: JSON.stringify({ token: ${JSON.stringify(versionedMail.token)} })
+      });
+      const login = await fetch(service + '/v1/auth/login', {
+        method: 'POST', credentials: 'include', headers: json,
+        body: JSON.stringify({ email: ${JSON.stringify(versionedEmail)}, password: ${JSON.stringify(password)} })
+      });
+      const me = await fetch(service + '/v1/me', { credentials: 'include' });
+      const meBody = me.status === 200 ? await me.json() : null;
+      const details = await fetch(service + '/v1/account-details', { credentials: 'include' });
+      const detailsBody = details.status === 200 ? await details.json() : null;
+      return {
+        verifyStatus: verification.status,
+        loginStatus: login.status,
+        meStatus: me.status,
+        meEmail: meBody && typeof meBody.email === 'string' ? meBody.email : null,
+        accountDetailsStatus: details.status,
+        accountDetailsAreEmpty: !!detailsBody &&
+          detailsBody.firstName === null && detailsBody.lastName === null &&
+          detailsBody.birthDate === null && detailsBody.phone === null && detailsBody.image === null,
+        scriptReadableSessionCookie: document.cookie.includes('session_token')
+      };
+    })()`);
+    assert(
+      versionedLifecycle.verifyStatus === 200 && versionedLifecycle.loginStatus === 200,
+      'V2 User proceeds through verification and credential login',
+    );
+    assert(
+      versionedLifecycle.meStatus === 200 && versionedLifecycle.meEmail === versionedEmail,
+      'V2 User resolves through the authoritative /v1/me session',
+    );
+    assert(
+      versionedLifecycle.accountDetailsStatus === 200 && versionedLifecycle.accountDetailsAreEmpty,
+      'V2 registration invents no Account Details',
+    );
+    assert(!versionedLifecycle.scriptReadableSessionCookie, 'V2 session remains HttpOnly');
+    const versionedServiceCookies = await context.cookies(`${serviceBase}/`);
+    const versionedSession = versionedServiceCookies.find((cookie) =>
+      cookie.name.includes('session_token'),
+    );
+    assert(
+      versionedSession?.httpOnly &&
+        versionedSession.domain === 'service.rc.test' &&
+        !versionedSession.domain.startsWith('.'),
+      'V2 login keeps the service session cookie host-only',
+    );
+
     phase = 'direct-browser lifecycle';
     const authenticated = await page.evaluate<AuthenticateResult>(`(async () => {
       const service = ${JSON.stringify(serviceBase)};
@@ -433,6 +588,7 @@ export default {
 
     phase = 'hostile origin';
     await page.goto(`${hostileBase}/`);
+    const hostileV2Email = 'hostile-v2@example.com';
     const hostile = await page.evaluate<HostileResult>(`(async () => {
       const service = ${JSON.stringify(serviceBase)};
       const json = { 'content-type': 'application/json' };
@@ -454,10 +610,50 @@ export default {
       } catch {
         login = 'blocked';
       }
-      return { getMe, login };
+      let registerV2 = 'resolved';
+      try {
+        const response = await fetch(service + '/v2/auth/register', {
+          method: 'POST', credentials: 'include', headers: json,
+          body: JSON.stringify({
+            email: ${JSON.stringify(hostileV2Email)},
+            password: ${JSON.stringify(password)}
+          })
+        });
+        await response.text();
+        registerV2 = 'resolved:' + response.status;
+      } catch {
+        registerV2 = 'blocked';
+      }
+      return { getMe, login, registerV2 };
     })()`);
     assert(hostile.getMe === 'blocked', 'unapproved origin cannot read the identity response');
     assert(hostile.login === 'blocked', 'unapproved origin cannot perform the mutation');
+    assert(hostile.registerV2 === 'blocked', 'unapproved origin cannot read V2 registration');
+    const hostileV2Request = await http('/v2/auth/register', {
+      method: 'POST',
+      headers: {
+        origin: hostileBase,
+        'sec-fetch-site': 'cross-site',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({ email: hostileV2Email, password }),
+    });
+    assert(
+      hostileV2Request.status === 403 &&
+        hostileV2Request.headers.get('access-control-allow-origin') === null,
+      'V2 cookie mutation guard rejects the hostile Origin',
+    );
+    await hostileV2Request.arrayBuffer();
+    const hostileV2Login = await http('/v1/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: hostileV2Email, password }),
+    });
+    const hostileV2LoginBody = (await hostileV2Login.json()) as { code?: unknown };
+    assert(
+      hostileV2Login.status === 401 && hostileV2LoginBody.code === 'invalid-credentials',
+      'hostile V2 registration created no User',
+    );
 
     await context.close();
     console.log(
