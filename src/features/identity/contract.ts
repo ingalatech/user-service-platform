@@ -56,6 +56,14 @@ export const RegisterRequestSchema = z
   })
   .openapi('RegisterRequest');
 
+export const RegisterWithoutNameRequestSchema = z
+  .object({
+    email: emailField,
+    password: passwordField,
+  })
+  .strict()
+  .openapi('RegisterWithoutNameRequest');
+
 export const RegisteredUserSchema = z
   .object({
     id: z.string().openapi({ example: 'abc123' }),
@@ -361,6 +369,7 @@ export type ConsumerJsonWebKey = z.infer<typeof ConsumerJsonWebKeySchema>;
 export type ConsumerJwksResponse = z.infer<typeof ConsumerJwksResponseSchema>;
 
 export type RegisterRequest = z.infer<typeof RegisterRequestSchema>;
+export type RegisterWithoutNameRequest = z.infer<typeof RegisterWithoutNameRequestSchema>;
 export type RegisteredUser = z.infer<typeof RegisteredUserSchema>;
 export type LoginRequest = z.infer<typeof LoginRequestSchema>;
 export type LoginResult = z.infer<typeof LoginResultSchema>;

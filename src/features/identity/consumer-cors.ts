@@ -61,9 +61,10 @@ export function areRequestedHeadersAllowed(raw: string | null): boolean {
     .every((entry) => (CONSUMER_CORS_ALLOWED_HEADERS as readonly string[]).includes(entry));
 }
 
-// Operation paths that carry the direct-browser consumer contract: every
-// public identity operation plus `/v1/me`. The administrative surface is
-// deliberately excluded — it stays same-origin and is not a consumer grant.
+// V1 operation paths that carry the direct-browser consumer contract: each
+// public identity operation plus `/v1/me`. The V2 no-name registration router
+// installs the same middleware on its `/auth/register` path. Administrative
+// routes are deliberately excluded — they stay same-origin.
 export const CONSUMER_CORS_PATHS = [
   '/account-details',
   '/auth/register',

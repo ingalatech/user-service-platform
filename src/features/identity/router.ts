@@ -32,6 +32,7 @@ import {
   currentUserRoute,
   loginRoute,
   registerRoute,
+  registerWithoutNameRoute,
   requestPasswordResetRoute,
   requestVerificationRoute,
   resetPasswordRoute,
@@ -588,6 +589,31 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
       'Administrator email conflict',
       'The email address is already registered; bootstrap cannot duplicate it.',
     );
+  });
+
+  return router;
+}
+
+// Explicit V2 registration transition. Only this no-public-name operation is
+// mounted under `/v2`; all accepted Identity operations retain their `/v1`
+// contracts and are not duplicated into a generic versioned API router.
+export function createIdentityV2Router(options: IdentityRouterOptions = {}) {
+  const router = new OpenAPIHono<{ Bindings: Env; Variables: { requestId: string } }>();
+  const override = options.authMailer;
+  router.use('/auth/register', createConsumerCorsMiddleware());
+
+  router.openapi(registerWithoutNameRoute, async (c) => {
+    const runtime = requestIdentityRuntime(c, override);
+    const rejected = guardCookieMutation(c, runtime);
+    if (rejected !== null) return rejected;
+    const credentialOperations = createCredentialOperations({ runtime, db: c.env.DB });
+    const result = await credentialOperations.registerWithoutName(
+      c.req.valid('json'),
+      c.req.raw.headers,
+    );
+    return result.kind === 'failure'
+      ? credentialProblem(c, result.failure)
+      : c.json(result.value, 201);
   });
 
   return router;

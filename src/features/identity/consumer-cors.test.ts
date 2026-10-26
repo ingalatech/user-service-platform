@@ -364,6 +364,52 @@ describe('public consumer operation CORS responses', () => {
 });
 
 describe('consumer CORS preflight', () => {
+  it('grants the versioned no-name registration to the same approved consumer origin', async () => {
+    const overrides = { AUTH_CONSUMER_ORIGINS: CONSUMER_ORIGIN };
+    const preflight = await options(
+      '/v2/auth/register',
+      {
+        origin: CONSUMER_ORIGIN,
+        'access-control-request-method': 'POST',
+        'access-control-request-headers': 'content-type',
+      },
+      overrides,
+    );
+    expect(preflight.status).toBe(204);
+    expect(preflight.headers.get('access-control-allow-origin')).toBe(CONSUMER_ORIGIN);
+    expect(preflight.headers.get('access-control-allow-credentials')).toBe('true');
+
+    const registration = await post(
+      '/v2/auth/register',
+      { email: 'cors-v2@example.com', password: 'Correct-horse-41' },
+      {
+        headers: { origin: CONSUMER_ORIGIN, 'sec-fetch-site': 'same-site' },
+        overrides,
+      },
+    );
+    expect(registration.status).toBe(201);
+    expect(registration.headers.get('access-control-allow-origin')).toBe(CONSUMER_ORIGIN);
+    expect(registration.headers.get('access-control-allow-credentials')).toBe('true');
+    expect(registration.headers.get('vary')).toContain('Origin');
+
+    const denied = await post(
+      '/v2/auth/register',
+      { email: 'hostile-v2@example.com', password: 'Correct-horse-41' },
+      {
+        headers: { origin: 'https://evil.test', 'sec-fetch-site': 'cross-site' },
+        overrides,
+      },
+    );
+    expect(denied.status).toBe(403);
+    expect(denied.headers.get('access-control-allow-origin')).toBeNull();
+    const uncreated = await workerEnv.DB.prepare(
+      'SELECT COUNT(*) AS total FROM "user" WHERE email = ?1',
+    )
+      .bind('hostile-v2@example.com')
+      .first<{ total: number }>();
+    expect(uncreated?.total).toBe(0);
+  });
+
   it('answers an approved preflight without a session using a bounded cache', async () => {
     const res = await options(
       '/v1/auth/login',

@@ -170,6 +170,7 @@ describe('POST /v1/auth/register', () => {
     expect(res.headers.get('content-type')).toContain('application/json');
 
     const body = (await res.json()) as { id: string; email: string; emailVerified: boolean };
+    expect(Object.keys(body).sort()).toEqual(['email', 'emailVerified', 'id']);
     expect(typeof body.id).toBe('string');
     expect(body.email).toBe('ada@example.com');
     expect(body.emailVerified).toBe(false);
@@ -453,6 +454,104 @@ describe('POST /v1/auth/register', () => {
       expect(await res.json()).toMatchObject({ code: 'email-password-disabled', status: 403 });
     }
     expect(await userCount(workerEnv.DB)).toBe(0);
+  });
+});
+
+describe('POST /v2/auth/register', () => {
+  it('registers without a public name and uses the full email only as the technical name', async () => {
+    const email = 'new-user@example.com';
+    const res = await post('/v2/auth/register', {
+      email,
+      password: 'Correct-horse-41',
+    });
+
+    expect(res.status).toBe(201);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(Object.keys(body).sort()).toEqual(['email', 'emailVerified', 'id']);
+    expect(typeof body.id).toBe('string');
+    expect(body.email).toBe(email);
+    expect(body.emailVerified).toBe(false);
+    expect(res.headers.get('set-cookie')).toBeNull();
+    expect((await userIdentity(workerEnv.DB, email)).name).toBe(email);
+    const details = await workerEnv.DB.prepare(
+      'SELECT first_name, last_name, birth_date, phone FROM "user" WHERE email = ?1',
+    )
+      .bind(email)
+      .first<{
+        first_name: string | null;
+        last_name: string | null;
+        birth_date: string | null;
+        phone: string | null;
+      }>();
+    expect(details).toEqual({ first_name: null, last_name: null, birth_date: null, phone: null });
+    await waitForVerificationMessages(1);
+    expect(mailer.sent[0]?.to).toBe(email);
+
+    const beforeVerification = await post('/v1/auth/login', {
+      email,
+      password: 'Correct-horse-41',
+    });
+    expect(beforeVerification.status).toBe(403);
+    expect(await beforeVerification.json()).toMatchObject({
+      code: 'email-verification-required',
+      status: 403,
+    });
+
+    const verified = await post('/v1/auth/verify-email', {
+      token: await tokenFromLastMessage(),
+    });
+    expect(verified.status).toBe(200);
+    const login = await post('/v1/auth/login', { email, password: 'Correct-horse-41' });
+    expect(login.status).toBe(200);
+    const cookie = sessionCookieFrom(login);
+    expect(cookie).not.toBeNull();
+    const currentUser = await get('/v1/me', { cookie });
+    expect(currentUser.status).toBe(200);
+    expect(await currentUser.json()).toMatchObject({ email, emailVerified: true });
+    expect(login.headers.get('set-cookie')).not.toBeNull();
+  });
+
+  it('rejects a public name and any unknown fields without creating an identity', async () => {
+    const payloads = [
+      { email: 'named-v2@example.com', password: 'Correct-horse-41', name: 'Personal Name' },
+      { email: 'unknown-v2@example.com', password: 'Correct-horse-41', nickname: 'Unexpected' },
+    ];
+
+    for (const payload of payloads) {
+      const res = await post('/v2/auth/register', payload);
+      expect(res.status).toBe(400);
+      expect(res.headers.get('content-type')).toContain('application/problem+json');
+      expect(await res.json()).toMatchObject({ code: 'bad-request', status: 400 });
+    }
+
+    expect(await userCount(workerEnv.DB)).toBe(0);
+    expect(mailer.sent).toHaveLength(0);
+  });
+
+  it('uses the application password-policy gate for the versioned operation', async () => {
+    const res = await post('/v2/auth/register', {
+      email: 'weak-password-v2@example.com',
+      password: 'short',
+    });
+
+    expect(res.status).toBe(400);
+    expect(res.headers.get('content-type')).toContain('application/problem+json');
+    expect(await res.json()).toMatchObject({ code: 'password-policy-violation', status: 400 });
+    expect(await userCount(workerEnv.DB)).toBe(0);
+    expect(mailer.sent).toHaveLength(0);
+  });
+
+  it('honors the deployment registration switch on the versioned operation', async () => {
+    const res = await post(
+      '/v2/auth/register',
+      { email: 'registration-disabled-v2@example.com', password: 'Correct-horse-41' },
+      { AUTH_REGISTRATION_ENABLED: 'false' },
+    );
+
+    expect(res.status).toBe(403);
+    expect(await res.json()).toMatchObject({ code: 'registration-disabled', status: 403 });
+    expect(await userCount(workerEnv.DB)).toBe(0);
+    expect(mailer.sent).toHaveLength(0);
   });
 });
 
