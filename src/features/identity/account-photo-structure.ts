@@ -7,6 +7,9 @@ export interface AccountPhotoStructureValidator {
   finish(): void;
 }
 
+export const MAX_ACCOUNT_PHOTO_DIMENSION = 8192;
+export const MAX_ACCOUNT_PHOTO_PIXELS = 40_000_000;
+
 class InvalidAccountPhotoStructureError extends Error {
   constructor() {
     super('Account photo container structure is invalid.');
@@ -198,6 +201,7 @@ class PngStructureValidator implements AccountPhotoStructureValidator {
     if (
       width === 0 ||
       height === 0 ||
+      !validDimensions(width, height) ||
       !allowedDepths[colorType]?.includes(bitDepth) ||
       compression !== 0 ||
       filter !== 0 ||
@@ -206,6 +210,14 @@ class PngStructureValidator implements AccountPhotoStructureValidator {
       invalid();
     }
   }
+}
+
+function validDimensions(width: number, height: number): boolean {
+  return (
+    width <= MAX_ACCOUNT_PHOTO_DIMENSION &&
+    height <= MAX_ACCOUNT_PHOTO_DIMENSION &&
+    width * height <= MAX_ACCOUNT_PHOTO_PIXELS
+  );
 }
 
 const MAX_PNG_CHUNK_BYTES = 2 * 1024 * 1024;
@@ -228,6 +240,7 @@ class WebpStructureValidator implements AccountPhotoStructureValidator {
   private totalLength = 0;
   private parsePosition = 0;
   private seenFrame = false;
+  private extendedCanvas: { readonly width: number; readonly height: number } | null = null;
 
   constructor(private readonly expectedLength: number) {}
 
@@ -256,7 +269,7 @@ class WebpStructureValidator implements AccountPhotoStructureValidator {
       }
       if (this.state === 'payload') {
         const count = Math.min(bytes.length - offset, this.chunkRemaining);
-        if (this.chunkType === 'VP8 ' || this.chunkType === 'VP8L') {
+        if (this.chunkType === 'VP8 ' || this.chunkType === 'VP8L' || this.chunkType === 'VP8X') {
           const capture = Math.min(count, this.frameHeader.byteLength - this.frameHeaderLength);
           this.frameHeader.set(bytes.subarray(offset, offset + capture), this.frameHeaderLength);
           this.frameHeaderLength += capture;
@@ -310,6 +323,7 @@ class WebpStructureValidator implements AccountPhotoStructureValidator {
     if (this.chunkType === 'ANIM' || this.chunkType === 'ANMF') invalid();
     if (this.chunkType === 'VP8 ' && this.chunkLength < 10) invalid();
     if (this.chunkType === 'VP8L' && this.chunkLength < 5) invalid();
+    if (this.chunkType === 'VP8X' && this.chunkLength < 10) invalid();
     this.frameHeaderLength = 0;
     this.chunkRemaining = this.chunkLength;
     this.paddingRemaining = this.chunkLength % 2;
@@ -319,6 +333,12 @@ class WebpStructureValidator implements AccountPhotoStructureValidator {
   }
 
   private validateFrameChunk(): void {
+    if (this.chunkType === 'VP8X') {
+      const width = 1 + readUint24LE(this.frameHeader, 4);
+      const height = 1 + readUint24LE(this.frameHeader, 7);
+      if (!validDimensions(width, height)) invalid();
+      this.extendedCanvas = { width, height };
+    }
     if (this.chunkType === 'VP8 ') {
       if (
         this.frameHeader[3] !== 0x9d ||
@@ -330,18 +350,37 @@ class WebpStructureValidator implements AccountPhotoStructureValidator {
       ) {
         invalid();
       }
+      this.validateCanvasDimensions(
+        readUint16LE(this.frameHeader, 6) & 0x3fff,
+        readUint16LE(this.frameHeader, 8) & 0x3fff,
+      );
       this.seenFrame = true;
     }
     if (this.chunkType === 'VP8L') {
       const bits = readUint32LE(this.frameHeader, 1);
       if (this.frameHeader[0] !== 0x2f || bits >>> 29 !== 0) invalid();
+      this.validateCanvasDimensions((bits & 0x3fff) + 1, ((bits >>> 14) & 0x3fff) + 1);
       this.seenFrame = true;
+    }
+  }
+
+  private validateCanvasDimensions(width: number, height: number): void {
+    if (
+      !validDimensions(width, height) ||
+      (this.extendedCanvas !== null &&
+        (width > this.extendedCanvas.width || height > this.extendedCanvas.height))
+    ) {
+      invalid();
     }
   }
 }
 
 function readUint16LE(bytes: Uint8Array, offset: number): number {
   return (bytes[offset] ?? 0) | ((bytes[offset + 1] ?? 0) << 8);
+}
+
+function readUint24LE(bytes: Uint8Array, offset: number): number {
+  return (bytes[offset] ?? 0) | ((bytes[offset + 1] ?? 0) << 8) | ((bytes[offset + 2] ?? 0) << 16);
 }
 
 class JpegStructureValidator implements AccountPhotoStructureValidator {
@@ -446,6 +485,7 @@ class JpegStructureValidator implements AccountPhotoStructureValidator {
       if (
         height === 0 ||
         width === 0 ||
+        !validDimensions(width, height) ||
         (components !== 1 && components !== 3 && components !== 4) ||
         this.segmentLength !== 8 + 3 * components
       ) {

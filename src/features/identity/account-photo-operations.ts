@@ -9,7 +9,7 @@ import type { IdentityRuntime } from './identity-runtime.js';
 
 export const MAX_ACCOUNT_PHOTO_BYTES = 2 * 1024 * 1024;
 const PHOTO_KEY_PREFIX = 'account-photos/';
-const PHOTO_LOCK_TTL_MS = 15 * 60 * 1000;
+const PHOTO_LOCK_TTL_MS = 60 * 60 * 1000;
 const STAGED_CLEANUP_GRACE_MS = PHOTO_LOCK_TTL_MS;
 const PHOTO_CLEANUP_PAGE_SIZE = 100;
 const PHOTO_CLEANUP_MAX_PER_RUN = 500;
@@ -51,12 +51,18 @@ export type AccountPhotoReferenceWriter = (
   write: () => Promise<AccountPhotoReferenceWriteOutcome>,
 ) => Promise<AccountPhotoReferenceWriteOutcome>;
 
+export interface AccountPhotoLockTiming {
+  readonly leaseMs: number;
+  readonly heartbeatMs: number;
+}
+
 interface PhotoOperationsInput {
   readonly runtime: IdentityRuntime;
   readonly db: D1Database;
   readonly files?: R2Bucket;
   readonly background?: (task: Promise<unknown>) => void;
   readonly referenceWriter?: AccountPhotoReferenceWriter;
+  readonly lockTiming?: AccountPhotoLockTiming;
 }
 
 interface PhotoReference {
@@ -297,16 +303,80 @@ async function accountSession(
   }
 }
 
-async function acquirePhotoLock(db: D1Database, userId: string): Promise<PhotoLock | null> {
+async function acquirePhotoLock(
+  db: D1Database,
+  userId: string,
+  leaseMs = PHOTO_LOCK_TTL_MS,
+): Promise<PhotoLock | null> {
   const token = crypto.randomUUID();
   const now = Date.now();
   const result = await db
     .prepare(
       'INSERT INTO "user_photo_lock" (user_id, lock_token, expires_at) VALUES (?1, ?2, ?3) ON CONFLICT(user_id) DO UPDATE SET lock_token = excluded.lock_token, expires_at = excluded.expires_at WHERE "user_photo_lock".expires_at <= ?4',
     )
-    .bind(userId, token, now + PHOTO_LOCK_TTL_MS, now)
+    .bind(userId, token, now + leaseMs, now)
     .run();
   return result.meta.changes === 1 ? { userId, token } : null;
+}
+
+async function renewPhotoLock(db: D1Database, lock: PhotoLock, leaseMs: number): Promise<boolean> {
+  const now = Date.now();
+  const result = await db
+    .prepare(
+      'UPDATE "user_photo_lock" SET expires_at = ?1 WHERE user_id = ?2 AND lock_token = ?3 AND expires_at > ?4',
+    )
+    .bind(now + leaseMs, lock.userId, lock.token, now)
+    .run();
+  return result.meta.changes === 1;
+}
+
+function photoLockStillOwned(db: D1Database, lock: PhotoLock): Promise<boolean> {
+  return db
+    .prepare(
+      'SELECT lock_token FROM "user_photo_lock" WHERE user_id = ?1 AND lock_token = ?2 AND expires_at > ?3',
+    )
+    .bind(lock.userId, lock.token, Date.now())
+    .first<{ lock_token: string }>()
+    .then((row) => row !== null)
+    .catch(() => false);
+}
+
+function startPhotoLockHeartbeat(
+  db: D1Database,
+  lock: PhotoLock,
+  timing: AccountPhotoLockTiming,
+  onLost: () => void,
+): { readonly isLost: () => boolean; readonly stop: () => Promise<void> } {
+  let stopped = false;
+  let lost = false;
+  let running = false;
+  let heartbeat = Promise.resolve();
+  const timer = setInterval(() => {
+    if (stopped || lost || running) return;
+    running = true;
+    heartbeat = renewPhotoLock(db, lock, timing.leaseMs)
+      .then((renewed) => {
+        if (!renewed) {
+          lost = true;
+          onLost();
+        }
+      })
+      .catch(() => {
+        lost = true;
+        onLost();
+      })
+      .finally(() => {
+        running = false;
+      });
+  }, timing.heartbeatMs);
+  return {
+    isLost: () => lost,
+    stop: async () => {
+      stopped = true;
+      clearInterval(timer);
+      await heartbeat;
+    },
+  };
 }
 
 async function releasePhotoLock(db: D1Database, lock: PhotoLock): Promise<void> {
@@ -406,6 +476,19 @@ async function cancelPhotoCleanupCandidate(
     .run();
 }
 
+async function cancelPhotoCleanupForSource(
+  db: D1Database,
+  userId: string,
+  sourcePhotoId: string,
+): Promise<void> {
+  await db
+    .prepare(
+      'DELETE FROM "user_photo_cleanup" WHERE user_id = ?1 AND source_photo_id = ?2 AND state = \'staged\'',
+    )
+    .bind(userId, sourcePhotoId)
+    .run();
+}
+
 async function persistPhotoReference(input: {
   readonly runtime: IdentityRuntime;
   readonly headers: Headers;
@@ -457,9 +540,13 @@ export function createAccountPhotoOperations(input: PhotoOperationsInput) {
 
     const photoId = crypto.randomUUID();
     const objectKey = `${PHOTO_KEY_PREFIX}${crypto.randomUUID()}`;
+    const lockTiming = input.lockTiming ?? {
+      leaseMs: PHOTO_LOCK_TTL_MS,
+      heartbeatMs: Math.max(1, Math.floor(PHOTO_LOCK_TTL_MS / 3)),
+    };
     let lock: PhotoLock | null;
     try {
-      lock = await acquirePhotoLock(input.db, initialSession.userId);
+      lock = await acquirePhotoLock(input.db, initialSession.userId, lockTiming.leaseMs);
     } catch {
       await prepared.stream.cancel().catch(() => undefined);
       return { kind: 'service-unavailable' };
@@ -469,6 +556,10 @@ export function createAccountPhotoOperations(input: PhotoOperationsInput) {
       return { kind: 'conflict' };
     }
 
+    const uploadAbort = new AbortController();
+    const heartbeat = startPhotoLockHeartbeat(input.db, lock, lockTiming, () => {
+      uploadAbort.abort(new Error('Account Photo upload lost its D1 lease.'));
+    });
     let intentCreated = false;
     let cleanupCandidateCreated = false;
     try {
@@ -524,7 +615,7 @@ export function createAccountPhotoOperations(input: PhotoOperationsInput) {
       let uploadedSize: number;
       try {
         const fixed = new fixedLengthStreamGlobal.FixedLengthStream(prepared.contentLength);
-        const transfer = prepared.stream.pipeTo(fixed.writable);
+        const transfer = prepared.stream.pipeTo(fixed.writable, { signal: uploadAbort.signal });
         const [object] = await Promise.all([
           input.files.put(objectKey, fixed.readable, {
             httpMetadata: { contentType: prepared.contentType },
@@ -546,9 +637,11 @@ export function createAccountPhotoOperations(input: PhotoOperationsInput) {
           photoId,
           objectKey,
         });
-        return error instanceof PayloadTooLargeError || prepared.validation.payloadTooLarge
-          ? { kind: 'payload-too-large' }
-          : { kind: 'service-unavailable' };
+        return heartbeat.isLost()
+          ? { kind: 'conflict' }
+          : error instanceof PayloadTooLargeError || prepared.validation.payloadTooLarge
+            ? { kind: 'payload-too-large' }
+            : { kind: 'service-unavailable' };
       }
       if (prepared.validation.invalidStructure) {
         if (cleanupCandidateCreated) {
@@ -566,13 +659,45 @@ export function createAccountPhotoOperations(input: PhotoOperationsInput) {
         });
         return { kind: 'bad-request' };
       }
+      if (heartbeat.isLost() || !(await photoLockStillOwned(input.db, lock))) {
+        if (cleanupCandidateCreated) {
+          await cancelPhotoCleanupCandidate(input.db, session.userId, photoId).catch(
+            () => undefined,
+          );
+          cleanupCandidateCreated = false;
+        }
+        await deleteStagedObject({
+          db: input.db,
+          files: input.files,
+          userId: session.userId,
+          photoId,
+          objectKey,
+        });
+        return { kind: 'conflict' };
+      }
       try {
-        await input.db
+        const staged = await input.db
           .prepare(
             "UPDATE \"user_photo\" SET byte_length = ?1, state = 'staged' WHERE photo_id = ?2 AND user_id = ?3 AND state = 'uploading'",
           )
           .bind(uploadedSize, photoId, session.userId)
           .run();
+        if (staged.meta.changes !== 1) {
+          if (cleanupCandidateCreated) {
+            await cancelPhotoCleanupCandidate(input.db, session.userId, photoId).catch(
+              () => undefined,
+            );
+            cleanupCandidateCreated = false;
+          }
+          await deleteStagedObject({
+            db: input.db,
+            files: input.files,
+            userId: session.userId,
+            photoId,
+            objectKey,
+          });
+          return { kind: 'conflict' };
+        }
       } catch {
         if (cleanupCandidateCreated) {
           await cancelPhotoCleanupCandidate(input.db, session.userId, photoId).catch(
@@ -658,6 +783,7 @@ export function createAccountPhotoOperations(input: PhotoOperationsInput) {
       }
       return { kind: 'service-unavailable' };
     } finally {
+      await heartbeat.stop();
       await releasePhotoLock(input.db, lock).catch(() => undefined);
     }
   }
@@ -810,8 +936,10 @@ export function createAccountPhotoOperations(input: PhotoOperationsInput) {
 
   async function updateAccountDetailsImage<T extends { readonly kind: string }>(
     headers: Headers,
+    expectedImage: string | null,
     update: () => Promise<T>,
     targetUserId?: string,
+    committedOutcome?: () => Promise<T>,
   ): Promise<
     | T
     | {
@@ -872,6 +1000,39 @@ export function createAccountPhotoOperations(input: PhotoOperationsInput) {
       if (outcome.kind !== 'success') {
         if (oldPhoto !== null) {
           scheduleCleanup(input);
+        }
+        let persistedImage: string | null | undefined;
+        try {
+          const persisted = await input.db
+            .prepare('SELECT image FROM "user" WHERE id = ?1')
+            .bind(userId)
+            .first<{ image: string | null }>();
+          persistedImage = persisted?.image;
+        } catch {
+          scheduleCleanup(input);
+          return { kind: 'service-unavailable' };
+        }
+        if (persistedImage === expectedImage) {
+          if (oldPhoto !== null) {
+            try {
+              await input.db
+                .prepare(
+                  "UPDATE \"user_photo_cleanup\" SET state = 'pending' WHERE user_id = ?1 AND source_photo_id = ?2 AND state = 'staged'",
+                )
+                .bind(userId, oldPhoto.photo_id)
+                .run();
+            } catch {
+              // Reconciliation compares the still-durable staged intent with
+              // the committed reference on the next scheduled pass.
+            }
+          }
+          scheduleCleanup(input);
+          return committedOutcome === undefined ? outcome : await committedOutcome();
+        }
+        if (oldPhoto !== null && persistedImage === image) {
+          await cancelPhotoCleanupForSource(input.db, userId, oldPhoto.photo_id).catch(
+            () => undefined,
+          );
         }
         return outcome;
       }

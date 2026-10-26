@@ -11,12 +11,21 @@ const workerEnv = env as typeof env & { readonly FILES: R2Bucket };
 const testMigrations = env.TEST_MIGRATIONS as D1Migration[];
 const mailer = new InMemoryAuthMailer();
 let failPhotoReferenceResponseAfterCommit = false;
+let failAccountDetailsImageResponseAfterCommit = false;
 const app = createApp({
   authMailer: mailer,
   accountPhotoReferenceWriter: async (write) => {
     const outcome = await write();
     if (failPhotoReferenceResponseAfterCommit && outcome.kind === 'success') {
       failPhotoReferenceResponseAfterCommit = false;
+      return { kind: 'internal-error' };
+    }
+    return outcome;
+  },
+  accountDetailsImageUpdater: async (update) => {
+    const outcome = await update();
+    if (failAccountDetailsImageResponseAfterCommit && outcome.kind === 'success') {
+      failAccountDetailsImageResponseAfterCommit = false;
       return { kind: 'internal-error' };
     }
     return outcome;
@@ -188,6 +197,53 @@ function jpegPayload(size = VALID_JPEG.byteLength): Uint8Array {
   return total;
 }
 
+function withJpegDimensions(width: number, height: number): Uint8Array {
+  const bytes = VALID_JPEG.slice();
+  const startOfFrameMarkers = new Set([
+    0xc0, 0xc1, 0xc2, 0xc3, 0xc5, 0xc6, 0xc7, 0xc9, 0xca, 0xcb, 0xcd, 0xce, 0xcf,
+  ]);
+  for (let index = 0; index + 8 < bytes.length; index += 1) {
+    if (bytes[index] === 0xff && startOfFrameMarkers.has(bytes[index + 1] ?? 0)) {
+      bytes[index + 5] = (height >>> 8) & 0xff;
+      bytes[index + 6] = height & 0xff;
+      bytes[index + 7] = (width >>> 8) & 0xff;
+      bytes[index + 8] = width & 0xff;
+      return bytes;
+    }
+  }
+  throw new Error('JPEG fixture has no frame header.');
+}
+
+function withPngDimensions(width: number, height: number): Uint8Array {
+  const bytes = VALID_PNG.slice();
+  writeUint32BE(bytes, 16, width);
+  writeUint32BE(bytes, 20, height);
+  return bytes;
+}
+
+function withWebpDimensions(width: number, height: number): Uint8Array {
+  const bytes = VALID_WEBP.slice();
+  const frameMarker = bytes.findIndex(
+    (byte, index) => byte === 0x9d && bytes[index + 1] === 0x01 && bytes[index + 2] === 0x2a,
+  );
+  if (frameMarker < 0) throw new Error('WebP fixture has no VP8 frame header.');
+  writeUint16LE(bytes, frameMarker + 3, width);
+  writeUint16LE(bytes, frameMarker + 5, height);
+  return bytes;
+}
+
+function writeUint16LE(bytes: Uint8Array, offset: number, value: number): void {
+  bytes[offset] = value & 0xff;
+  bytes[offset + 1] = (value >>> 8) & 0xff;
+}
+
+function writeUint32BE(bytes: Uint8Array, offset: number, value: number): void {
+  bytes[offset] = (value >>> 24) & 0xff;
+  bytes[offset + 1] = (value >>> 16) & 0xff;
+  bytes[offset + 2] = (value >>> 8) & 0xff;
+  bytes[offset + 3] = value & 0xff;
+}
+
 function upload(cookie: string, bytes: Uint8Array, contentType = 'image/jpeg'): Promise<Response> {
   return request('/v1/account-photo', {
     method: 'POST',
@@ -276,6 +332,26 @@ describe('Account Photo HTTP boundary', () => {
     expect(oversized.status).toBe(413);
     expect(await (await request('/v1/account-details', { cookie })).json()).toEqual(detailsAtLimit);
     expect(detailsAtLimit).not.toEqual(detailsBefore);
+  });
+
+  it('rejects compact valid-container headers with excessive dimensions or pixel area for all formats', async () => {
+    const cookie = await signedInUser();
+    expect((await upload(cookie, VALID_JPEG)).status).toBe(204);
+    const oversizedDimensions = [
+      [withJpegDimensions(8193, 1), 'image/jpeg'],
+      [withJpegDimensions(7000, 7000), 'image/jpeg'],
+      [withPngDimensions(8193, 1), 'image/png'],
+      [withPngDimensions(7000, 7000), 'image/png'],
+      [withWebpDimensions(8193, 1), 'image/webp'],
+      [withWebpDimensions(7000, 7000), 'image/webp'],
+    ] as const;
+    for (const [bytes, mediaType] of oversizedDimensions) {
+      expect((await upload(cookie, bytes, mediaType)).status).toBe(400);
+    }
+    const details = (await (await request('/v1/account-details', { cookie })).json()) as {
+      image: string;
+    };
+    expect((await request(details.image, { cookie })).status).toBe(200);
   });
 
   it('replaces and removes photos through the owner session and does not expose an absent object', async () => {
@@ -523,6 +599,38 @@ describe('Account Photo HTTP boundary', () => {
     expect(details.image).toBeNull();
   });
 
+  it('returns the committed Account Details image clear after Better Auth response failure', async () => {
+    const cookie = await signedInUser();
+    expect((await upload(cookie, jpegPayload())).status).toBe(204);
+    const before = (await (await request('/v1/account-details', { cookie })).json()) as {
+      image: string;
+    };
+    const { id: userId } = (await (await request('/v1/me', { cookie })).json()) as { id: string };
+    const photoId = before.image.split('/').at(-1);
+    if (photoId === undefined) throw new Error('Expected a saved Account Photo reference.');
+    const storedObject = await workerEnv.DB.prepare(
+      'SELECT object_key FROM "user_photo" WHERE user_id = ?1 AND photo_id = ?2',
+    )
+      .bind(userId, photoId)
+      .first<{ object_key: string }>();
+    if (storedObject === null) throw new Error('Expected the private object metadata.');
+    failAccountDetailsImageResponseAfterCommit = true;
+    const cleared = await request('/v1/account-details', {
+      method: 'PATCH',
+      cookie,
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ image: null }),
+    });
+    expect(cleared.status).toBe(204);
+    const after = (await (await request('/v1/account-details', { cookie })).json()) as {
+      image: string | null;
+    };
+    expect(after.image).toBeNull();
+    expect((await request(before.image, { cookie })).status).toBe(404);
+    await runPhotoCleanup();
+    expect(await workerEnv.FILES.get(storedObject.object_key)).toBeNull();
+  });
+
   it('keeps failed R2 deletion durable and retries cleanup from the Worker scheduled event', async () => {
     const cookie = await signedInUser();
     expect((await upload(cookie, jpegPayload())).status).toBe(204);
@@ -551,7 +659,7 @@ describe('Account Photo HTTP boundary', () => {
   it('recovers interrupted R2 intents, respects live upload locks, and reconciles an already referenced photo', async () => {
     const cookie = await signedInUser();
     const { id: userId } = (await (await request('/v1/me', { cookie })).json()) as { id: string };
-    const createdAt = Date.now() - 16 * 60 * 1000;
+    const createdAt = Date.now() - 61 * 60 * 1000;
     const insertPhotoIntent = async (photoId: string, objectKey: string) =>
       workerEnv.DB.prepare(
         "INSERT INTO \"user_photo\" (photo_id, user_id, object_key, content_type, byte_length, state, created_at) VALUES (?1, ?2, ?3, 'image/jpeg', ?4, 'uploading', ?5)",
@@ -580,7 +688,7 @@ describe('Account Photo HTTP boundary', () => {
     await workerEnv.DB.prepare(
       'INSERT INTO "user_photo_lock" (user_id, lock_token, expires_at) VALUES (?1, ?2, ?3)',
     )
-      .bind(userId, crypto.randomUUID(), Date.now() + 60 * 60 * 1000)
+      .bind(userId, crypto.randomUUID(), Date.now() + 2 * 60 * 60 * 1000)
       .run();
     await runPhotoCleanup();
     expect(await workerEnv.FILES.get(activeKey)).not.toBeNull();
@@ -622,6 +730,7 @@ describe('Account Photo HTTP boundary', () => {
         intentVisibleBeforeR2Put = intent?.state === 'uploading';
         return workerEnv.FILES.put(key, value, options);
       },
+      delete: (keys: string | string[]) => workerEnv.FILES.delete(keys),
     };
     const finalUpload = await request('/v1/account-photo', {
       method: 'POST',
@@ -635,6 +744,101 @@ describe('Account Photo HTTP boundary', () => {
     });
     expect(finalUpload.status).toBe(204);
     expect(intentVisibleBeforeR2Put).toBe(true);
+  });
+
+  it('renews the upload fence while R2 is blocked beyond its initial lease', async () => {
+    const cookie = await signedInUser();
+    let signalPutStarted: () => void = () => undefined;
+    let releasePut: () => void = () => undefined;
+    const putStarted = new Promise<void>((resolve) => {
+      signalPutStarted = resolve;
+    });
+    const putGate = new Promise<void>((resolve) => {
+      releasePut = resolve;
+    });
+    const filesWithSlowPut = {
+      ...workerEnv.FILES,
+      put: async (
+        key: string,
+        value: Parameters<R2Bucket['put']>[1],
+        options?: Parameters<R2Bucket['put']>[2],
+      ) => {
+        signalPutStarted();
+        await putGate;
+        return workerEnv.FILES.put(key, value, options);
+      },
+    };
+    const shortLeaseApp = createApp({
+      authMailer: mailer,
+      accountPhotoLockTiming: { leaseMs: 60, heartbeatMs: 10 },
+    });
+    const uploadResponse = shortLeaseApp.request(
+      '/v1/account-photo',
+      {
+        method: 'POST',
+        headers: {
+          cookie,
+          'content-type': 'image/jpeg',
+          'content-length': String(VALID_JPEG.byteLength),
+        },
+        body: VALID_JPEG,
+      },
+      testEnv({ FILES: filesWithSlowPut }),
+    );
+    try {
+      await putStarted;
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      await runPhotoCleanup();
+      const uploading = await workerEnv.DB.prepare(
+        'SELECT photo_id FROM "user_photo" WHERE state = \'uploading\' LIMIT 1',
+      ).first<{ photo_id: string }>();
+      expect(uploading).not.toBeNull();
+    } finally {
+      releasePut();
+    }
+    expect((await uploadResponse).status).toBe(204);
+    const details = (await (await request('/v1/account-details', { cookie })).json()) as {
+      image: string;
+    };
+    expect((await request(details.image, { cookie })).status).toBe(200);
+  });
+
+  it('does not persist a Better Auth photo reference when the D1 upload intent was removed', async () => {
+    const cookie = await signedInUser();
+    const uploadedKeys: string[] = [];
+    const filesRemovingIntent = {
+      ...workerEnv.FILES,
+      put: async (
+        key: string,
+        value: Parameters<R2Bucket['put']>[1],
+        options?: Parameters<R2Bucket['put']>[2],
+      ) => {
+        uploadedKeys.push(key);
+        await workerEnv.DB.prepare('DELETE FROM "user_photo" WHERE object_key = ?1')
+          .bind(key)
+          .run();
+        return workerEnv.FILES.put(key, value, options);
+      },
+      delete: (keys: string | string[]) => workerEnv.FILES.delete(keys),
+    };
+    const rejected = await request('/v1/account-photo', {
+      method: 'POST',
+      cookie,
+      body: VALID_JPEG,
+      headers: {
+        'content-type': 'image/jpeg',
+        'content-length': String(VALID_JPEG.byteLength),
+      },
+      env: { FILES: filesRemovingIntent },
+    });
+    expect(rejected.status).toBe(409);
+    const details = (await (await request('/v1/account-details', { cookie })).json()) as {
+      image: string | null;
+    };
+    expect(details.image).toBeNull();
+    const uploadedKey = uploadedKeys[0];
+    if (uploadedKey === undefined) throw new Error('Expected the fixture R2 put to run.');
+    expect(await workerEnv.FILES.get(uploadedKey)).toBeNull();
   });
 
   it('moves past over 100 poisoned cleanup rows and still processes healthy R2/D1 work', async () => {

@@ -5,8 +5,12 @@ import { PROBLEM_JSON, createProblem, type ProblemCode } from '../../shared/prob
 import { createAdminUserReader } from './admin-users.js';
 import { createAdminAccountDetailsOperations } from './admin-account-details.js';
 import { createAccountDetailsOperations } from './account-details-operations.js';
+import type { AccountDetailsUpdateOutcome } from './account-details-operations.js';
 import { createAccountPhotoOperations } from './account-photo-operations.js';
-import type { AccountPhotoReferenceWriter } from './account-photo-operations.js';
+import type {
+  AccountPhotoLockTiming,
+  AccountPhotoReferenceWriter,
+} from './account-photo-operations.js';
 import {
   bootstrapAdminUser,
   type BootstrapCreateUser,
@@ -58,6 +62,12 @@ export interface IdentityRouterOptions {
   // Identity-engine seam for proving post-commit response failures on Account
   // Photo reference writes. Production uses Better Auth directly.
   readonly accountPhotoReferenceWriter?: AccountPhotoReferenceWriter;
+  readonly accountDetailsImageUpdater?: (
+    update: () => Promise<AccountDetailsUpdateOutcome>,
+  ) => Promise<AccountDetailsUpdateOutcome>;
+  // Short-lease/heartbeat seam for Worker tests that hold an upload longer
+  // than one lease period. Production uses the default long lease and renewal.
+  readonly accountPhotoLockTiming?: AccountPhotoLockTiming;
   // Deterministic lease-clock and engine-failure seams for Worker-runtime tests.
   readonly now?: () => number;
   readonly bootstrapLeaseTtlMs?: number;
@@ -268,18 +278,29 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     if (rejected !== null) return rejected;
     const patch = c.req.valid('json');
     const accountDetails = createAccountDetailsOperations(runtime);
+    const updateDetails = () => accountDetails.update(c.req.raw.headers, patch);
     const result =
       patch.image === undefined
-        ? await accountDetails.update(c.req.raw.headers, patch)
+        ? await updateDetails()
         : await createAccountPhotoOperations({
             runtime,
             db: c.env.DB,
             files: c.env.FILES,
+            ...(options.accountPhotoLockTiming === undefined
+              ? {}
+              : { lockTiming: options.accountPhotoLockTiming }),
             background: (task) => {
               c.executionCtx.waitUntil(task);
             },
-          }).updateAccountDetailsImage(c.req.raw.headers, () =>
-            accountDetails.update(c.req.raw.headers, patch),
+          }).updateAccountDetailsImage(
+            c.req.raw.headers,
+            patch.image,
+            () =>
+              options.accountDetailsImageUpdater === undefined
+                ? updateDetails()
+                : options.accountDetailsImageUpdater(updateDetails),
+            undefined,
+            () => Promise.resolve({ kind: 'success', cookies: [] }),
           );
     if (result.kind === 'unauthenticated') {
       return problem(c, 401, 'unauthenticated', 'Unauthenticated');
@@ -308,6 +329,9 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
       runtime,
       db: c.env.DB,
       files: c.env.FILES,
+      ...(options.accountPhotoLockTiming === undefined
+        ? {}
+        : { lockTiming: options.accountPhotoLockTiming }),
       ...(options.accountPhotoReferenceWriter === undefined
         ? {}
         : { referenceWriter: options.accountPhotoReferenceWriter }),
@@ -429,6 +453,9 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
       runtime,
       db: c.env.DB,
       files: c.env.FILES,
+      ...(options.accountPhotoLockTiming === undefined
+        ? {}
+        : { lockTiming: options.accountPhotoLockTiming }),
       ...(options.accountPhotoReferenceWriter === undefined
         ? {}
         : { referenceWriter: options.accountPhotoReferenceWriter }),
@@ -783,10 +810,19 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
             runtime,
             db: c.env.DB,
             files: c.env.FILES,
+            ...(options.accountPhotoLockTiming === undefined
+              ? {}
+              : { lockTiming: options.accountPhotoLockTiming }),
             background: (task) => {
               c.executionCtx.waitUntil(task);
             },
-          }).updateAccountDetailsImage(c.req.raw.headers, updateAdminDetails, params.userId);
+          }).updateAccountDetailsImage(
+            c.req.raw.headers,
+            patch.image ?? null,
+            updateAdminDetails,
+            params.userId,
+            () => adminDetails.get(params.userId, c.req.raw.headers),
+          );
     if (outcome.kind === 'unauthenticated') {
       return problem(c, 401, 'unauthenticated', 'Unauthenticated');
     }

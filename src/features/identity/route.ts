@@ -231,7 +231,7 @@ export const uploadAccountPhotoRoute = createRoute({
   operationId: 'uploadAccountPhoto',
   summary: 'Upload the current User photo',
   description:
-    'Streams a JPEG, PNG, or WebP request body with Content-Length of at most 2 MiB to private object storage. ' +
+    'Streams a JPEG, PNG, or WebP body of at most 2 MiB, 8192 pixels per axis, and 40 megapixels to private object storage. ' +
     'The service validates its bounded container structure and stores only an opaque service-route reference in Identity.',
   tags: ['identity'],
   request: {
