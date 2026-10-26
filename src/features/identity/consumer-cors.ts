@@ -14,9 +14,10 @@ import { resolveConsumerOrigins } from './origin-guard.js';
 // with the Origin/Fetch Metadata guard (`origin-guard.ts`).
 export const CONSUMER_CORS_PREFLIGHT_MAX_AGE_SECONDS = 600;
 
-// Methods the consumer identity operations use: POST for auth mutations,
-// PATCH for Account Details, and GET for `/v1/me` and the public JWKS document.
+// Methods the consumer Identity operations use by default: POST for auth
+// mutations, PATCH for Account Details, and GET for `/v1/me` and JWKS.
 export const CONSUMER_CORS_ALLOWED_METHODS = ['GET', 'PATCH', 'POST'] as const;
+export const ACCOUNT_PHOTO_CORS_ALLOWED_METHODS = ['DELETE', 'GET', 'POST'] as const;
 
 // JSON operations use `content-type`. `authorization` remains in the accepted
 // preflight set for compatibility with the existing direct-browser contract;
@@ -42,9 +43,12 @@ export function evaluateConsumerCorsOrigin(input: ConsumerCorsOriginInput): stri
   return input.consumerOrigins.includes(origin) ? origin : null;
 }
 
-export function isAllowedConsumerCorsMethod(method: string): boolean {
+export function isAllowedConsumerCorsMethod(
+  method: string,
+  allowedMethods: readonly string[] = CONSUMER_CORS_ALLOWED_METHODS,
+): boolean {
   const normalized = method.trim().toUpperCase();
-  return (CONSUMER_CORS_ALLOWED_METHODS as readonly string[]).includes(normalized);
+  return allowedMethods.includes(normalized);
 }
 
 // Parses a preflight `Access-Control-Request-Headers` list. Returns whether
@@ -67,6 +71,8 @@ export function areRequestedHeadersAllowed(raw: string | null): boolean {
 // routes are deliberately excluded — they stay same-origin.
 export const CONSUMER_CORS_PATHS = [
   '/account-details',
+  '/account-photo',
+  '/account-photo/*',
   '/auth/register',
   '/auth/login',
   '/auth/verify-email',
@@ -103,7 +109,9 @@ function problem(c: ConsumerCorsContext) {
 // headers to the consumer operations and uses a bounded cache. Unapproved
 // origins receive no grant, so the browser cannot read the response; mutated
 // state remains protected by the mutation origin guard regardless.
-export function createConsumerCorsMiddleware() {
+export function createConsumerCorsMiddleware(
+  allowedMethods: readonly string[] = CONSUMER_CORS_ALLOWED_METHODS,
+) {
   return createMiddleware<{ Bindings: Env; Variables: { requestId: string } }>(async (c, next) => {
     const origin = c.req.header('origin') ?? null;
 
@@ -130,7 +138,7 @@ export function createConsumerCorsMiddleware() {
       if (requestedMethod !== undefined) {
         if (
           allowedOrigin === null ||
-          !isAllowedConsumerCorsMethod(requestedMethod) ||
+          !isAllowedConsumerCorsMethod(requestedMethod, allowedMethods) ||
           !areRequestedHeadersAllowed(c.req.header('access-control-request-headers') ?? null)
         ) {
           return c.body(null, 403, { Vary: 'Origin' });
@@ -138,7 +146,7 @@ export function createConsumerCorsMiddleware() {
         return c.body(null, 204, {
           'Access-Control-Allow-Origin': allowedOrigin,
           'Access-Control-Allow-Credentials': 'true',
-          'Access-Control-Allow-Methods': CONSUMER_CORS_ALLOWED_METHODS.join(', '),
+          'Access-Control-Allow-Methods': allowedMethods.join(', '),
           'Access-Control-Allow-Headers': 'Content-Type, Authorization',
           'Access-Control-Max-Age': String(CONSUMER_CORS_PREFLIGHT_MAX_AGE_SECONDS),
           Vary: 'Origin, Access-Control-Request-Method, Access-Control-Request-Headers',

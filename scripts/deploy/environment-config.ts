@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import {
   databaseName,
   parseDeployEnvironment,
+  resourceName,
   workerName,
   type DeployableEnvironment,
 } from './naming.js';
@@ -52,6 +53,7 @@ export const ENVIRONMENT_VAR_NAMES = [
   'AUTH_READER_STATE_TTL_SECONDS',
   'AUTH_GATEWAY_ORIGINS',
   'AUTH_CONSUMER_ORIGINS',
+  'FILES_BUCKET',
   'SMTP_HOST',
   'SMTP_PORT',
   'SMTP_SECURE',
@@ -79,6 +81,7 @@ export interface DeploymentTarget {
   readonly workerUrl: string;
   readonly databaseName: string;
   readonly databaseId: string;
+  readonly filesBucketName?: string;
   readonly accountId?: string;
 }
 
@@ -107,7 +110,10 @@ function parseLines(text: string): Map<string, string> {
     values.set(name, value.trim().replace(/^(['"])(.*)\1$/, '$2'));
   }
   for (const name of ENVIRONMENT_VAR_NAMES) {
-    if (!values.has(name)) throw new Error(`Missing environment configuration key "${name}".`);
+    if (name !== 'FILES_BUCKET' && !values.has(name)) {
+      throw new Error(`Missing environment configuration key "${name}".`);
+    }
+    if (name === 'FILES_BUCKET' && !values.has(name)) values.set(name, '');
   }
   return values;
 }
@@ -149,6 +155,12 @@ export function resolveEnvironmentTarget(
   if (file.D1_ID !== '' && !isProvisionedDatabaseId(file.D1_ID)) {
     throw new Error('Invalid environment configuration value for "D1_ID".');
   }
+  if (
+    file.FILES_BUCKET !== '' &&
+    !/^[a-z0-9](?:[a-z0-9-]{1,61}[a-z0-9])$/.test(file.FILES_BUCKET)
+  ) {
+    throw new Error('Invalid environment configuration value for "FILES_BUCKET".');
+  }
   if (options.requireRemoteReady === true) {
     if (file.CLOUDFLARE_ACCOUNT_ID === '') {
       throw new Error(
@@ -174,6 +186,12 @@ export function resolveEnvironmentTarget(
   if (file.WORKER_NAME !== expectedWorker || file.D1_NAME !== expectedDatabase) {
     throw new Error('Environment configuration names do not match the selected environment.');
   }
+  const expectedFilesBucket = resourceName(expectedWorker, 'files');
+  if (file.FILES_BUCKET !== '' && file.FILES_BUCKET !== expectedFilesBucket) {
+    throw new Error(
+      'Environment configuration FILES_BUCKET does not match the target resource name.',
+    );
+  }
   return {
     targetKey: 'rch-rugbychampagne',
     company: 'rch',
@@ -184,6 +202,7 @@ export function resolveEnvironmentTarget(
     workerUrl: file.WORKER_URL,
     databaseName: file.D1_NAME,
     databaseId: file.D1_ID,
+    ...(file.FILES_BUCKET === '' ? {} : { filesBucketName: expectedFilesBucket }),
     accountId: file.CLOUDFLARE_ACCOUNT_ID,
   };
 }
@@ -205,6 +224,7 @@ export function resolveEnvironmentDeployment(
           'WORKER_URL',
           'D1_NAME',
           'D1_ID',
+          'FILES_BUCKET',
         ].includes(name),
     ).map((name) => [name, file[name]]),
   );

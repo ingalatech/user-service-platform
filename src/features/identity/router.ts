@@ -5,6 +5,12 @@ import { PROBLEM_JSON, createProblem, type ProblemCode } from '../../shared/prob
 import { createAdminUserReader } from './admin-users.js';
 import { createAdminAccountDetailsOperations } from './admin-account-details.js';
 import { createAccountDetailsOperations } from './account-details-operations.js';
+import type { AccountDetailsUpdateOutcome } from './account-details-operations.js';
+import { createAccountPhotoOperations } from './account-photo-operations.js';
+import type {
+  AccountPhotoLockTiming,
+  AccountPhotoReferenceWriter,
+} from './account-photo-operations.js';
 import {
   bootstrapAdminUser,
   type BootstrapCreateUser,
@@ -12,7 +18,11 @@ import {
   type BootstrapSetRole,
 } from './admin.js';
 import { createCredentialOperations, type CredentialFailure } from './credential-operations.js';
-import { CONSUMER_CORS_PATHS, createConsumerCorsMiddleware } from './consumer-cors.js';
+import {
+  ACCOUNT_PHOTO_CORS_ALLOWED_METHODS,
+  CONSUMER_CORS_PATHS,
+  createConsumerCorsMiddleware,
+} from './consumer-cors.js';
 import { createReaderStateOperations } from './reader-state-operations.js';
 import type { AuthMailer } from './mailer.js';
 import { createIdentityRuntime } from './identity-runtime.js';
@@ -21,6 +31,9 @@ import { createPasswordPolicyProblemDetails } from './problem.js';
 import {
   adminBootstrapRoute,
   accountDetailsRoute,
+  uploadAccountPhotoRoute,
+  getAccountPhotoRoute,
+  deleteAccountPhotoRoute,
   adminMeRoute,
   adminUserDetailRoute,
   adminUserAccountDetailsRoute,
@@ -46,6 +59,15 @@ export interface IdentityRouterOptions {
   // Test seam: an explicitly provided mailer (in-memory in tests) takes
   // precedence over environment resolution.
   readonly authMailer?: AuthMailer;
+  // Identity-engine seam for proving post-commit response failures on Account
+  // Photo reference writes. Production uses Better Auth directly.
+  readonly accountPhotoReferenceWriter?: AccountPhotoReferenceWriter;
+  readonly accountDetailsImageUpdater?: (
+    update: () => Promise<AccountDetailsUpdateOutcome>,
+  ) => Promise<AccountDetailsUpdateOutcome>;
+  // Short-lease/heartbeat seam for Worker tests that hold an upload longer
+  // than one lease period. Production uses the default long lease and renewal.
+  readonly accountPhotoLockTiming?: AccountPhotoLockTiming;
   // Deterministic lease-clock and engine-failure seams for Worker-runtime tests.
   readonly now?: () => number;
   readonly bootstrapLeaseTtlMs?: number;
@@ -77,7 +99,7 @@ function requestIdentityRuntime(c: IdentityContext, authMailer?: AuthMailer): Id
 
 function problem(
   c: IdentityContext,
-  status: 400 | 401 | 403 | 404 | 409 | 500,
+  status: 400 | 401 | 403 | 404 | 409 | 413 | 500 | 503,
   code: ProblemCode,
   title: string,
   detail?: string,
@@ -197,8 +219,12 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
   // browser permission boundary; mutation authorization stays with
   // `guardCookieMutation`. Administrative routes are deliberately excluded.
   const consumerCors = createConsumerCorsMiddleware();
+  const accountPhotoCors = createConsumerCorsMiddleware(ACCOUNT_PHOTO_CORS_ALLOWED_METHODS);
   for (const path of CONSUMER_CORS_PATHS) {
-    router.use(path, consumerCors);
+    router.use(
+      path,
+      path === '/account-photo' || path === '/account-photo/*' ? accountPhotoCors : consumerCors,
+    );
   }
 
   router.openapi(accountDetailsRoute, async (c) => {
@@ -211,6 +237,37 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     if (result.kind === 'internal-error') {
       return problem(c, 500, 'internal-error', 'Internal Server Error');
     }
+    if (result.value.image?.startsWith('/v1/account-photo/')) {
+      const availability = await createAccountPhotoOperations({
+        runtime,
+        db: c.env.DB,
+        files: c.env.FILES,
+        background: (task) => {
+          c.executionCtx.waitUntil(task);
+        },
+      }).availability(c.req.raw.headers, result.value.image);
+      if (availability === 'unauthenticated') {
+        return problem(
+          c,
+          401,
+          'unauthenticated',
+          'Unauthenticated',
+          undefined,
+          'private, no-store',
+        );
+      }
+      if (availability === 'service-unavailable') {
+        return problem(
+          c,
+          503,
+          'service-unavailable',
+          'Service Unavailable',
+          undefined,
+          'private, no-store',
+        );
+      }
+      if (availability === 'missing') return c.json({ ...result.value, image: null }, 200);
+    }
     return c.json(result.value, 200);
   });
 
@@ -219,10 +276,32 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     const runtime = requestIdentityRuntime(c, override);
     const rejected = guardCookieMutation(c, runtime, 'private, no-store');
     if (rejected !== null) return rejected;
-    const result = await createAccountDetailsOperations(runtime).update(
-      c.req.raw.headers,
-      c.req.valid('json'),
-    );
+    const patch = c.req.valid('json');
+    const accountDetails = createAccountDetailsOperations(runtime);
+    const updateDetails = () => accountDetails.update(c.req.raw.headers, patch);
+    const result =
+      patch.image === undefined
+        ? await updateDetails()
+        : await createAccountPhotoOperations({
+            runtime,
+            db: c.env.DB,
+            files: c.env.FILES,
+            ...(options.accountPhotoLockTiming === undefined
+              ? {}
+              : { lockTiming: options.accountPhotoLockTiming }),
+            background: (task) => {
+              c.executionCtx.waitUntil(task);
+            },
+          }).updateAccountDetailsImage(
+            c.req.raw.headers,
+            patch.image,
+            () =>
+              options.accountDetailsImageUpdater === undefined
+                ? updateDetails()
+                : options.accountDetailsImageUpdater(updateDetails),
+            undefined,
+            () => Promise.resolve({ kind: 'success', cookies: [] }),
+          );
     if (result.kind === 'unauthenticated') {
       return problem(c, 401, 'unauthenticated', 'Unauthenticated');
     }
@@ -230,6 +309,191 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     if (result.kind === 'internal-error') {
       return problem(c, 500, 'internal-error', 'Internal Server Error');
     }
+    if (result.kind === 'conflict') return problem(c, 409, 'conflict', 'Conflict');
+    if (result.kind === 'service-unavailable') {
+      return problem(c, 503, 'service-unavailable', 'Service Unavailable');
+    }
+    if ('cookies' in result) {
+      forwardSessionCookies(c, result.cookies);
+      return c.body(null, 204);
+    }
+    return problem(c, 500, 'internal-error', 'Internal Server Error');
+  });
+
+  router.openapi(uploadAccountPhotoRoute, async (c) => {
+    c.header('Cache-Control', 'private, no-store');
+    const runtime = requestIdentityRuntime(c, override);
+    const rejected = guardCookieMutation(c, runtime, 'private, no-store');
+    if (rejected !== null) return rejected;
+    const result = await createAccountPhotoOperations({
+      runtime,
+      db: c.env.DB,
+      files: c.env.FILES,
+      ...(options.accountPhotoLockTiming === undefined
+        ? {}
+        : { lockTiming: options.accountPhotoLockTiming }),
+      ...(options.accountPhotoReferenceWriter === undefined
+        ? {}
+        : { referenceWriter: options.accountPhotoReferenceWriter }),
+      background: (task) => {
+        c.executionCtx.waitUntil(task);
+      },
+    }).upload(
+      c.req.raw.headers,
+      c.req.raw.body,
+      c.req.header('content-type'),
+      c.req.header('content-length'),
+    );
+    if (result.kind === 'unauthenticated') {
+      return problem(c, 401, 'unauthenticated', 'Unauthenticated', undefined, 'private, no-store');
+    }
+    if (result.kind === 'bad-request')
+      return problem(c, 400, 'bad-request', 'Bad Request', undefined, 'private, no-store');
+    if (result.kind === 'payload-too-large')
+      return problem(
+        c,
+        413,
+        'payload-too-large',
+        'Payload Too Large',
+        undefined,
+        'private, no-store',
+      );
+    if (result.kind === 'conflict')
+      return problem(c, 409, 'conflict', 'Conflict', undefined, 'private, no-store');
+    if (result.kind === 'service-unavailable')
+      return problem(
+        c,
+        503,
+        'service-unavailable',
+        'Service Unavailable',
+        undefined,
+        'private, no-store',
+      );
+    if (result.kind === 'internal-error')
+      return problem(
+        c,
+        500,
+        'internal-error',
+        'Internal Server Error',
+        undefined,
+        'private, no-store',
+      );
+    if (result.kind !== 'success')
+      return problem(
+        c,
+        500,
+        'internal-error',
+        'Internal Server Error',
+        undefined,
+        'private, no-store',
+      );
+    forwardSessionCookies(c, result.cookies);
+    return c.body(null, 204);
+  });
+
+  router.openapi(getAccountPhotoRoute, async (c) => {
+    c.header('Cache-Control', 'private, no-store');
+    const runtime = requestIdentityRuntime(c, override);
+    const result = await createAccountPhotoOperations({
+      runtime,
+      db: c.env.DB,
+      files: c.env.FILES,
+      background: (task) => {
+        c.executionCtx.waitUntil(task);
+      },
+    }).read(c.req.raw.headers, c.req.valid('param').photoId);
+    if (result.kind === 'unauthenticated')
+      return problem(c, 401, 'unauthenticated', 'Unauthenticated', undefined, 'private, no-store');
+    if (result.kind === 'not-found')
+      return problem(c, 404, 'not-found', 'Not Found', undefined, 'private, no-store');
+    if (result.kind === 'service-unavailable')
+      return problem(
+        c,
+        503,
+        'service-unavailable',
+        'Service Unavailable',
+        undefined,
+        'private, no-store',
+      );
+    if (result.kind === 'internal-error')
+      return problem(
+        c,
+        500,
+        'internal-error',
+        'Internal Server Error',
+        undefined,
+        'private, no-store',
+      );
+    if (result.kind !== 'success')
+      return problem(
+        c,
+        500,
+        'internal-error',
+        'Internal Server Error',
+        undefined,
+        'private, no-store',
+      );
+    return new Response(result.body, {
+      status: 200,
+      headers: {
+        'Content-Type': result.contentType,
+        'Content-Length': String(result.byteLength),
+        'Cache-Control': 'private, no-store',
+        'X-Content-Type-Options': 'nosniff',
+      },
+    });
+  });
+
+  router.openapi(deleteAccountPhotoRoute, async (c) => {
+    c.header('Cache-Control', 'private, no-store');
+    const runtime = requestIdentityRuntime(c, override);
+    const rejected = guardCookieMutation(c, runtime, 'private, no-store');
+    if (rejected !== null) return rejected;
+    const result = await createAccountPhotoOperations({
+      runtime,
+      db: c.env.DB,
+      files: c.env.FILES,
+      ...(options.accountPhotoLockTiming === undefined
+        ? {}
+        : { lockTiming: options.accountPhotoLockTiming }),
+      ...(options.accountPhotoReferenceWriter === undefined
+        ? {}
+        : { referenceWriter: options.accountPhotoReferenceWriter }),
+      background: (task) => {
+        c.executionCtx.waitUntil(task);
+      },
+    }).remove(c.req.raw.headers);
+    if (result.kind === 'unauthenticated')
+      return problem(c, 401, 'unauthenticated', 'Unauthenticated', undefined, 'private, no-store');
+    if (result.kind === 'conflict')
+      return problem(c, 409, 'conflict', 'Conflict', undefined, 'private, no-store');
+    if (result.kind === 'service-unavailable')
+      return problem(
+        c,
+        503,
+        'service-unavailable',
+        'Service Unavailable',
+        undefined,
+        'private, no-store',
+      );
+    if (result.kind === 'internal-error')
+      return problem(
+        c,
+        500,
+        'internal-error',
+        'Internal Server Error',
+        undefined,
+        'private, no-store',
+      );
+    if (result.kind !== 'success')
+      return problem(
+        c,
+        500,
+        'internal-error',
+        'Internal Server Error',
+        undefined,
+        'private, no-store',
+      );
     forwardSessionCookies(c, result.cookies);
     return c.body(null, 204);
   });
@@ -499,6 +763,9 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     if (outcome.kind === 'internal-error') {
       return problem(c, 500, 'internal-error', 'Internal Server Error');
     }
+    if (!('value' in outcome)) {
+      return problem(c, 500, 'internal-error', 'Internal Server Error');
+    }
     return c.json(outcome.value, 200);
   });
 
@@ -508,11 +775,54 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     const rejected = guardCookieMutation(c, runtime, 'private, no-store');
     if (rejected !== null) return rejected;
     const params = c.req.valid('param');
-    const outcome = await createAdminAccountDetailsOperations(runtime.administration()).update(
-      params.userId,
-      c.req.raw.headers,
-      c.req.valid('json'),
-    );
+    const adminDetails = createAdminAccountDetailsOperations(runtime.administration());
+    const patch = c.req.valid('json');
+    if (patch.image !== undefined) {
+      const current = await adminDetails.get(params.userId, c.req.raw.headers);
+      if (current.kind === 'unauthenticated') {
+        return problem(c, 401, 'unauthenticated', 'Unauthenticated');
+      }
+      if (current.kind === 'forbidden') {
+        return problem(c, 403, 'forbidden', 'Forbidden', 'Administrator access is required.');
+      }
+      if (current.kind === 'not-found') {
+        return problem(c, 404, 'not-found', 'Not Found', 'No such User.');
+      }
+      if (current.kind === 'internal-error') {
+        return problem(c, 500, 'internal-error', 'Internal Server Error');
+      }
+      if (current.kind === 'bad-request') return problem(c, 400, 'bad-request', 'Bad Request');
+      if (current.value.image?.startsWith('/v1/account-photo/')) {
+        return problem(
+          c,
+          400,
+          'bad-request',
+          'Bad Request',
+          'Account Photos can only be changed by their owning User.',
+        );
+      }
+    }
+    const updateAdminDetails = () => adminDetails.update(params.userId, c.req.raw.headers, patch);
+    const outcome =
+      patch.image === undefined
+        ? await updateAdminDetails()
+        : await createAccountPhotoOperations({
+            runtime,
+            db: c.env.DB,
+            files: c.env.FILES,
+            ...(options.accountPhotoLockTiming === undefined
+              ? {}
+              : { lockTiming: options.accountPhotoLockTiming }),
+            background: (task) => {
+              c.executionCtx.waitUntil(task);
+            },
+          }).updateAccountDetailsImage(
+            c.req.raw.headers,
+            patch.image ?? null,
+            updateAdminDetails,
+            params.userId,
+            () => adminDetails.get(params.userId, c.req.raw.headers),
+          );
     if (outcome.kind === 'unauthenticated') {
       return problem(c, 401, 'unauthenticated', 'Unauthenticated');
     }
@@ -523,7 +833,23 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
       return problem(c, 404, 'not-found', 'Not Found', 'No such User.');
     }
     if (outcome.kind === 'bad-request') return problem(c, 400, 'bad-request', 'Bad Request');
+    if (outcome.kind === 'photo-owner-required') {
+      return problem(
+        c,
+        400,
+        'bad-request',
+        'Bad Request',
+        'Account Photos can only be changed by their owning User.',
+      );
+    }
+    if (outcome.kind === 'conflict') return problem(c, 409, 'conflict', 'Conflict');
+    if (outcome.kind === 'service-unavailable') {
+      return problem(c, 503, 'service-unavailable', 'Service Unavailable');
+    }
     if (outcome.kind === 'internal-error') {
+      return problem(c, 500, 'internal-error', 'Internal Server Error');
+    }
+    if (!('value' in outcome)) {
       return problem(c, 500, 'internal-error', 'Internal Server Error');
     }
     return c.json(outcome.value, 200);

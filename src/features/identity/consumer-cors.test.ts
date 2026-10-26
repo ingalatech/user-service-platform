@@ -4,6 +4,7 @@ import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../../app.js';
 import type { Env } from '../../env.js';
 import {
+  ACCOUNT_PHOTO_CORS_ALLOWED_METHODS,
   CONSUMER_CORS_ALLOWED_HEADERS,
   CONSUMER_CORS_ALLOWED_METHODS,
   CONSUMER_CORS_PREFLIGHT_MAX_AGE_SECONDS,
@@ -188,6 +189,9 @@ describe('consumer CORS origin resolution', () => {
   it('restricts preflight methods and headers to actual needs', () => {
     for (const method of CONSUMER_CORS_ALLOWED_METHODS) {
       expect(isAllowedConsumerCorsMethod(method.toLowerCase())).toBe(true);
+    }
+    for (const method of ACCOUNT_PHOTO_CORS_ALLOWED_METHODS) {
+      expect(isAllowedConsumerCorsMethod(method, ACCOUNT_PHOTO_CORS_ALLOWED_METHODS)).toBe(true);
     }
     for (const method of ['DELETE', 'PUT']) {
       expect(isAllowedConsumerCorsMethod(method)).toBe(false);

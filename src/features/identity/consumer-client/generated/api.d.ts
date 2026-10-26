@@ -43,6 +43,50 @@ export interface paths {
         patch: operations["updateAccountDetails"];
         trace?: never;
     };
+    "/v1/account-photo": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Upload the current User photo
+         * @description Streams a JPEG, PNG, or WebP body of at most 2 MiB, 8192 pixels per axis, and 40 megapixels to private object storage. The service validates its bounded container structure and stores only an opaque service-route reference in Identity.
+         */
+        post: operations["uploadAccountPhoto"];
+        /**
+         * Remove the current User photo
+         * @description Clears the current User photo reference and queues private-object cleanup durably.
+         */
+        delete: operations["deleteAccountPhoto"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/account-photo/{photoId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the current User photo
+         * @description Streams the referenced private photo only when the live session owns the User and photo reference.
+         */
+        get: operations["getAccountPhoto"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/auth/register": {
         parameters: {
             query?: never;
@@ -837,6 +881,99 @@ export interface operations {
                 content?: never;
             };
             /** @description Validation or authentication failure as RFC 9457 Problem Details. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+        };
+    };
+    uploadAccountPhoto: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "image/jpeg": string;
+                "image/png": string;
+                "image/webp": string;
+            };
+        };
+        responses: {
+            /** @description The photo reference was saved for the current User. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation, authentication, storage or configuration failure. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+        };
+    };
+    deleteAccountPhoto: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The current User photo reference was cleared. */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Authentication or storage failure. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+        };
+    };
+    getAccountPhoto: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                photoId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The private photo bytes, streamed with its validated media type. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "image/jpeg": string;
+                    "image/png": string;
+                    "image/webp": string;
+                };
+            };
+            /** @description Authentication, ownership, object availability or storage failure. */
             default: {
                 headers: {
                     [name: string]: unknown;

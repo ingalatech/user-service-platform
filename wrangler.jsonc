@@ -70,4 +70,16 @@
       "migrations_dir": "drizzle",
     },
   ],
+  // Local-only object store for Worker Vitest/Miniflare and Wrangler dev.
+  // Remote deployment configs add FILES only when FILES_BUCKET is explicitly
+  // configured; an absent remote bucket never blocks the existing Worker.
+  "r2_buckets": [
+    {
+      "binding": "FILES",
+      "bucket_name": "user-service-local-files",
+    },
+  ],
+  "triggers": {
+    "crons": ["*/15 * * * *"],
+  },
 }

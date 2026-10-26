@@ -19,6 +19,8 @@ describe('release environment files', () => {
     );
     expect(sandbox.workerName).toContain('-sandbox');
     expect(production.workerName).toContain('-production');
+    expect(sandbox.filesBucketName).toBeUndefined();
+    expect(production.filesBucketName).toBeUndefined();
     expect(sandbox.applicationConfig.SMTP_HOST).toBe('smtp.gmail.com');
     expect(production.applicationConfig.SMTP_HOST).toBe('smtp.gmail.com');
     expect(sandbox.applicationConfig.AUTH_MAIL_ALLOWLIST).toBe(
@@ -35,6 +37,23 @@ describe('release environment files', () => {
     );
     expect(production.applicationConfig.AUTH_VERIFY_EMAIL_ACTION_URL).toBe(
       'https://www.rugbychampagneweb.com/usuario/verificar',
+    );
+  });
+
+  it('accepts an optional valid R2 bucket name without requiring one for releases', () => {
+    const file = loadEnvironmentFile(environmentFilePath('.', 'sandbox'));
+    expect(resolveEnvironmentTarget({ ...file, FILES_BUCKET: '' }).filesBucketName).toBeUndefined();
+    expect(
+      resolveEnvironmentTarget({
+        ...file,
+        FILES_BUCKET: 'rch-rugbychampagne-user-service-sandbox-files',
+      }).filesBucketName,
+    ).toBe('rch-rugbychampagne-user-service-sandbox-files');
+    expect(() =>
+      resolveEnvironmentTarget({ ...file, FILES_BUCKET: 'other-site-user-service-files' }),
+    ).toThrow(/FILES_BUCKET.*resource name/);
+    expect(() => resolveEnvironmentTarget({ ...file, FILES_BUCKET: 'Not/a/bucket' })).toThrow(
+      /FILES_BUCKET/,
     );
   });
 

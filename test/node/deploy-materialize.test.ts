@@ -5,6 +5,8 @@ import { describe, expect, it } from 'vitest';
 import {
   BASE_ASSETS_BINDING,
   BASE_ASSETS_DIRECTORY,
+  BASE_LOCAL_FILES_BUCKET,
+  ACCOUNT_PHOTO_CLEANUP_CRON,
   BASE_COMPATIBILITY_DATE,
   BASE_COMPATIBILITY_FLAGS,
   BASE_KEEP_VARS,
@@ -86,6 +88,7 @@ describe('wrangler config materialization', () => {
     // carry the same binding (asserted below).
     expect(base).toContain(`"directory": "./${BASE_ASSETS_DIRECTORY}"`);
     expect(base).toContain(`"binding": "${BASE_ASSETS_BINDING}"`);
+    expect(base).toContain(`"bucket_name": "${BASE_LOCAL_FILES_BUCKET}"`);
   });
 
   it('reconciles legacy plaintext vars while retaining the stable DB binding', () => {
@@ -105,6 +108,19 @@ describe('wrangler config materialization', () => {
     expect(config.keep_vars).toBe(false);
     expect(config.preview_urls).toBe(true);
     expect('vars' in config).toBe(false);
+    expect(config).not.toHaveProperty('r2_buckets');
+    expect(config).not.toHaveProperty('triggers');
+  });
+
+  it('adds only an explicitly named target R2 bucket and cleanup trigger', () => {
+    const configured = buildTargetWranglerConfig({
+      ...SANDBOX_RESOLVED,
+      filesBucketName: 'rch-rugbychampagne-user-service-sandbox-files',
+    });
+    expect(configured.r2_buckets).toEqual([
+      { binding: 'FILES', bucket_name: 'rch-rugbychampagne-user-service-sandbox-files' },
+    ]);
+    expect(configured.triggers).toEqual({ crons: [ACCOUNT_PHOTO_CLEANUP_CRON] });
   });
 
   it('compiles the complete application profile without secret names', () => {

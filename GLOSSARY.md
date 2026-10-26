@@ -31,6 +31,14 @@ authorize access.
 
 Deployment-level configuration that controls supported authentication behaviour without exposing Better Auth configuration directly to feature code. It includes capabilities such as registration enablement, email/password enablement, required email verification, password creation requirements, OAuth providers, and auth/session lifetimes. Password creation requirements apply to registration, reset and administrator bootstrap, not login. The initial deployment requires verified email before login succeeds.
 
+### Account Photo
+
+An optional private image uploaded by its User in JPEG, PNG or WebP format. The
+binary is stored in R2; D1 stores its private object key and lifecycle metadata,
+while Better Auth's `user.image` contains only an opaque `/v1/account-photo/…`
+service reference. Upload, read and removal require the current authoritative
+session of the owning User; Reader State is never photo authority.
+
 ### Profile
 
 User-facing account data governed by the deployment's Profile Schema. Profile is separate from

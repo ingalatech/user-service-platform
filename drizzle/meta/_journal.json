@@ -71,6 +71,27 @@
       "when": 1792964920029,
       "tag": "0009_cute_zarek",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "6",
+      "when": 1793032155732,
+      "tag": "0010_real_sphinx",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "6",
+      "when": 1793034544250,
+      "tag": "0011_daffy_white_queen",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1793052624339,
+      "tag": "0012_goofy_outlaw_kid",
+      "breakpoints": true
     }
   ]
 }

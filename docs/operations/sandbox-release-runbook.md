@@ -10,6 +10,16 @@ not upload plaintext application `vars`. The ignored root `.env` is local-only;
 release commands never read it. Wrangler authentication and encrypted runtime
 secrets remain operator-managed outside the repository.
 
+Private Account Photo storage is opt-in per deployment through the non-secret
+`FILES_BUCKET` entry in the selected environment file. It is intentionally
+blank by default, so existing sandbox/production releases do not require or
+create an R2 bucket. To enable photo operations, a P1 operator must create and
+isolate the target R2 bucket separately, then set its exact bucket name in
+`FILES_BUCKET`; the release materializer adds `FILES` and its cleanup Cron only
+when that name is present. Deploy does not provision R2. With the entry blank,
+the Worker remains backward-compatible and authenticated photo operations
+return a service-unavailable Problem Details response.
+
 ## Bootstrap sandbox
 
 1. Set the sandbox `CLOUDFLARE_ACCOUNT_ID` in `.env.sandbox`. The selected

@@ -29,6 +29,8 @@ export const BASE_OBSERVABILITY: { readonly enabled: true } = { enabled: true };
 // serves identical built assets.
 export const BASE_ASSETS_DIRECTORY = 'admin/dist';
 export const BASE_ASSETS_BINDING = 'ASSETS';
+export const BASE_LOCAL_FILES_BUCKET = 'user-service-local-files';
+export const ACCOUNT_PHOTO_CLEANUP_CRON = '*/15 * * * *';
 
 // Repository-anchored file resolution (ticket #85, ADR-0008).
 //
@@ -75,6 +77,15 @@ export interface TargetD1Binding {
   readonly migrations_dir: string;
 }
 
+export interface TargetR2Binding {
+  readonly binding: 'FILES';
+  readonly bucket_name: string;
+}
+
+export interface TargetTriggers {
+  readonly crons: readonly ['*/15 * * * *'];
+}
+
 export interface TargetWranglerConfig {
   readonly name: string;
   readonly account_id?: string;
@@ -87,6 +98,8 @@ export interface TargetWranglerConfig {
   readonly observability: { readonly enabled: true };
   readonly assets: TargetAssets;
   readonly d1_databases: readonly [TargetD1Binding];
+  readonly r2_buckets?: readonly [TargetR2Binding];
+  readonly triggers?: TargetTriggers;
 }
 
 // The esbuild define token must remain a declared identifier in the Worker
@@ -137,6 +150,14 @@ export function buildTargetWranglerConfig(
         migrations_dir: migrationsDir,
       },
     ],
+    ...(resolved.filesBucketName === undefined
+      ? {}
+      : {
+          r2_buckets: [
+            { binding: 'FILES' as const, bucket_name: resolved.filesBucketName },
+          ] as const,
+          triggers: { crons: [ACCOUNT_PHOTO_CLEANUP_CRON] as const },
+        }),
   };
   assertCompiledConfigDefineContract(config);
   return config;

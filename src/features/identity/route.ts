@@ -1,4 +1,4 @@
-import { createRoute } from '@hono/zod-openapi';
+import { createRoute, z } from '@hono/zod-openapi';
 import { IdentityProblemDetailsSchema } from './problem.js';
 import {
   AdminBootstrapRequestSchema,
@@ -15,6 +15,7 @@ import {
   ReaderStateResponseSchema,
   CurrentUserSchema,
   AccountDetailsSchema,
+  AccountPhotoIdParamsSchema,
   UpdateAccountDetailsSchema,
   LoginRequestSchema,
   LoginResultSchema,
@@ -210,6 +211,69 @@ export const updateAccountDetailsRoute = createRoute({
   responses: {
     204: { description: 'The Account Details update was committed.' },
     ...problemResponses('Validation or authentication failure as RFC 9457 Problem Details.'),
+  },
+});
+
+const AccountPhotoBinarySchema = z.string().openapi({
+  type: 'string',
+  format: 'binary',
+});
+
+const accountPhotoBinaryResponses = {
+  'image/jpeg': { schema: AccountPhotoBinarySchema },
+  'image/png': { schema: AccountPhotoBinarySchema },
+  'image/webp': { schema: AccountPhotoBinarySchema },
+};
+
+export const uploadAccountPhotoRoute = createRoute({
+  method: 'post',
+  path: '/account-photo',
+  operationId: 'uploadAccountPhoto',
+  summary: 'Upload the current User photo',
+  description:
+    'Streams a JPEG, PNG, or WebP body of at most 2 MiB, 8192 pixels per axis, and 40 megapixels to private object storage. ' +
+    'The service validates its bounded container structure and stores only an opaque service-route reference in Identity.',
+  tags: ['identity'],
+  request: {
+    body: {
+      required: true,
+      content: accountPhotoBinaryResponses,
+    },
+  },
+  responses: {
+    204: { description: 'The photo reference was saved for the current User.' },
+    ...problemResponses('Validation, authentication, storage or configuration failure.'),
+  },
+});
+
+export const getAccountPhotoRoute = createRoute({
+  method: 'get',
+  path: '/account-photo/{photoId}',
+  operationId: 'getAccountPhoto',
+  summary: 'Read the current User photo',
+  description:
+    'Streams the referenced private photo only when the live session owns the User and photo reference.',
+  tags: ['identity'],
+  request: { params: AccountPhotoIdParamsSchema },
+  responses: {
+    200: {
+      content: accountPhotoBinaryResponses,
+      description: 'The private photo bytes, streamed with its validated media type.',
+    },
+    ...problemResponses('Authentication, ownership, object availability or storage failure.'),
+  },
+});
+
+export const deleteAccountPhotoRoute = createRoute({
+  method: 'delete',
+  path: '/account-photo',
+  operationId: 'deleteAccountPhoto',
+  summary: 'Remove the current User photo',
+  description: 'Clears the current User photo reference and queues private-object cleanup durably.',
+  tags: ['identity'],
+  responses: {
+    204: { description: 'The current User photo reference was cleared.' },
+    ...problemResponses('Authentication or storage failure.'),
   },
 });
 

@@ -128,6 +128,19 @@ describe('Account Details HTTP boundary', () => {
     expect(sessionAfterPatch.status).toBe(200);
     expect(await sessionAfterPatch.json()).toMatchObject({ email: 'details@example.com' });
 
+    const clearedImage = await request('/v1/account-details', {
+      method: 'PATCH',
+      cookie,
+      body: { image: null },
+    });
+    expect(clearedImage.status).toBe(204);
+    expect(await (await request('/v1/account-details', { cookie })).json()).toMatchObject({
+      firstName: 'Ada',
+      birthDate: '1815-12-10',
+      phone: '+44 20 7946 0958',
+      image: null,
+    });
+
     const rejected = await request('/v1/account-details', {
       method: 'PATCH',
       cookie,

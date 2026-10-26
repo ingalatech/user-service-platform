@@ -1,4 +1,4 @@
-import { integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
 
 // Identity persistence owned by the identity feature slice (ADR-0002,
 // ADR-0004). These tables back Better Auth through its Drizzle adapter; they
@@ -124,6 +124,70 @@ export const jwks = sqliteTable('jwks', {
   alg: text('alg'),
   crv: text('crv'),
 });
+
+// Private R2-backed Account Photos (ticket #247, ADR-0003). Better Auth's
+// user.image contains only the opaque service route reference; the private R2
+// object key stays in D1. Superseded-object deletion is durable and retried by
+// the Worker scheduler rather than being a best-effort orphan-prone side effect.
+export const userPhoto = sqliteTable(
+  'user_photo',
+  {
+    photoId: text('photo_id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    objectKey: text('object_key').notNull().unique(),
+    contentType: text('content_type').notNull(),
+    byteLength: integer('byte_length').notNull(),
+    state: text('state').notNull(),
+    createdAt: integer('created_at').notNull(),
+    attemptCount: integer('attempt_count').notNull().default(0),
+    nextAttemptAt: integer('next_attempt_at').notNull().default(0),
+  },
+  (table) => [
+    index('user_photo_state_next_created_idx').on(
+      table.state,
+      table.nextAttemptAt,
+      table.createdAt,
+    ),
+  ],
+);
+
+// A short-lived per-User mutation lease serializes photo replacement/removal
+// while allowing ordinary Account Details writes that do not touch `image`.
+export const userPhotoLock = sqliteTable('user_photo_lock', {
+  userId: text('user_id')
+    .primaryKey()
+    .references(() => user.id, { onDelete: 'cascade' }),
+  lockToken: text('lock_token').notNull(),
+  expiresAt: integer('expires_at').notNull(),
+});
+
+// Durable cleanup intent survives R2 failures and Worker restarts. Staged rows
+// are reconciled against the authoritative Better Auth image reference before
+// the old object may be deleted.
+export const userPhotoCleanup = sqliteTable(
+  'user_photo_cleanup',
+  {
+    cleanupId: text('cleanup_id').primaryKey(),
+    userId: text('user_id').notNull(),
+    objectKey: text('object_key').notNull(),
+    photoId: text('photo_id'),
+    sourcePhotoId: text('source_photo_id'),
+    replacementPhotoId: text('replacement_photo_id'),
+    state: text('state').notNull(),
+    createdAt: integer('created_at').notNull(),
+    attemptCount: integer('attempt_count').notNull().default(0),
+    nextAttemptAt: integer('next_attempt_at').notNull().default(0),
+  },
+  (table) => [
+    index('user_photo_cleanup_state_next_created_idx').on(
+      table.state,
+      table.nextAttemptAt,
+      table.createdAt,
+    ),
+  ],
+);
 
 // Adapter-facing schema object for Better Auth's Drizzle adapter. Kept next
 // to the tables so the mapping cannot drift from the table definitions.
