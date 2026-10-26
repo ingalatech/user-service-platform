@@ -181,6 +181,10 @@ export const UpdateAccountDetailsSchema = z
   .refine((value) => Object.keys(value).length > 0, { error: 'At least one detail is required.' })
   .openapi('UpdateAccountDetails');
 
+export const AccountPhotoIdParamsSchema = z
+  .object({ photoId: z.uuid() })
+  .openapi('AccountPhotoIdParams');
+
 export type AccountDetails = z.infer<typeof AccountDetailsSchema>;
 export type UpdateAccountDetails = z.infer<typeof UpdateAccountDetailsSchema>;
 

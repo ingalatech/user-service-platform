@@ -978,6 +978,133 @@
         }
       }
     },
+    "/v1/account-photo": {
+      "post": {
+        "operationId": "uploadAccountPhoto",
+        "summary": "Upload the current User photo",
+        "description": "Streams a JPEG, PNG, or WebP request body with Content-Length of at most 2 MiB to private object storage. The service validates the image signature and stores only an opaque service-route reference in Identity.",
+        "tags": [
+          "identity"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "image/jpeg": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            },
+            "image/png": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            },
+            "image/webp": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "The photo reference was saved for the current User."
+          },
+          "default": {
+            "description": "Validation, authentication, storage or configuration failure.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "deleteAccountPhoto",
+        "summary": "Remove the current User photo",
+        "description": "Clears the current User photo reference and queues private-object cleanup durably.",
+        "tags": [
+          "identity"
+        ],
+        "responses": {
+          "204": {
+            "description": "The current User photo reference was cleared."
+          },
+          "default": {
+            "description": "Authentication or storage failure.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/account-photo/{photoId}": {
+      "get": {
+        "operationId": "getAccountPhoto",
+        "summary": "Read the current User photo",
+        "description": "Streams the referenced private photo only when the live session owns the User and photo reference.",
+        "tags": [
+          "identity"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "photoId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The private photo bytes, streamed with its validated media type.",
+            "content": {
+              "image/jpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "image/png": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              },
+              "image/webp": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Authentication, ownership, object availability or storage failure.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/auth/register": {
       "post": {
         "operationId": "registerIdentity",

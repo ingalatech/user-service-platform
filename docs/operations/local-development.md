@@ -6,6 +6,11 @@ ADR-0008). Local persistence uses Wrangler/workerd local D1; no Dockerized
 or standalone SQLite service is introduced. The same versioned `./drizzle`
 migrations consumed by sandbox/production initialize local D1.
 
+Ticket #247 binds `FILES` to the Wrangler-local `user-service-local-files`
+bucket for local Worker tests and `wrangler dev`. This binding uses only local
+R2 state; it never connects to or provisions a Cloudflare bucket. Photo uploads
+are limited to 2 MiB JPEG/PNG/WebP and require the service-hosted session.
+
 Canonical environments are **local / sandbox / production**. Never introduce
 `staging` terminology into new configuration or documentation; the runtime
 still accepts the legacy `staging` value as a sandbox context, but local
@@ -52,6 +57,10 @@ npm run dev:local
 `--env`, so remote databases cannot be affected. Leave the Worker running
 and iterate; local rows survive ordinary restarts until a reset is
 requested.
+
+The local `FILES` binding is independent of root `.env`; photo bytes and the
+D1 metadata/outbox stay local-only. `db:local:reset` clears D1 only; it does
+not remove the separate local R2 simulation state.
 
 ## 3. Clean/reset path (reproducibility from an empty database)
 

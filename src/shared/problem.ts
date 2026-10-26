@@ -19,6 +19,9 @@ export type ProblemDetails = z.infer<typeof ProblemDetailsSchema>;
 
 export type ProblemCode =
   | 'bad-request'
+  | 'conflict'
+  | 'payload-too-large'
+  | 'service-unavailable'
   | 'not-found'
   | 'internal-error'
   | 'registration-disabled'

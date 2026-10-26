@@ -1,4 +1,4 @@
-import type { D1Database } from '@cloudflare/workers-types';
+import type { D1Database, R2Bucket } from '@cloudflare/workers-types';
 
 // Narrow Static Assets boundary (ticket #124, ADR-0012). The Worker serves
 // the built administration SPA (`admin/dist`, same origin, `/admin`) through
@@ -15,6 +15,10 @@ export interface StaticAssetsFetcher {
 // and migrations (ticket #10).
 export interface Env {
   DB: D1Database;
+  // Optional private object store (ADR-0003, ticket #247). Older/materialized
+  // Workers without an explicitly configured bucket remain bootable; photo
+  // operations return service-unavailable until FILES is bound.
+  FILES?: R2Bucket;
   ENVIRONMENT?: string;
   // Built administration SPA assets (ticket #124). Present wherever the
   // Worker boots with Static Assets configured and a prior

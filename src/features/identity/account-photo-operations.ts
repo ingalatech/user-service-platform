@@ -1,0 +1,927 @@
+import type {
+  D1Database,
+  FixedLengthStream as FixedLengthStreamType,
+  R2Bucket,
+} from '@cloudflare/workers-types';
+import { callIdentityEngine, readIdentityEngineFailure, responseCookies } from './engine-result.js';
+import type { IdentityRuntime } from './identity-runtime.js';
+
+export const MAX_ACCOUNT_PHOTO_BYTES = 2 * 1024 * 1024;
+const PHOTO_KEY_PREFIX = 'account-photos/';
+const PHOTO_LOCK_TTL_MS = 15 * 60 * 1000;
+const STAGED_CLEANUP_GRACE_MS = PHOTO_LOCK_TTL_MS;
+const PHOTO_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const MEDIA_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
+
+type PhotoFailure =
+  | { readonly kind: 'unauthenticated' }
+  | { readonly kind: 'bad-request' }
+  | { readonly kind: 'payload-too-large' }
+  | { readonly kind: 'not-found' }
+  | { readonly kind: 'conflict' }
+  | { readonly kind: 'service-unavailable' }
+  | { readonly kind: 'internal-error' };
+
+export type AccountPhotoUploadOutcome =
+  { readonly kind: 'success'; readonly cookies: readonly string[] } | PhotoFailure;
+
+export type AccountPhotoReadOutcome =
+  | {
+      readonly kind: 'success';
+      readonly body: ReadableStream<Uint8Array>;
+      readonly contentType: string;
+      readonly byteLength: number;
+    }
+  | PhotoFailure;
+
+export type AccountPhotoRemoveOutcome =
+  { readonly kind: 'success'; readonly cookies: readonly string[] } | PhotoFailure;
+
+interface PhotoOperationsInput {
+  readonly runtime: IdentityRuntime;
+  readonly db: D1Database;
+  readonly files?: R2Bucket;
+  readonly background?: (task: Promise<unknown>) => void;
+}
+
+interface PhotoReference {
+  readonly photoId: string;
+  readonly value: string;
+}
+
+interface StoredPhoto {
+  readonly photo_id: string;
+  readonly user_id: string;
+  readonly object_key: string;
+  readonly content_type: string;
+  readonly byte_length: number;
+  readonly state: string;
+}
+
+interface PhotoSession {
+  readonly userId: string;
+  readonly image: string | null;
+}
+
+interface PhotoLock {
+  readonly userId: string;
+  readonly token: string;
+}
+
+interface PhotoCleanupRow {
+  readonly cleanup_id: string;
+  readonly user_id: string;
+  readonly object_key: string;
+  readonly photo_id: string | null;
+  readonly source_photo_id: string | null;
+  readonly replacement_photo_id: string | null;
+  readonly state: 'staged' | 'pending' | 'orphan';
+  readonly created_at: number;
+}
+
+class PayloadTooLargeError extends Error {
+  constructor() {
+    super('Account photo is larger than the permitted size.');
+    this.name = 'PayloadTooLargeError';
+  }
+}
+
+const fixedLengthStreamGlobal = globalThis as typeof globalThis & {
+  readonly FixedLengthStream: new (length: number) => FixedLengthStreamType;
+};
+
+function photoReference(photoId: string): string {
+  return `/v1/account-photo/${photoId}`;
+}
+
+function readPhotoReference(value: string | null): PhotoReference | null {
+  if (value === null) return null;
+  const match = /^\/v1\/account-photo\/([^/]+)$/.exec(value);
+  const photoId = match?.[1];
+  if (photoId === undefined || !PHOTO_ID_PATTERN.test(photoId)) return null;
+  return { photoId, value };
+}
+
+function isImageMagic(bytes: Uint8Array, contentType: string): boolean {
+  if (contentType === 'image/jpeg') {
+    return bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  }
+  if (contentType === 'image/png') {
+    return (
+      bytes.length >= 8 &&
+      bytes[0] === 0x89 &&
+      bytes[1] === 0x50 &&
+      bytes[2] === 0x4e &&
+      bytes[3] === 0x47 &&
+      bytes[4] === 0x0d &&
+      bytes[5] === 0x0a &&
+      bytes[6] === 0x1a &&
+      bytes[7] === 0x0a
+    );
+  }
+  return (
+    contentType === 'image/webp' &&
+    bytes.length >= 12 &&
+    ascii(bytes, 0, 4) === 'RIFF' &&
+    ascii(bytes, 8, 12) === 'WEBP'
+  );
+}
+
+function ascii(bytes: Uint8Array, start: number, end: number): string {
+  let value = '';
+  for (let index = start; index < end; index += 1) {
+    value += String.fromCharCode(bytes[index] ?? 0);
+  }
+  return value;
+}
+
+function parseContentLength(value: string | null): number | undefined | null {
+  if (value === null) return undefined;
+  if (!/^\d+$/.test(value)) return null;
+  const result = Number(value);
+  return Number.isSafeInteger(result) ? result : null;
+}
+
+async function boundedImageStream(
+  body: ReadableStream<Uint8Array> | null,
+  rawContentType: string | undefined,
+  rawContentLength: string | undefined,
+): Promise<
+  | {
+      readonly stream: ReadableStream<Uint8Array>;
+      readonly contentType: string;
+      readonly contentLength: number;
+    }
+  | PhotoFailure
+> {
+  const contentType = (rawContentType ?? '').split(';', 1)[0]?.trim().toLowerCase() ?? '';
+  if (!MEDIA_TYPES.has(contentType) || body === null) return { kind: 'bad-request' };
+  const contentLength = parseContentLength(rawContentLength ?? null);
+  if (contentLength === null) return { kind: 'bad-request' };
+  if (contentLength === undefined) return { kind: 'bad-request' };
+  if (contentLength > MAX_ACCOUNT_PHOTO_BYTES) {
+    return { kind: 'payload-too-large' };
+  }
+
+  const reader = body.getReader();
+  const signature = new Uint8Array(12);
+  const initial: Uint8Array[] = [];
+  let signatureLength = 0;
+  let initialLength = 0;
+  let ended = false;
+  try {
+    while (signatureLength < signature.byteLength) {
+      const next = await reader.read();
+      if (next.done) {
+        ended = true;
+        break;
+      }
+      const chunk = next.value;
+      initialLength += chunk.byteLength;
+      if (initialLength > MAX_ACCOUNT_PHOTO_BYTES) throw new PayloadTooLargeError();
+      const copied = Math.min(signature.byteLength - signatureLength, chunk.byteLength);
+      signature.set(chunk.subarray(0, copied), signatureLength);
+      signatureLength += copied;
+      if (copied < chunk.byteLength) initial.push(chunk.subarray(copied));
+    }
+    if (!isImageMagic(signature.subarray(0, signatureLength), contentType)) {
+      await reader.cancel();
+      return { kind: 'bad-request' };
+    }
+    initial.unshift(signature.subarray(0, signatureLength));
+    let totalBytes = initialLength;
+    const bounded = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        const prefix = initial.shift();
+        if (prefix !== undefined) {
+          controller.enqueue(prefix);
+          return;
+        }
+        if (ended) {
+          controller.close();
+          return;
+        }
+        try {
+          const next = await reader.read();
+          if (next.done) {
+            ended = true;
+            controller.close();
+            return;
+          }
+          totalBytes += next.value.byteLength;
+          if (totalBytes > MAX_ACCOUNT_PHOTO_BYTES) {
+            await reader.cancel();
+            controller.error(new PayloadTooLargeError());
+            return;
+          }
+          controller.enqueue(next.value);
+        } catch (error) {
+          controller.error(error);
+        }
+      },
+      async cancel(reason) {
+        await reader.cancel(reason);
+      },
+    });
+    return { stream: bounded, contentType, contentLength };
+  } catch (error) {
+    await reader.cancel(error).catch(() => undefined);
+    return error instanceof PayloadTooLargeError
+      ? { kind: 'payload-too-large' }
+      : { kind: 'bad-request' };
+  }
+}
+
+async function accountSession(
+  runtime: IdentityRuntime,
+  headers: Headers,
+): Promise<PhotoSession | null> {
+  try {
+    const result = await runtime.administration().api.getSession({
+      headers,
+      query: { disableCookieCache: true },
+    });
+    return result === null
+      ? null
+      : {
+          userId: result.user.id,
+          image: typeof result.user.image === 'string' ? result.user.image : null,
+        };
+  } catch {
+    return null;
+  }
+}
+
+async function acquirePhotoLock(db: D1Database, userId: string): Promise<PhotoLock | null> {
+  const token = crypto.randomUUID();
+  const now = Date.now();
+  const result = await db
+    .prepare(
+      'INSERT INTO "user_photo_lock" (user_id, lock_token, expires_at) VALUES (?1, ?2, ?3) ON CONFLICT(user_id) DO UPDATE SET lock_token = excluded.lock_token, expires_at = excluded.expires_at WHERE "user_photo_lock".expires_at <= ?4',
+    )
+    .bind(userId, token, now + PHOTO_LOCK_TTL_MS, now)
+    .run();
+  return result.meta.changes === 1 ? { userId, token } : null;
+}
+
+async function releasePhotoLock(db: D1Database, lock: PhotoLock): Promise<void> {
+  await db
+    .prepare('DELETE FROM "user_photo_lock" WHERE user_id = ?1 AND lock_token = ?2')
+    .bind(lock.userId, lock.token)
+    .run();
+}
+
+async function currentStoredPhoto(
+  db: D1Database,
+  userId: string,
+  photoId: string,
+): Promise<StoredPhoto | null> {
+  return db
+    .prepare(
+      'SELECT photo_id, user_id, object_key, content_type, byte_length, state FROM "user_photo" WHERE user_id = ?1 AND photo_id = ?2',
+    )
+    .bind(userId, photoId)
+    .first<StoredPhoto>();
+}
+
+function scheduleCleanup(input: PhotoOperationsInput): void {
+  if (input.files === undefined) return;
+  const task = retryAccountPhotoCleanup(input.db, input.files).catch(() => undefined);
+  try {
+    input.background?.(task);
+  } catch {
+    task.catch(() => undefined);
+  }
+}
+
+async function insertOrphanCleanup(
+  db: D1Database,
+  userId: string,
+  photoId: string,
+  objectKey: string,
+): Promise<void> {
+  await db
+    .prepare(
+      'INSERT OR IGNORE INTO "user_photo_cleanup" (cleanup_id, user_id, object_key, photo_id, source_photo_id, replacement_photo_id, state, created_at) VALUES (?1, ?2, ?3, ?4, NULL, ?4, \'orphan\', ?5)',
+    )
+    .bind(crypto.randomUUID(), userId, objectKey, photoId, Date.now())
+    .run();
+}
+
+async function deleteStagedObject(input: {
+  readonly db: D1Database;
+  readonly files: R2Bucket;
+  readonly userId: string;
+  readonly photoId: string;
+  readonly objectKey: string;
+}): Promise<void> {
+  try {
+    await input.files.delete(input.objectKey);
+    await input.db
+      .prepare('DELETE FROM "user_photo" WHERE photo_id = ?1 AND user_id = ?2')
+      .bind(input.photoId, input.userId)
+      .run();
+  } catch {
+    try {
+      await insertOrphanCleanup(input.db, input.userId, input.photoId, input.objectKey);
+    } catch {
+      // Never log a key. If D1 itself is unavailable, the failed API response
+      // and the still-private random R2 key are safer than exposing it.
+    }
+  }
+}
+
+async function activatePhotoReference(
+  db: D1Database,
+  userId: string,
+  photoId: string,
+): Promise<void> {
+  await db.batch([
+    db
+      .prepare('UPDATE "user_photo" SET state = \'current\' WHERE photo_id = ?1 AND user_id = ?2')
+      .bind(photoId, userId),
+    db
+      .prepare(
+        "UPDATE \"user_photo_cleanup\" SET state = 'pending' WHERE user_id = ?1 AND replacement_photo_id = ?2 AND state = 'staged'",
+      )
+      .bind(userId, photoId),
+  ]);
+}
+
+async function persistPhotoReference(input: {
+  readonly runtime: IdentityRuntime;
+  readonly headers: Headers;
+  readonly image: string | null;
+}): Promise<{ readonly kind: 'success'; readonly cookies: readonly string[] } | PhotoFailure> {
+  const outcome = await callIdentityEngine(() =>
+    input.runtime.administration().api.updateUser({
+      body: { image: input.image },
+      headers: input.headers,
+      asResponse: true,
+    }),
+  );
+  if (!(outcome instanceof Response)) {
+    return outcome.status === 401 ? { kind: 'unauthenticated' } : { kind: 'internal-error' };
+  }
+  if (!outcome.ok) {
+    const failure = await readIdentityEngineFailure(outcome);
+    return failure.status === 401 ? { kind: 'unauthenticated' } : { kind: 'internal-error' };
+  }
+  return { kind: 'success', cookies: responseCookies(outcome) };
+}
+
+export function createAccountPhotoOperations(input: PhotoOperationsInput) {
+  async function upload(
+    headers: Headers,
+    body: ReadableStream<Uint8Array> | null,
+    contentType: string | undefined,
+    contentLength: string | undefined,
+  ): Promise<AccountPhotoUploadOutcome> {
+    const initialSession = await accountSession(input.runtime, headers);
+    if (initialSession === null) return { kind: 'unauthenticated' };
+    if (input.files === undefined) return { kind: 'service-unavailable' };
+
+    const prepared = await boundedImageStream(body, contentType, contentLength);
+    if ('kind' in prepared) return prepared;
+
+    const photoId = crypto.randomUUID();
+    const objectKey = `${PHOTO_KEY_PREFIX}${crypto.randomUUID()}`;
+    let uploadedSize: number;
+    try {
+      const fixed = new fixedLengthStreamGlobal.FixedLengthStream(prepared.contentLength);
+      const transfer = prepared.stream.pipeTo(fixed.writable);
+      const [object] = await Promise.all([
+        input.files.put(objectKey, fixed.readable, {
+          httpMetadata: { contentType: prepared.contentType },
+        }),
+        transfer,
+      ]);
+      uploadedSize = object.size;
+    } catch (error) {
+      await deleteStagedObject({
+        db: input.db,
+        files: input.files,
+        userId: initialSession.userId,
+        photoId,
+        objectKey,
+      });
+      return error instanceof PayloadTooLargeError
+        ? { kind: 'payload-too-large' }
+        : { kind: 'service-unavailable' };
+    }
+
+    let lock: PhotoLock | null;
+    try {
+      lock = await acquirePhotoLock(input.db, initialSession.userId);
+    } catch {
+      await deleteStagedObject({
+        db: input.db,
+        files: input.files,
+        userId: initialSession.userId,
+        photoId,
+        objectKey,
+      });
+      return { kind: 'service-unavailable' };
+    }
+    if (lock === null) {
+      await deleteStagedObject({
+        db: input.db,
+        files: input.files,
+        userId: initialSession.userId,
+        photoId,
+        objectKey,
+      });
+      return { kind: 'conflict' };
+    }
+
+    try {
+      const session = await accountSession(input.runtime, headers);
+      if (session?.userId !== initialSession.userId) {
+        await deleteStagedObject({
+          db: input.db,
+          files: input.files,
+          userId: initialSession.userId,
+          photoId,
+          objectKey,
+        });
+        return { kind: 'unauthenticated' };
+      }
+      const oldReference = readPhotoReference(session.image);
+      const oldPhoto =
+        oldReference === null
+          ? null
+          : await currentStoredPhoto(input.db, session.userId, oldReference.photoId);
+      if (oldReference !== null && oldPhoto === null) {
+        await deleteStagedObject({
+          db: input.db,
+          files: input.files,
+          userId: session.userId,
+          photoId,
+          objectKey,
+        });
+        return { kind: 'service-unavailable' };
+      }
+      const statements = [
+        input.db
+          .prepare(
+            'INSERT INTO "user_photo" (photo_id, user_id, object_key, content_type, byte_length, state, created_at) VALUES (?1, ?2, ?3, ?4, ?5, \'staged\', ?6)',
+          )
+          .bind(photoId, session.userId, objectKey, prepared.contentType, uploadedSize, Date.now()),
+      ];
+      if (oldPhoto !== null) {
+        statements.push(
+          input.db
+            .prepare(
+              'INSERT INTO "user_photo_cleanup" (cleanup_id, user_id, object_key, photo_id, source_photo_id, replacement_photo_id, state, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, \'staged\', ?7)',
+            )
+            .bind(
+              crypto.randomUUID(),
+              session.userId,
+              oldPhoto.object_key,
+              null,
+              oldPhoto.photo_id,
+              photoId,
+              Date.now(),
+            ),
+        );
+      }
+      await input.db.batch(statements);
+
+      const updated = await persistPhotoReference({
+        runtime: input.runtime,
+        headers,
+        image: photoReference(photoId),
+      });
+      if (updated.kind !== 'success') {
+        let storedImage: string | null | undefined;
+        try {
+          const user = await input.db
+            .prepare('SELECT image FROM "user" WHERE id = ?1')
+            .bind(session.userId)
+            .first<{ image: string | null }>();
+          storedImage = user?.image;
+        } catch {
+          scheduleCleanup(input);
+          return { kind: 'service-unavailable' };
+        }
+        if (storedImage === photoReference(photoId)) {
+          try {
+            await activatePhotoReference(input.db, session.userId, photoId);
+          } catch {
+            // Better Auth committed the image route. Staged D1 metadata and
+            // cleanup intent remain durable for the scheduled reconciler.
+          }
+          scheduleCleanup(input);
+          // The engine mutation committed even though cookie response
+          // processing failed. Do not report a false error after commit.
+          return { kind: 'success', cookies: [] };
+        }
+        await input.db
+          .prepare(
+            'DELETE FROM "user_photo_cleanup" WHERE user_id = ?1 AND replacement_photo_id = ?2 AND state = \'staged\'',
+          )
+          .bind(session.userId, photoId)
+          .run();
+        await deleteStagedObject({
+          db: input.db,
+          files: input.files,
+          userId: session.userId,
+          photoId,
+          objectKey,
+        });
+        return updated;
+      }
+
+      try {
+        await activatePhotoReference(input.db, session.userId, photoId);
+      } catch {
+        // Better Auth already persisted the reference. Keep the staged photo
+        // and durable cleanup candidate; the scheduled reconciler finalizes it.
+      }
+      scheduleCleanup(input);
+      return { kind: 'success', cookies: updated.cookies };
+    } catch {
+      await deleteStagedObject({
+        db: input.db,
+        files: input.files,
+        userId: initialSession.userId,
+        photoId,
+        objectKey,
+      });
+      return { kind: 'service-unavailable' };
+    } finally {
+      await releasePhotoLock(input.db, lock).catch(() => undefined);
+    }
+  }
+
+  async function read(headers: Headers, photoId: string): Promise<AccountPhotoReadOutcome> {
+    const session = await accountSession(input.runtime, headers);
+    if (session === null) return { kind: 'unauthenticated' };
+    const currentReference = readPhotoReference(session.image);
+    if (currentReference?.photoId !== photoId) {
+      return { kind: 'not-found' };
+    }
+    if (input.files === undefined) return { kind: 'service-unavailable' };
+    try {
+      const photo = await currentStoredPhoto(input.db, session.userId, photoId);
+      if (photo === null || (photo.state !== 'current' && photo.state !== 'staged')) {
+        return { kind: 'not-found' };
+      }
+      const stored = await input.files.get(photo.object_key);
+      if (stored?.body === undefined) {
+        return { kind: 'not-found' };
+      }
+      if (stored.size !== photo.byte_length) return { kind: 'internal-error' };
+      return {
+        kind: 'success',
+        body: stored.body as unknown as ReadableStream<Uint8Array>,
+        contentType: photo.content_type,
+        byteLength: photo.byte_length,
+      };
+    } catch {
+      return { kind: 'service-unavailable' };
+    }
+  }
+
+  async function availability(
+    headers: Headers,
+    reference: string,
+  ): Promise<'available' | 'missing' | 'unauthenticated' | 'service-unavailable'> {
+    const session = await accountSession(input.runtime, headers);
+    if (session === null) return 'unauthenticated';
+    const parsed = readPhotoReference(reference);
+    if (parsed?.value !== session.image) return 'missing';
+    if (input.files === undefined) return 'service-unavailable';
+    try {
+      const photo = await currentStoredPhoto(input.db, session.userId, parsed.photoId);
+      if (photo === null || (photo.state !== 'current' && photo.state !== 'staged')) {
+        return 'missing';
+      }
+      const object = await input.files.head(photo.object_key);
+      if (object === null) return 'missing';
+      return object.size === photo.byte_length ? 'available' : 'service-unavailable';
+    } catch {
+      return 'service-unavailable';
+    }
+  }
+
+  async function remove(headers: Headers): Promise<AccountPhotoRemoveOutcome> {
+    const session = await accountSession(input.runtime, headers);
+    if (session === null) return { kind: 'unauthenticated' };
+    if (input.files === undefined) return { kind: 'service-unavailable' };
+
+    let lock: PhotoLock | null;
+    try {
+      lock = await acquirePhotoLock(input.db, session.userId);
+    } catch {
+      return { kind: 'service-unavailable' };
+    }
+    if (lock === null) return { kind: 'conflict' };
+    try {
+      const current = await accountSession(input.runtime, headers);
+      if (current?.userId !== session.userId) return { kind: 'unauthenticated' };
+      const currentReference = readPhotoReference(current.image);
+      const photo =
+        currentReference === null
+          ? null
+          : await currentStoredPhoto(input.db, current.userId, currentReference.photoId);
+      if (currentReference !== null && photo === null) {
+        return { kind: 'service-unavailable' };
+      }
+      if (photo !== null) {
+        await input.db
+          .prepare(
+            'INSERT INTO "user_photo_cleanup" (cleanup_id, user_id, object_key, photo_id, source_photo_id, replacement_photo_id, state, created_at) VALUES (?1, ?2, ?3, NULL, ?4, NULL, \'staged\', ?5)',
+          )
+          .bind(crypto.randomUUID(), current.userId, photo.object_key, photo.photo_id, Date.now())
+          .run();
+      }
+      const updated = await persistPhotoReference({ runtime: input.runtime, headers, image: null });
+      if (updated.kind !== 'success') {
+        let storedImage: string | null | undefined;
+        try {
+          const persisted = await input.db
+            .prepare('SELECT image FROM "user" WHERE id = ?1')
+            .bind(current.userId)
+            .first<{ image: string | null }>();
+          storedImage = persisted?.image;
+        } catch {
+          scheduleCleanup(input);
+          return { kind: 'service-unavailable' };
+        }
+        if (storedImage === null) {
+          if (photo !== null) {
+            try {
+              await input.db
+                .prepare(
+                  "UPDATE \"user_photo_cleanup\" SET state = 'pending' WHERE user_id = ?1 AND source_photo_id = ?2 AND state = 'staged'",
+                )
+                .bind(current.userId, photo.photo_id)
+                .run();
+            } catch {
+              // The cleanup reconciler recognizes the persisted null image.
+            }
+          }
+          scheduleCleanup(input);
+          return { kind: 'success', cookies: [] };
+        }
+        if (storedImage !== current.image) {
+          scheduleCleanup(input);
+          return { kind: 'service-unavailable' };
+        }
+        if (photo !== null) {
+          await input.db
+            .prepare(
+              'DELETE FROM "user_photo_cleanup" WHERE user_id = ?1 AND source_photo_id = ?2 AND state = \'staged\'',
+            )
+            .bind(current.userId, photo.photo_id)
+            .run();
+        }
+        return updated;
+      }
+      if (photo !== null) {
+        try {
+          await input.db
+            .prepare(
+              "UPDATE \"user_photo_cleanup\" SET state = 'pending' WHERE user_id = ?1 AND source_photo_id = ?2 AND state = 'staged'",
+            )
+            .bind(current.userId, photo.photo_id)
+            .run();
+        } catch {
+          // The durable staged intent is reconciled after the reference commit.
+        }
+      }
+      scheduleCleanup(input);
+      return { kind: 'success', cookies: updated.cookies };
+    } catch {
+      return { kind: 'service-unavailable' };
+    } finally {
+      await releasePhotoLock(input.db, lock).catch(() => undefined);
+    }
+  }
+
+  async function updateAccountDetailsImage<T extends { readonly kind: string }>(
+    headers: Headers,
+    update: () => Promise<T>,
+    targetUserId?: string,
+  ): Promise<
+    | T
+    | {
+        readonly kind:
+          'unauthenticated' | 'conflict' | 'service-unavailable' | 'photo-owner-required';
+      }
+  > {
+    const session = await accountSession(input.runtime, headers);
+    if (session === null) return { kind: 'unauthenticated' };
+    const userId = targetUserId ?? session.userId;
+    if (targetUserId !== undefined) {
+      const target = await input.db
+        .prepare('SELECT id FROM "user" WHERE id = ?1')
+        .bind(userId)
+        .first<{ id: string }>();
+      if (target === null) return update();
+    }
+    let lock: PhotoLock | null;
+    try {
+      lock = await acquirePhotoLock(input.db, userId);
+    } catch {
+      return { kind: 'service-unavailable' };
+    }
+    if (lock === null) return { kind: 'conflict' };
+    try {
+      let image: string | null;
+      if (targetUserId === undefined) {
+        const current = await accountSession(input.runtime, headers);
+        if (current?.userId !== session.userId) return { kind: 'unauthenticated' };
+        image = current.image;
+      } else {
+        const current = await input.db
+          .prepare('SELECT image FROM "user" WHERE id = ?1')
+          .bind(userId)
+          .first<{ image: string | null }>();
+        if (current === null) return await update();
+        image = current.image;
+      }
+      const oldReference = readPhotoReference(image);
+      if (targetUserId !== undefined && oldReference !== null) {
+        return { kind: 'photo-owner-required' };
+      }
+      const oldPhoto =
+        oldReference === null
+          ? null
+          : await currentStoredPhoto(input.db, userId, oldReference.photoId);
+      if (oldReference !== null && oldPhoto === null) return { kind: 'service-unavailable' };
+      if (oldPhoto !== null && input.files === undefined) return { kind: 'service-unavailable' };
+      if (oldPhoto !== null) {
+        await input.db
+          .prepare(
+            'INSERT INTO "user_photo_cleanup" (cleanup_id, user_id, object_key, photo_id, source_photo_id, replacement_photo_id, state, created_at) VALUES (?1, ?2, ?3, NULL, ?4, NULL, \'staged\', ?5)',
+          )
+          .bind(crypto.randomUUID(), userId, oldPhoto.object_key, oldPhoto.photo_id, Date.now())
+          .run();
+      }
+      const outcome = await update();
+      if (outcome.kind !== 'success') {
+        if (oldPhoto !== null) {
+          scheduleCleanup(input);
+        }
+        return outcome;
+      }
+      if (oldPhoto !== null) {
+        try {
+          await input.db
+            .prepare(
+              "UPDATE \"user_photo_cleanup\" SET state = 'pending' WHERE user_id = ?1 AND source_photo_id = ?2 AND state = 'staged'",
+            )
+            .bind(userId, oldPhoto.photo_id)
+            .run();
+        } catch {
+          // Preserve the staged cleanup intent for the scheduled reconciler.
+        }
+      }
+      scheduleCleanup(input);
+      return outcome;
+    } catch {
+      return { kind: 'service-unavailable' };
+    } finally {
+      await releasePhotoLock(input.db, lock).catch(() => undefined);
+    }
+  }
+
+  return { upload, read, availability, remove, updateAccountDetailsImage };
+}
+
+export async function retryAccountPhotoCleanup(
+  db: D1Database,
+  files: R2Bucket,
+  now = Date.now(),
+): Promise<void> {
+  const jobs = await db
+    .prepare(
+      "SELECT cleanup_id, user_id, object_key, photo_id, source_photo_id, replacement_photo_id, state, created_at FROM \"user_photo_cleanup\" WHERE state IN ('staged', 'pending', 'orphan') ORDER BY created_at LIMIT 100",
+    )
+    .all<PhotoCleanupRow>();
+  for (const job of jobs.results) {
+    const user = await db
+      .prepare('SELECT image FROM "user" WHERE id = ?1')
+      .bind(job.user_id)
+      .first<{ image: string | null }>();
+    const currentReference = readPhotoReference(user?.image ?? null);
+    if (job.state === 'orphan') {
+      if (currentReference?.photoId === job.replacement_photo_id) {
+        await db.batch([
+          db
+            .prepare(
+              'UPDATE "user_photo" SET state = \'current\' WHERE photo_id = ?1 AND user_id = ?2',
+            )
+            .bind(job.photo_id, job.user_id),
+          db.prepare('DELETE FROM "user_photo_cleanup" WHERE cleanup_id = ?1').bind(job.cleanup_id),
+        ]);
+        continue;
+      }
+      await files.delete(job.object_key);
+      await db.batch([
+        db
+          .prepare('DELETE FROM "user_photo" WHERE photo_id = ?1 AND user_id = ?2')
+          .bind(job.photo_id, job.user_id),
+        db.prepare('DELETE FROM "user_photo_cleanup" WHERE cleanup_id = ?1').bind(job.cleanup_id),
+      ]);
+      continue;
+    }
+
+    if (job.state === 'staged') {
+      const committed =
+        job.replacement_photo_id === null
+          ? currentReference?.photoId !== job.source_photo_id
+          : currentReference?.photoId === job.replacement_photo_id;
+      if (committed) {
+        await db.batch([
+          db
+            .prepare(
+              'UPDATE "user_photo" SET state = \'current\' WHERE photo_id = ?1 AND user_id = ?2',
+            )
+            .bind(job.replacement_photo_id, job.user_id),
+          db
+            .prepare('UPDATE "user_photo_cleanup" SET state = \'pending\' WHERE cleanup_id = ?1')
+            .bind(job.cleanup_id),
+        ]);
+      } else if (now - job.created_at >= STAGED_CLEANUP_GRACE_MS) {
+        const deletions = [];
+        if (job.replacement_photo_id !== null) {
+          const replacement = await currentStoredPhoto(db, job.user_id, job.replacement_photo_id);
+          if (replacement !== null) {
+            await files.delete(replacement.object_key);
+            deletions.push(
+              db
+                .prepare('DELETE FROM "user_photo" WHERE photo_id = ?1 AND user_id = ?2')
+                .bind(replacement.photo_id, job.user_id),
+            );
+          }
+        }
+        if (job.source_photo_id !== null && currentReference?.photoId !== job.source_photo_id) {
+          await files.delete(job.object_key);
+          deletions.push(
+            db
+              .prepare('DELETE FROM "user_photo" WHERE photo_id = ?1 AND user_id = ?2')
+              .bind(job.source_photo_id, job.user_id),
+          );
+        }
+        deletions.push(
+          db.prepare('DELETE FROM "user_photo_cleanup" WHERE cleanup_id = ?1').bind(job.cleanup_id),
+        );
+        await db.batch(deletions);
+        continue;
+      } else {
+        continue;
+      }
+    }
+
+    if (job.source_photo_id !== null && currentReference?.photoId === job.source_photo_id) {
+      // A pending delete must never remove the object still named by the
+      // authoritative Identity reference. Keep the durable row for retry.
+      continue;
+    }
+    await files.delete(job.object_key);
+    await db.batch([
+      ...(job.source_photo_id === null
+        ? []
+        : [
+            db
+              .prepare('DELETE FROM "user_photo" WHERE photo_id = ?1 AND user_id = ?2')
+              .bind(job.source_photo_id, job.user_id),
+          ]),
+      db.prepare('DELETE FROM "user_photo_cleanup" WHERE cleanup_id = ?1').bind(job.cleanup_id),
+    ]);
+  }
+
+  const stagedPhotos = await db
+    .prepare(
+      'SELECT photo_id, user_id, object_key, created_at FROM "user_photo" WHERE state = \'staged\' ORDER BY created_at LIMIT 100',
+    )
+    .all<{
+      readonly photo_id: string;
+      readonly user_id: string;
+      readonly object_key: string;
+      readonly created_at: number;
+    }>();
+  for (const photo of stagedPhotos.results) {
+    const user = await db
+      .prepare('SELECT image FROM "user" WHERE id = ?1')
+      .bind(photo.user_id)
+      .first<{ image: string | null }>();
+    if (readPhotoReference(user?.image ?? null)?.photoId === photo.photo_id) {
+      await db
+        .prepare('UPDATE "user_photo" SET state = \'current\' WHERE photo_id = ?1 AND user_id = ?2')
+        .bind(photo.photo_id, photo.user_id)
+        .run();
+    } else if (now - photo.created_at >= STAGED_CLEANUP_GRACE_MS) {
+      await files.delete(photo.object_key);
+      await db
+        .prepare(
+          'DELETE FROM "user_photo" WHERE photo_id = ?1 AND user_id = ?2 AND state = \'staged\'',
+        )
+        .bind(photo.photo_id, photo.user_id)
+        .run();
+    }
+  }
+}

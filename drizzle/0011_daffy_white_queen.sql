@@ -1,0 +1,2 @@
+CREATE INDEX `user_photo_state_created_idx` ON `user_photo` (`state`,`created_at`);--> statement-breakpoint
+CREATE INDEX `user_photo_cleanup_state_created_idx` ON `user_photo_cleanup` (`state`,`created_at`);
