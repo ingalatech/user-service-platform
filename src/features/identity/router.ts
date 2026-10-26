@@ -3,6 +3,7 @@ import type { Context } from 'hono';
 import type { Env } from '../../env.js';
 import { PROBLEM_JSON, createProblem, type ProblemCode } from '../../shared/problem.js';
 import { createAdminUserReader } from './admin-users.js';
+import { createAdminAccountDetailsOperations } from './admin-account-details.js';
 import { createAccountDetailsOperations } from './account-details-operations.js';
 import {
   bootstrapAdminUser,
@@ -22,6 +23,7 @@ import {
   accountDetailsRoute,
   adminMeRoute,
   adminUserDetailRoute,
+  adminUserAccountDetailsRoute,
   adminUsersRoute,
   authConfigRoute,
   checkPasswordResetRoute,
@@ -35,6 +37,7 @@ import {
   resetPasswordRoute,
   signOutRoute,
   updateAccountDetailsRoute,
+  updateAdminUserAccountDetailsRoute,
   verifyEmailRoute,
 } from './route.js';
 
@@ -470,6 +473,57 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     }
     if (outcome.kind === 'not-found') {
       return problem(c, 404, 'not-found', 'Not Found', 'No such User.');
+    }
+    return c.json(outcome.value, 200);
+  });
+
+  router.openapi(adminUserAccountDetailsRoute, async (c) => {
+    c.header('Cache-Control', 'private, no-store');
+    const runtime = requestIdentityRuntime(c, override);
+    const params = c.req.valid('param');
+    const outcome = await createAdminAccountDetailsOperations(runtime.administration()).get(
+      params.userId,
+      c.req.raw.headers,
+    );
+    if (outcome.kind === 'unauthenticated') {
+      return problem(c, 401, 'unauthenticated', 'Unauthenticated');
+    }
+    if (outcome.kind === 'forbidden') {
+      return problem(c, 403, 'forbidden', 'Forbidden', 'Administrator access is required.');
+    }
+    if (outcome.kind === 'not-found') {
+      return problem(c, 404, 'not-found', 'Not Found', 'No such User.');
+    }
+    if (outcome.kind === 'bad-request') return problem(c, 400, 'bad-request', 'Bad Request');
+    if (outcome.kind === 'internal-error') {
+      return problem(c, 500, 'internal-error', 'Internal Server Error');
+    }
+    return c.json(outcome.value, 200);
+  });
+
+  router.openapi(updateAdminUserAccountDetailsRoute, async (c) => {
+    c.header('Cache-Control', 'private, no-store');
+    const runtime = requestIdentityRuntime(c, override);
+    const rejected = guardCookieMutation(c, runtime, 'private, no-store');
+    if (rejected !== null) return rejected;
+    const params = c.req.valid('param');
+    const outcome = await createAdminAccountDetailsOperations(runtime.administration()).update(
+      params.userId,
+      c.req.raw.headers,
+      c.req.valid('json'),
+    );
+    if (outcome.kind === 'unauthenticated') {
+      return problem(c, 401, 'unauthenticated', 'Unauthenticated');
+    }
+    if (outcome.kind === 'forbidden') {
+      return problem(c, 403, 'forbidden', 'Forbidden', 'Administrator access is required.');
+    }
+    if (outcome.kind === 'not-found') {
+      return problem(c, 404, 'not-found', 'Not Found', 'No such User.');
+    }
+    if (outcome.kind === 'bad-request') return problem(c, 400, 'bad-request', 'Bad Request');
+    if (outcome.kind === 'internal-error') {
+      return problem(c, 500, 'internal-error', 'Internal Server Error');
     }
     return c.json(outcome.value, 200);
   });

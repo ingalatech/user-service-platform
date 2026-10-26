@@ -309,6 +309,11 @@ export async function runAdminBrowserTest(): Promise<void> {
     await page.getByText('Página 1 de 2', { exact: true }).waitFor();
     await table.getByText(admin, { exact: true }).waitFor();
     await table.getByText('Correo verificado', { exact: true }).first().waitFor();
+    const listHeaders = (await table.getByRole('columnheader').allTextContents()).join(' ');
+    assert(
+      !/fecha de nacimiento|teléfono|referencia de imagen/i.test(listHeaders),
+      'User list keeps Account Details private',
+    );
     const searchBox = page.getByRole('searchbox', {
       name: 'Buscar por correo electrónico',
       exact: true,
@@ -363,9 +368,70 @@ export async function runAdminBrowserTest(): Promise<void> {
     await page.getByText('Correo verificado', { exact: true }).waitFor();
     await page.getByText('Identificador', { exact: true }).waitFor();
     await page.getByText('Rol', { exact: true }).waitFor();
+    const firstNameInput = page.getByRole('textbox', { name: 'Nombre', exact: true });
+    await firstNameInput.waitFor();
+    assert((await firstNameInput.inputValue()) === '', 'missing Account Details render empty');
+    await firstNameInput.fill('Ada');
+    await page.getByRole('textbox', { name: 'Apellidos', exact: true }).fill('Lovelace');
+    await page.getByLabel('Fecha de nacimiento', { exact: true }).fill('1815-12-10');
+    await page.getByRole('textbox', { name: 'Teléfono', exact: true }).fill('+44 20 7946 0958');
+    await page
+      .getByRole('textbox', { name: 'Referencia de imagen HTTPS', exact: true })
+      .fill('https://images.example.test/ada.png');
+    await page.getByRole('button', { name: 'Guardar cambios', exact: true }).click();
+    await page.getByRole('status').getByText('Cambios guardados.', { exact: true }).waitFor();
+    const accountDetailsPath = `/v1/admin/users/${encodeURIComponent(regularDetailId)}/account-details`;
+    const accountDetailsResponse = await http(accountDetailsPath, {
+      headers: { cookie: cookieHeader },
+    });
+    assert(accountDetailsResponse.status === 200, 'administrator reads edited Account Details');
+    const accountDetails = (await accountDetailsResponse.json()) as {
+      firstName?: unknown;
+      lastName?: unknown;
+      birthDate?: unknown;
+      phone?: unknown;
+      image?: unknown;
+    };
+    assert(
+      accountDetails.firstName === 'Ada' &&
+        accountDetails.lastName === 'Lovelace' &&
+        accountDetails.birthDate === '1815-12-10' &&
+        accountDetails.phone === '+44 20 7946 0958' &&
+        accountDetails.image === 'https://images.example.test/ada.png',
+      'Admin form persisted real Account Details through HTTP',
+    );
+    await page
+      .getByRole('textbox', { name: 'Referencia de imagen HTTPS', exact: true })
+      .fill('http://images.example.test/insecure.png');
+    await page.getByRole('button', { name: 'Guardar cambios', exact: true }).click();
+    await page
+      .getByRole('alert')
+      .getByText('Revisa la fecha y los datos introducidos.', { exact: true })
+      .waitFor();
+    const afterInvalidEdit = await http(accountDetailsPath, {
+      headers: { cookie: cookieHeader },
+    });
+    assert(afterInvalidEdit.status === 200, 'Account Details remain readable after invalid edit');
+    const unchangedDetails = (await afterInvalidEdit.json()) as { image?: unknown };
+    assert(
+      unchangedDetails.image === 'https://images.example.test/ada.png',
+      'invalid HTTPS reference does not partially update Account Details',
+    );
+    const adminSessionAfterEdit = await http('/v1/admin/me', {
+      headers: { cookie: cookieHeader },
+    });
+    assert(adminSessionAfterEdit.status === 200, 'Admin session remains valid after target update');
     await page.reload();
     await visible(page, 'Detalle de usuario');
     await page.getByText(regular, { exact: true }).waitFor();
+    assert(
+      (await page.getByRole('textbox', { name: 'Nombre', exact: true }).inputValue()) === 'Ada' &&
+        (await page.getByRole('textbox', { name: 'Apellidos', exact: true }).inputValue()) ===
+          'Lovelace' &&
+        (await page.getByLabel('Fecha de nacimiento', { exact: true }).inputValue()) ===
+          '1815-12-10',
+      'Account Details reload from saved Worker values',
+    );
     await page.getByRole('link', { name: 'Volver a la lista', exact: true }).click();
     await visible(page, 'Usuarios');
     await page.getByText('1 usuario en total', { exact: true }).waitFor();
