@@ -189,7 +189,7 @@ describe('consumer CORS origin resolution', () => {
     for (const method of CONSUMER_CORS_ALLOWED_METHODS) {
       expect(isAllowedConsumerCorsMethod(method.toLowerCase())).toBe(true);
     }
-    for (const method of ['DELETE', 'PUT', 'PATCH']) {
+    for (const method of ['DELETE', 'PUT']) {
       expect(isAllowedConsumerCorsMethod(method)).toBe(false);
     }
     expect(areRequestedHeadersAllowed(null)).toBe(true);

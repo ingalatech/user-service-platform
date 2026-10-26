@@ -11,6 +11,10 @@ export const user = sqliteTable('user', {
   email: text('email').notNull().unique(),
   emailVerified: integer('email_verified', { mode: 'boolean' }).notNull(),
   image: text('image'),
+  firstName: text('first_name'),
+  lastName: text('last_name'),
+  birthDate: text('birth_date'),
+  phone: text('phone'),
   createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
   updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
   // Better Auth Admin plugin capability (ticket #59). `role` carries the

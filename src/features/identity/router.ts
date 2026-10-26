@@ -3,6 +3,7 @@ import type { Context } from 'hono';
 import type { Env } from '../../env.js';
 import { PROBLEM_JSON, createProblem, type ProblemCode } from '../../shared/problem.js';
 import { createAdminUserReader } from './admin-users.js';
+import { createAccountDetailsOperations } from './account-details-operations.js';
 import {
   bootstrapAdminUser,
   type BootstrapCreateUser,
@@ -18,6 +19,7 @@ import type { IdentityRuntime } from './identity-runtime.js';
 import { createPasswordPolicyProblemDetails } from './problem.js';
 import {
   adminBootstrapRoute,
+  accountDetailsRoute,
   adminMeRoute,
   adminUserDetailRoute,
   adminUsersRoute,
@@ -32,6 +34,7 @@ import {
   requestVerificationRoute,
   resetPasswordRoute,
   signOutRoute,
+  updateAccountDetailsRoute,
   verifyEmailRoute,
 } from './route.js';
 
@@ -193,6 +196,39 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
   for (const path of CONSUMER_CORS_PATHS) {
     router.use(path, consumerCors);
   }
+
+  router.openapi(accountDetailsRoute, async (c) => {
+    c.header('Cache-Control', 'private, no-store');
+    const runtime = requestIdentityRuntime(c, override);
+    const result = await createAccountDetailsOperations(runtime).read(c.req.raw.headers);
+    if (result.kind === 'unauthenticated') {
+      return problem(c, 401, 'unauthenticated', 'Unauthenticated');
+    }
+    if (result.kind === 'internal-error') {
+      return problem(c, 500, 'internal-error', 'Internal Server Error');
+    }
+    return c.json(result.value, 200);
+  });
+
+  router.openapi(updateAccountDetailsRoute, async (c) => {
+    c.header('Cache-Control', 'private, no-store');
+    const runtime = requestIdentityRuntime(c, override);
+    const rejected = guardCookieMutation(c, runtime, 'private, no-store');
+    if (rejected !== null) return rejected;
+    const result = await createAccountDetailsOperations(runtime).update(
+      c.req.raw.headers,
+      c.req.valid('json'),
+    );
+    if (result.kind === 'unauthenticated') {
+      return problem(c, 401, 'unauthenticated', 'Unauthenticated');
+    }
+    if (result.kind === 'bad-request') return problem(c, 400, 'bad-request', 'Bad Request');
+    if (result.kind === 'internal-error') {
+      return problem(c, 500, 'internal-error', 'Internal Server Error');
+    }
+    forwardSessionCookies(c, result.cookies);
+    return c.body(null, 204);
+  });
 
   router.openapi(registerRoute, async (c) => {
     const runtime = requestIdentityRuntime(c, override);
