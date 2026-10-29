@@ -312,9 +312,8 @@ export async function runAdminBrowserTest(): Promise<void> {
     await visible(page, 'Usuarios');
     await page.getByText('14 usuarios en total', { exact: true }).waitFor();
     await page.getByText('1-10 de 14', { exact: true }).waitFor();
-    const tableRegion = page.getByRole('region', { name: 'Listado de usuarios', exact: true });
-    await tableRegion.waitFor();
-    const table = tableRegion.getByRole('table');
+    const table = page.getByRole('table', { name: 'Listado de usuarios', exact: true });
+    await table.waitFor();
     assert(
       (await table.getByText(admin, { exact: true }).count()) === 0,
       'Admin identity is not a Reader row',
