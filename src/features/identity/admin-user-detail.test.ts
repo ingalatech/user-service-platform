@@ -111,10 +111,11 @@ function tokenFromLastVerificationMessage(): string {
   return token;
 }
 
-async function verifyEmailAddress(email: string): Promise<void> {
-  const requestRes = await post('/v1/auth/request-verification', { email });
+async function verifyEmailAddress(email: string, administrator = false): Promise<void> {
+  const prefix = administrator ? '/v1/admin/auth' : '/v1/auth';
+  const requestRes = await post(`${prefix}/request-verification`, { email });
   expect(requestRes.status).toBe(202);
-  const verifyRes = await post('/v1/auth/verify-email', {
+  const verifyRes = await post(`${prefix}/verify-email`, {
     token: tokenFromLastVerificationMessage(),
   });
   expect(verifyRes.status).toBe(200);
@@ -130,8 +131,8 @@ async function registerVerifiedUser(name: string, email: string): Promise<void> 
   await verifyEmailAddress(email);
 }
 
-async function userIdForCookie(cookie: string): Promise<string> {
-  const res = await get('/v1/me', { cookie });
+async function userIdForCookie(cookie: string, administrator = false): Promise<string> {
+  const res = await get(administrator ? '/v1/admin/me' : '/v1/me', { cookie });
   expect(res.status).toBe(200);
   const body = (await res.json()) as { id?: unknown };
   expect(typeof body.id).toBe('string');
@@ -141,14 +142,14 @@ async function userIdForCookie(cookie: string): Promise<string> {
 async function bootstrapVerifiedAdmin(
   email = 'admin@example.com',
 ): Promise<{ cookie: string; adminId: string }> {
-  const bootstrapRes = await post('/v1/auth/admin/bootstrap', {
+  const bootstrapRes = await post('/v1/admin/auth/bootstrap', {
     name: 'Ada Admin',
     email,
     password: 'Correct-horse-41',
   });
   expect(bootstrapRes.status).toBe(201);
-  await verifyEmailAddress(email);
-  const loginRes = await post('/v1/auth/login', {
+  await verifyEmailAddress(email, true);
+  const loginRes = await post('/v1/admin/auth/login', {
     email,
     password: 'Correct-horse-41',
   });
@@ -158,7 +159,7 @@ async function bootstrapVerifiedAdmin(
   if (cookie === null) {
     throw new Error('Expected a session cookie for the verified administrator.');
   }
-  return { cookie, adminId: await userIdForCookie(cookie) };
+  return { cookie, adminId: await userIdForCookie(cookie, true) };
 }
 
 async function verifiedRegularCookie(
@@ -213,6 +214,11 @@ beforeAll(async () => {
 beforeEach(async () => {
   const db = workerEnv.DB;
   await db.batch([
+    db.prepare('DELETE FROM "admin_session"'),
+    db.prepare('DELETE FROM "admin_account"'),
+    db.prepare('DELETE FROM "admin_verification"'),
+    db.prepare('DELETE FROM "admin_email_verification_token"'),
+    db.prepare('DELETE FROM "admin_user"'),
     db.prepare('DELETE FROM "session"'),
     db.prepare('DELETE FROM "account"'),
     db.prepare('DELETE FROM "verification"'),
@@ -242,11 +248,13 @@ describe('GET /v1/admin/users/{userId}', () => {
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toContain('application/json');
     const body = (await res.json()) as Record<string, unknown>;
-    expect(Object.keys(body).sort()).toEqual(['email', 'emailVerified', 'id', 'role']);
+    expect(Object.keys(body).sort()).toEqual(['email', 'emailVerified', 'id', 'realm', 'role']);
+    expect(body.realm).toBe('reader');
     expect(body).toEqual({
       id: userId,
       email: 'ordinary@example.com',
       emailVerified: true,
+      realm: 'reader',
       role: 'user',
     });
     const serialized = JSON.stringify(body).toLowerCase();
@@ -275,7 +283,7 @@ describe('GET /v1/admin/users/{userId}', () => {
     expect(await res.json()).toMatchObject({ code: 'bad-request', status: 400 });
   });
 
-  it('rejects a verified regular User before lookup even for a missing identifier', async () => {
+  it('does not resolve a Reader session for a missing administrative target', async () => {
     await bootstrapVerifiedAdmin();
     const { cookie } = await verifiedRegularCookie('ordinary@example.com');
 
@@ -288,7 +296,7 @@ describe('GET /v1/admin/users/{userId}', () => {
 
   it('rejects a revoked session as unauthenticated', async () => {
     const { cookie, adminId } = await bootstrapVerifiedAdmin();
-    const signOutRes = await postWithCookie('/v1/auth/sign-out', {}, cookie);
+    const signOutRes = await postWithCookie('/v1/admin/auth/sign-out', {}, cookie);
     expect(signOutRes.status).toBe(200);
 
     const res = await get(`/v1/admin/users/${encodeURIComponent(adminId)}`, { cookie });
@@ -299,7 +307,7 @@ describe('GET /v1/admin/users/{userId}', () => {
 
   it('rejects an expired session as unauthenticated', async () => {
     const { cookie, adminId } = await bootstrapVerifiedAdmin();
-    await workerEnv.DB.prepare('UPDATE "session" SET expires_at = 0').run();
+    await workerEnv.DB.prepare('UPDATE "admin_session" SET expires_at = 0').run();
 
     const res = await get(`/v1/admin/users/${encodeURIComponent(adminId)}`, { cookie });
 
@@ -350,7 +358,9 @@ describe('GET /v1/admin/users/{userId}', () => {
 
   it('keeps the matched route pattern on retryable infrastructure failure', async () => {
     const { cookie, adminId } = await bootstrapVerifiedAdmin();
-    await workerEnv.DB.prepare('ALTER TABLE "user" RENAME TO "user_detail_unavailable"').run();
+    await workerEnv.DB.prepare(
+      'ALTER TABLE "user" RENAME TO "reader_user_detail_unavailable"',
+    ).run();
     const { logs, restore } = capturedLogs();
     try {
       const res = await get(`/v1/admin/users/${encodeURIComponent(adminId)}`, { cookie });
@@ -358,7 +368,9 @@ describe('GET /v1/admin/users/{userId}', () => {
       await res.arrayBuffer();
     } finally {
       restore();
-      await workerEnv.DB.prepare('ALTER TABLE "user_detail_unavailable" RENAME TO "user"').run();
+      await workerEnv.DB.prepare(
+        'ALTER TABLE "reader_user_detail_unavailable" RENAME TO "user"',
+      ).run();
     }
 
     const joined = logs.join('\n');

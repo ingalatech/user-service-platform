@@ -11,22 +11,25 @@ async function digestToken(token: string): Promise<string> {
 
 export async function reserveLatestVerificationToken(input: {
   readonly db: D1Database;
+  readonly realm?: 'administrator';
   readonly targetEmail: string;
   readonly token: string;
   readonly expiresAt: Date;
 }): Promise<void> {
+  const table =
+    input.realm === 'administrator' ? 'admin_email_verification_token' : 'email_verification_token';
   const tokenDigest = await digestToken(input.token);
   const issuedAt = Date.now();
   await input.db
     .prepare(
-      `INSERT INTO "email_verification_token" ("target_email", "token_digest", "expires_at", "issued_at", "consumed_at")
+      `INSERT INTO "${table}" ("target_email", "token_digest", "expires_at", "issued_at", "consumed_at")
        VALUES (?, ?, ?, ?, NULL)
        ON CONFLICT ("target_email") DO UPDATE SET
          "token_digest" = excluded."token_digest",
          "expires_at" = excluded."expires_at",
          "issued_at" = excluded."issued_at",
          "consumed_at" = NULL
-       WHERE excluded."issued_at" >= "email_verification_token"."issued_at"`,
+          WHERE excluded."issued_at" >= "${table}"."issued_at"`,
     )
     .bind(
       normalizeVerificationTarget(input.targetEmail),
@@ -39,12 +42,15 @@ export async function reserveLatestVerificationToken(input: {
 
 export async function consumeLatestVerificationToken(input: {
   readonly db: D1Database;
+  readonly realm?: 'administrator';
   readonly token: string;
 }): Promise<boolean> {
+  const table =
+    input.realm === 'administrator' ? 'admin_email_verification_token' : 'email_verification_token';
   const tokenDigest = await digestToken(input.token);
   const result = await input.db
     .prepare(
-      `UPDATE "email_verification_token"
+      `UPDATE "${table}"
        SET "consumed_at" = ?
        WHERE "token_digest" = ?
          AND "consumed_at" IS NULL

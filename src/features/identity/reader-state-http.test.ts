@@ -328,7 +328,7 @@ describe('POST /v1/auth/reader-state tracer bullet', () => {
 
     // The Reader State response carries no credential or engine internals.
     const raw = JSON.stringify(issued);
-    expect(raw).not.toContain('better-auth.session_token');
+    expect(raw).not.toContain('rch-reader.session_token');
     expect(raw).not.toContain('Correct-horse-41');
   });
 
@@ -481,7 +481,7 @@ describe('GET /v1/auth/jwks', () => {
     const raw = JSON.stringify(body);
     expect(raw).not.toContain('privateKey');
     expect(raw).not.toContain('"d"');
-    expect(raw).not.toContain('better-auth.session_token');
+    expect(raw).not.toContain('rch-reader.session_token');
   });
 
   it('reuses durable keys across separate Worker instances with the same D1', async () => {

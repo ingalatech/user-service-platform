@@ -12,6 +12,8 @@
 // or the token. Builders never log.
 export const VERIFY_EMAIL_ACTION_PATH = '/auth-actions/verify-email';
 export const RESET_PASSWORD_ACTION_PATH = '/auth-actions/reset-password';
+export const ADMIN_VERIFY_EMAIL_ACTION_PATH = '/auth-actions/admin/verify-email';
+export const ADMIN_RESET_PASSWORD_ACTION_PATH = '/auth-actions/admin/reset-password';
 
 export interface BuildAuthActionUrlInput {
   // Canonical configuration slot naming this action (for example

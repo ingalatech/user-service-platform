@@ -596,12 +596,12 @@ describe('verified-email login gate', () => {
     });
     expect(loginRes.status).toBe(200);
     const sessionCookie = loginRes.headers.get('set-cookie');
-    expect(sessionCookie).toContain('better-auth.session_token');
+    expect(sessionCookie).toContain('rch-reader.session_token');
 
     const loginBody = JSON.stringify(await loginRes.json());
     expect(loginBody).toContain('alan@example.com');
     // Session material travels in the cookie, never in the JSON body.
-    expect(loginBody).not.toContain('better-auth.session_token');
+    expect(loginBody).not.toContain('rch-reader.session_token');
   });
 
   it('fails safely on invalid verification tokens without leaking material', async () => {
@@ -808,19 +808,25 @@ describe('GET /v1/me', () => {
     expect(loginRes.status).toBe(200);
     const cookie = sessionCookieFrom(loginRes);
     expect(cookie).not.toBeNull();
-    expect(cookie ?? '').toContain('better-auth.session_token=');
+    expect(cookie ?? '').toContain('rch-reader.session_token=');
 
     const meRes = await get('/v1/me', { cookie });
     expect(meRes.status).toBe(200);
     expect(meRes.headers.get('content-type')).toContain('application/json');
 
-    const me = (await meRes.json()) as { id: string; email: string; emailVerified: boolean };
+    const me = (await meRes.json()) as {
+      id: string;
+      email: string;
+      emailVerified: boolean;
+      realm: string;
+    };
     expect(typeof me.id).toBe('string');
     expect(me.email).toBe('ada-me@example.com');
     expect(me.emailVerified).toBe(true);
+    expect(me.realm).toBe('reader');
     // Session material travels in cookies, never in the JSON body.
     const raw = JSON.stringify(me);
-    expect(raw).not.toContain('better-auth.session_token');
+    expect(raw).not.toContain('rch-reader.session_token');
     expect(raw).not.toContain('password');
   });
 
@@ -886,7 +892,7 @@ describe('POST /v1/auth/sign-out', () => {
     });
 
     const setCookie = loginRes.headers.get('set-cookie') ?? '';
-    expect(setCookie).toContain('better-auth.session_token=');
+    expect(setCookie).toContain('rch-reader.session_token=');
     expect(setCookie).toMatch(/httponly/i);
     expect(setCookie).toMatch(/samesite/i);
   });

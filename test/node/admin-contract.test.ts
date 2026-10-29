@@ -40,11 +40,18 @@ describe('administration API contract', () => {
     expect(schema?.$ref).toBe('#/components/schemas/AdminMe');
 
     const adminMe = doc.components.schemas.AdminMe;
-    expect(adminMe?.required?.slice().sort()).toEqual(['email', 'emailVerified', 'id', 'role']);
+    expect(adminMe?.required?.slice().sort()).toEqual([
+      'email',
+      'emailVerified',
+      'id',
+      'realm',
+      'role',
+    ]);
     expect(Object.keys(adminMe?.properties ?? {}).sort()).toEqual([
       'email',
       'emailVerified',
       'id',
+      'realm',
       'role',
     ]);
   });
@@ -60,22 +67,29 @@ describe('administration API contract', () => {
     expect(schema?.$ref).toBe('#/components/schemas/AdminUser');
 
     const adminUser = doc.components.schemas.AdminUser;
-    expect(adminUser?.required?.slice().sort()).toEqual(['email', 'emailVerified', 'id', 'role']);
+    expect(adminUser?.required?.slice().sort()).toEqual([
+      'email',
+      'emailVerified',
+      'id',
+      'realm',
+      'role',
+    ]);
     expect(Object.keys(adminUser?.properties ?? {}).sort()).toEqual([
       'email',
       'emailVerified',
       'id',
+      'realm',
       'role',
     ]);
   });
 
-  it('reuses the existing login and sign-out operations unchanged', async () => {
+  it('keeps Reader and Administrator login and sign-out contracts separate', async () => {
     const doc = await document();
 
     expect(doc.paths['/v1/auth/login']?.post?.operationId).toBe('loginIdentity');
     expect(doc.paths['/v1/auth/sign-out']?.post?.operationId).toBe('signOutIdentity');
-    // The session check reuses the unchanged public contract, which gains no
-    // administrative fields for the panel's convenience.
+    expect(doc.paths['/v1/admin/auth/login']?.post?.operationId).toBe('loginAdministrator');
+    expect(doc.paths['/v1/admin/auth/sign-out']?.post?.operationId).toBe('signOutAdministrator');
     expect(doc.paths['/v1/me']?.get?.operationId).toBe('getCurrentUser');
   });
 });

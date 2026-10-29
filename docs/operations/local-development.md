@@ -44,8 +44,8 @@ secrets, tokens and addresses are never echoed).
 
 ## 2. Persistent local-development path (ordinary restarts keep data)
 
-Local D1 state persists under `.wrangler/` across restarts. From a fresh
-clone:
+Local D1 state persists under this worktree's `.wrangler/` across restarts.
+From a fresh clone/worktree, apply the complete migrations and start the Worker:
 
 ```bash
 npm run db:local:migrate
@@ -58,11 +58,26 @@ npm run dev:local
 and iterate; local rows survive ordinary restarts until a reset is
 requested.
 
+This Identity cut uses separate `admin_*` and Reader tables. A local D1
+created by the previous shared Admin/Reader implementation is incompatible and
+must not be used with the new runtime. Start from an isolated fresh local D1
+state for this worktree and bootstrap its first Administrator. Do not copy
+credentials or rows from the old database. Any explicit disposal of an old,
+disposable local database is a separate operator action; application startup
+and migrations never reset it.
+
 The local `FILES` binding is independent of root `.env`; photo bytes and the
 D1 metadata/outbox stay local-only. `db:local:reset` clears D1 only; it does
 not remove the separate local R2 simulation state.
 
 ## 3. Clean/reset path (reproducibility from an empty database)
+
+`db:local:reset` deletes all persisted local D1 data for this Wrangler
+worktree. It is an explicit manual action for a database already confirmed
+disposable; it is not an upgrade step for the old shared Admin/Reader schema.
+For the isolation cut, prefer a fresh worktree-specific D1 state and keep any
+existing local data intact until its owner explicitly decides what to preserve
+or discard.
 
 ```bash
 npm run db:local:reset
@@ -201,7 +216,7 @@ ADMIN_NAME="Site Admin" ADMIN_EMAIL="admin@example.com" \
 ```
 
 `npm run admin:bootstrap` (`scripts/bootstrap-admin.ts`) posts explicit
-operator inputs to `POST /v1/auth/admin/bootstrap` on the running Worker
+operator inputs to `POST /v1/admin/auth/bootstrap` on the running Worker
 (`ADMIN_BOOTSTRAP_BASE_URL`, default `http://localhost:8787`). The first
 call succeeds with the application-owned admin representation
 (`role: "admin"`); no migration seeds credentials and the repository defines
@@ -219,6 +234,13 @@ with explicit machine codes (`admin-already-bootstrapped`,
 `admin-email-conflict`, exit code 2) instead of duplicating privileged
 accounts. The script logs only method, path, status and stable codes —
 never names, addresses, passwords, tokens or action URLs.
+
+Administrator verification uses the service-owned
+`/auth-actions/admin/verify-email` page and completes at
+`POST /v1/admin/auth/verify-email`; it never uses the Reader verification
+operation. The default local metadata-only mail sink does not deliver links.
+Use an explicitly configured local mail transport when manual browser
+verification is needed. Bootstrap output never prints an action URL or token.
 
 ## 7. Confirm the gates before handing off
 

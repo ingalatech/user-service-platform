@@ -93,10 +93,11 @@ function tokenFromLastVerificationMessage(): string {
   return token;
 }
 
-async function verifyEmailAddress(email: string): Promise<void> {
-  const requestRes = await post('/v1/auth/request-verification', { email });
+async function verifyEmailAddress(email: string, administrator = false): Promise<void> {
+  const prefix = administrator ? '/v1/admin/auth' : '/v1/auth';
+  const requestRes = await post(`${prefix}/request-verification`, { email });
   expect(requestRes.status).toBe(202);
-  const verifyRes = await post('/v1/auth/verify-email', {
+  const verifyRes = await post(`${prefix}/verify-email`, {
     token: tokenFromLastVerificationMessage(),
   });
   expect(verifyRes.status).toBe(200);
@@ -113,14 +114,14 @@ async function registerVerifiedUser(name: string, email: string): Promise<void> 
 }
 
 async function bootstrapVerifiedAdmin(email = 'admin@example.com'): Promise<{ cookie: string }> {
-  const bootstrapRes = await post('/v1/auth/admin/bootstrap', {
+  const bootstrapRes = await post('/v1/admin/auth/bootstrap', {
     name: 'Ada Admin',
     email,
     password: 'Correct-horse-41',
   });
   expect(bootstrapRes.status).toBe(201);
-  await verifyEmailAddress(email);
-  const loginRes = await post('/v1/auth/login', {
+  await verifyEmailAddress(email, true);
+  const loginRes = await post('/v1/admin/auth/login', {
     email,
     password: 'Correct-horse-41',
   });
@@ -163,6 +164,11 @@ beforeAll(async () => {
 beforeEach(async () => {
   const db = workerEnv.DB;
   await db.batch([
+    db.prepare('DELETE FROM "admin_session"'),
+    db.prepare('DELETE FROM "admin_account"'),
+    db.prepare('DELETE FROM "admin_verification"'),
+    db.prepare('DELETE FROM "admin_email_verification_token"'),
+    db.prepare('DELETE FROM "admin_user"'),
     db.prepare('DELETE FROM "session"'),
     db.prepare('DELETE FROM "account"'),
     db.prepare('DELETE FROM "verification"'),
@@ -201,13 +207,13 @@ describe('GET /v1/admin/users', () => {
       total: number;
     };
     expect(Object.keys(body).sort()).toEqual(['items', 'total']);
-    expect(body.total).toBe(4);
-    expect(body.items).toHaveLength(4);
+    expect(body.total).toBe(3);
+    expect(body.items).toHaveLength(3);
     for (const item of body.items) {
-      expect(Object.keys(item).sort()).toEqual(['email', 'emailVerified', 'id', 'role']);
+      expect(Object.keys(item).sort()).toEqual(['email', 'emailVerified', 'id', 'realm', 'role']);
+      expect(item.realm).toBe('reader');
     }
     expect(body.items.map((item) => item.email)).toEqual([
-      'admin@example.com',
       'alpha@example.com',
       'beta@example.com',
       'gamma@example.com',
@@ -218,7 +224,7 @@ describe('GET /v1/admin/users', () => {
     expect(serialized).not.toContain('session');
   });
 
-  it('rejects a verified regular User with an explicit forbidden problem', async () => {
+  it('does not resolve a Reader cookie for the administrative listing', async () => {
     await seedRoster();
     const cookie = await verifiedRegularCookie('ordinary@example.com');
 
@@ -231,7 +237,7 @@ describe('GET /v1/admin/users', () => {
 
   it('rejects a revoked session as unauthenticated', async () => {
     const { cookie } = await seedRoster();
-    const signOutRes = await postWithCookie('/v1/auth/sign-out', {}, cookie);
+    const signOutRes = await postWithCookie('/v1/admin/auth/sign-out', {}, cookie);
     expect(signOutRes.status).toBe(200);
 
     const res = await get('/v1/admin/users', { cookie });
@@ -242,7 +248,7 @@ describe('GET /v1/admin/users', () => {
 
   it('rejects an expired session as unauthenticated', async () => {
     const { cookie } = await seedRoster();
-    await workerEnv.DB.prepare('UPDATE "session" SET expires_at = 0').run();
+    await workerEnv.DB.prepare('UPDATE "admin_session" SET expires_at = 0').run();
 
     const res = await get('/v1/admin/users', { cookie });
 
@@ -259,10 +265,10 @@ describe('GET /v1/admin/users', () => {
       items: { email: string }[];
       total: number;
     };
-    expect(firstBody.total).toBe(4);
+    expect(firstBody.total).toBe(3);
     expect(firstBody.items.map((item) => item.email)).toEqual([
-      'admin@example.com',
       'alpha@example.com',
+      'beta@example.com',
     ]);
 
     const second = await get('/v1/admin/users?limit=2&offset=2', { cookie });
@@ -271,11 +277,32 @@ describe('GET /v1/admin/users', () => {
       items: { email: string }[];
       total: number;
     };
-    expect(secondBody.total).toBe(4);
-    expect(secondBody.items.map((item) => item.email)).toEqual([
-      'beta@example.com',
-      'gamma@example.com',
-    ]);
+    expect(secondBody.total).toBe(3);
+    expect(secondBody.items.map((item) => item.email)).toEqual(['gamma@example.com']);
+  });
+
+  it('excludes legacy admin-role rows from the unfiltered pagination total', async () => {
+    const { cookie } = await seedRoster();
+    await workerEnv.DB.prepare('UPDATE "user" SET role = ? WHERE email = ?')
+      .bind('admin', 'gamma@example.com')
+      .run();
+
+    const res = await get('/v1/admin/users?limit=1&offset=1', { cookie });
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      items: { id: string; email: string; emailVerified: boolean; realm: string; role: string }[];
+      total: number;
+    };
+    expect(body.total).toBe(2);
+    expect(body.items).toHaveLength(1);
+    expect(body.items[0]).toMatchObject({
+      email: 'beta@example.com',
+      emailVerified: true,
+      realm: 'reader',
+      role: 'user',
+    });
+    expect(body.items[0]?.id).toEqual(expect.any(String));
   });
 
   it('rejects invalid pagination and search bounds through the public contract', async () => {

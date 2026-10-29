@@ -30,6 +30,64 @@ export const user = sqliteTable('user', {
   banExpires: integer('ban_expires', { mode: 'timestamp' }),
 });
 
+// Administration identities use their own Better Auth models and tables. The
+// matching Auth model keys are supplied by adminIdentitySchema below; table
+// names are physical D1 boundaries, not aliases for Reader `user` rows.
+export const adminUser = sqliteTable('admin_user', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  email: text('email').notNull().unique(),
+  emailVerified: integer('email_verified', { mode: 'boolean' }).notNull(),
+  image: text('image'),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
+  role: text('role'),
+  banned: integer('banned', { mode: 'boolean' }).notNull().default(false),
+  banReason: text('ban_reason'),
+  banExpires: integer('ban_expires', { mode: 'timestamp' }),
+});
+
+export const adminSession = sqliteTable('admin_session', {
+  id: text('id').primaryKey(),
+  expiresAt: integer('expires_at', { mode: 'timestamp' }).notNull(),
+  token: text('token').notNull().unique(),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
+  ipAddress: text('ip_address'),
+  userAgent: text('user_agent'),
+  impersonatedBy: text('impersonated_by'),
+  userId: text('user_id')
+    .notNull()
+    .references(() => adminUser.id, { onDelete: 'cascade' }),
+});
+
+export const adminAccount = sqliteTable('admin_account', {
+  id: text('id').primaryKey(),
+  accountId: text('account_id').notNull(),
+  providerId: text('provider_id').notNull(),
+  userId: text('user_id')
+    .notNull()
+    .references(() => adminUser.id, { onDelete: 'cascade' }),
+  accessToken: text('access_token'),
+  refreshToken: text('refresh_token'),
+  idToken: text('id_token'),
+  accessTokenExpiresAt: integer('access_token_expires_at', { mode: 'timestamp' }),
+  refreshTokenExpiresAt: integer('refresh_token_expires_at', { mode: 'timestamp' }),
+  scope: text('scope'),
+  password: text('password'),
+  createdAt: integer('created_at', { mode: 'timestamp' }).notNull(),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }).notNull(),
+});
+
+export const adminVerification = sqliteTable('admin_verification', {
+  id: text('id').primaryKey(),
+  identifier: text('identifier').notNull(),
+  value: text('value').notNull(),
+  expiresAt: integer('expires_at', { mode: 'timestamp' }).notNull(),
+  createdAt: integer('created_at', { mode: 'timestamp' }),
+  updatedAt: integer('updated_at', { mode: 'timestamp' }),
+});
+
 export const session = sqliteTable('session', {
   id: text('id').primaryKey(),
   expiresAt: integer('expires_at', { mode: 'timestamp' }).notNull(),
@@ -76,6 +134,14 @@ export const verification = sqliteTable('verification', {
 // Application-owned latest-token guard. Better Auth remains the signer and
 // verifier; this table only stores a digest and lifecycle metadata.
 export const emailVerificationToken = sqliteTable('email_verification_token', {
+  targetEmail: text('target_email').primaryKey(),
+  tokenDigest: text('token_digest').notNull().unique(),
+  expiresAt: integer('expires_at').notNull(),
+  issuedAt: integer('issued_at').notNull(),
+  consumedAt: integer('consumed_at'),
+});
+
+export const adminEmailVerificationToken = sqliteTable('admin_email_verification_token', {
   targetEmail: text('target_email').primaryKey(),
   tokenDigest: text('token_digest').notNull().unique(),
   expiresAt: integer('expires_at').notNull(),
@@ -200,4 +266,14 @@ export const identitySchema = {
   adminBootstrapGuard,
   adminBootstrapAttempt,
   jwks,
+};
+
+export const adminIdentitySchema = {
+  user: adminUser,
+  session: adminSession,
+  account: adminAccount,
+  verification: adminVerification,
+  adminEmailVerificationToken,
+  adminBootstrapGuard,
+  adminBootstrapAttempt,
 };

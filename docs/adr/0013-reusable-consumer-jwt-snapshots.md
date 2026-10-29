@@ -17,8 +17,10 @@ Access Tokens are separate contracts with non-overlapping uses and storage.
 
 ## Decision
 
-Keep the host-only HttpOnly Better Auth session as the authoritative account,
-administration and issuance credential. It is never exposed to JavaScript.
+Keep the host-only HttpOnly Better Auth Reader session as the authoritative
+Reader account and Reader State issuance credential. It is never exposed to
+JavaScript. Administrator credentials and sessions are isolated as specified
+by ADR-0014 and are not Reader State authority.
 
 Reader State is a short-lived, application-owned asymmetric JWT used only for
 editorial presentation. It is not an authentication or authorization
@@ -106,13 +108,15 @@ per-page Identity resolution.
 
 ## Consequences
 
-Logout/password reset immediately prevent renewal through revoked sessions.
+Reader logout/password reset immediately prevent renewal through revoked
+Reader sessions. Administrator login, logout or recovery operates only on the
+separate Administrator session defined by ADR-0014.
 An already-issued Reader State may remain cryptographically valid until
 expiry, at most 15 minutes, but logout synchronization removes local
 presentation promptly in active tabs. This bounded presentation staleness is
-accepted instead of a database lookup on every content navigation. Existing
-administration, account and cookie-session checks keep authoritative
-store-based semantics and never accept Reader State as authority.
+accepted instead of a database lookup on every content navigation. Reader
+account and cookie-session checks keep authoritative store-based semantics and
+never accept Reader State as authority.
 
 Entitlement validity and token expiry are separate. The consumer owns content
 classification, soft paywall, SEO and cache policy. Backend Identity delivery

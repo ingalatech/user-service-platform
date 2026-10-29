@@ -4,9 +4,12 @@ import { betterAuth } from 'better-auth';
 import { createEmailVerificationToken } from 'better-auth/api';
 import { admin } from 'better-auth/plugins/admin';
 import { jwt } from 'better-auth/plugins/jwt';
+import { eq } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/d1';
 import { jwtVerify } from 'jose';
 import {
+  ADMIN_RESET_PASSWORD_ACTION_PATH,
+  ADMIN_VERIFY_EMAIL_ACTION_PATH,
   RESET_PASSWORD_ACTION_PATH,
   VERIFY_EMAIL_ACTION_PATH,
   buildAuthActionUrl,
@@ -14,7 +17,7 @@ import {
 import { capReaderStateExpirySeconds } from './reader-state.js';
 import type { AuthMailer } from './mailer.js';
 import type { AuthPolicy } from './policy.js';
-import { identitySchema } from './schema.js';
+import { adminIdentitySchema, identitySchema } from './schema.js';
 import {
   normalizeVerificationTarget,
   reserveLatestVerificationToken,
@@ -54,6 +57,7 @@ export interface IdentityAuthInput {
   // path (ADR-0010). Falls back to supervised fire-and-forget when the
   // request has no execution context (e.g. contract generation, unit calls).
   readonly background: (task: Promise<unknown>) => void;
+  readonly realm?: 'reader' | 'administrator';
 }
 
 export interface ReaderStateAuthInput extends IdentityAuthInput {
@@ -76,6 +80,14 @@ function createRedactingLogger(): NonNullable<Parameters<typeof betterAuth>[0]['
   };
 }
 
+async function isLegacyAdministratorInReaderRealm(db: D1Database, email: string): Promise<boolean> {
+  const row = await db
+    .prepare('SELECT role FROM "user" WHERE lower(email) = ? LIMIT 1')
+    .bind(email.toLowerCase())
+    .first<{ role: string | null }>();
+  return row?.role === 'admin';
+}
+
 // Builds a request-scoped Better Auth instance. Instances are cheap to
 // construct (the underlying context initializes lazily) and must be scoped
 // per request because the D1 binding, deployment policy, mailer and base URL
@@ -85,13 +97,14 @@ function createRedactingLogger(): NonNullable<Parameters<typeof betterAuth>[0]['
 export function createIdentityAuth(input: IdentityAuthInput) {
   return betterAuth({
     ...sharedOptions(input),
-    // Better Auth supported administration capability (ticket #59, spec #8).
-    // Roles, bans and session administration belong to the Identity boundary;
-    // they are not editorial CMS roles and imply no custom admin UI. The
-    // plugin's management endpoints are never mounted on the public Worker:
-    // administration is exercised server-side through `auth.api` (notably the
-    // explicit first-admin bootstrap), so enabling the plugin adds no public
-    // HTTP surface by itself.
+  });
+}
+
+// Administrator engine context. Its adapter sees only the Admin tables, and
+// its plugin API is never mounted as a generic public router.
+export function createAdministrationAuth(input: IdentityAuthInput) {
+  return betterAuth({
+    ...sharedOptions({ ...input, realm: 'administrator' }),
     plugins: [admin()],
   });
 }
@@ -108,9 +121,10 @@ export function createBootstrapIdentityAuth(input: IdentityAuthInput, provisiona
     ...sharedOptions(
       {
         ...input,
+        realm: 'administrator',
         policy: { ...input.policy, requireEmailVerification: false },
       },
-      { awaitVerificationDelivery: true },
+      { awaitVerificationDelivery: true, allowProvisionalAdministratorSession: true },
     ),
     user: { deleteUser: { enabled: true } },
     plugins: [admin({ adminUserIds: [provisionalUserId] })],
@@ -130,7 +144,6 @@ export function createReaderStateAuth(input: ReaderStateAuthInput) {
   return betterAuth({
     ...sharedOptions(input),
     plugins: [
-      admin(),
       // Pinned engine JWT/JWKS capability behind the identity adapter. Its
       // default whole-user payload is replaced with the explicit
       // application-owned claims contract (opaque sub, configured iss/aud,
@@ -170,7 +183,10 @@ export function createReaderStateAuth(input: ReaderStateAuthInput) {
 // call site so endpoint inference keeps the precise plugin type.
 function sharedOptions(
   input: IdentityAuthInput,
-  options: { readonly awaitVerificationDelivery?: boolean } = {},
+  options: {
+    readonly awaitVerificationDelivery?: boolean;
+    readonly allowProvisionalAdministratorSession?: boolean;
+  } = {},
 ) {
   const {
     db,
@@ -182,34 +198,87 @@ function sharedOptions(
     resetPasswordActionURL,
     background,
   } = input;
-  const database = drizzle(db, { schema: identitySchema });
+  const realm = input.realm ?? 'reader';
+  const database = drizzle(db, {
+    schema: realm === 'reader' ? identitySchema : adminIdentitySchema,
+  });
 
   return {
     baseURL,
     secret,
     logger: createRedactingLogger(),
-    database: drizzleAdapter(database, { provider: 'sqlite', schema: identitySchema }),
-    user: {
-      additionalFields: {
-        // The application-owned Account Details operation is the only mounted
-        // mutation path. Its strict contract is the allowlist before it calls
-        // Better Auth's supported `updateUser` API; Better Auth's generic
-        // router is never mounted on the Worker.
-        firstName: { type: 'string' as const, required: false as const, input: true as const },
-        lastName: { type: 'string' as const, required: false as const, input: true as const },
-        birthDate: { type: 'string' as const, required: false as const, input: true as const },
-        phone: { type: 'string' as const, required: false as const, input: true as const },
-      },
-    },
-    // Service-only session cookie (spec #164, ADR-0013): pinned HttpOnly and
-    // SameSite=Lax with no `domain`, so the renewal credential is host-only
-    // to the service Worker and is never shared with the parent editorial
-    // hostname. `secure` stays engine-derived from the request HTTPS base
-    // URL (on in sandbox/production); `crossSubDomainCookies` stays
-    // disabled, so no `Domain` attribute is ever emitted.
+    database: drizzleAdapter(database, {
+      provider: 'sqlite',
+      schema: realm === 'reader' ? identitySchema : adminIdentitySchema,
+    }),
+    ...(realm === 'reader'
+      ? {
+          user: {
+            additionalFields: {
+              firstName: {
+                type: 'string' as const,
+                required: false as const,
+                input: true as const,
+              },
+              lastName: { type: 'string' as const, required: false as const, input: true as const },
+              birthDate: {
+                type: 'string' as const,
+                required: false as const,
+                input: true as const,
+              },
+              phone: { type: 'string' as const, required: false as const, input: true as const },
+            },
+          },
+        }
+      : {}),
+    // Realm-specific service cookies (ADR-0013/0014) are HttpOnly, SameSite=Lax,
+    // host-only and scoped to their API path: Reader `/v1`, Administrator
+    // `/v1/admin`. `secure` stays engine-derived from request HTTPS; domain
+    // sharing remains disabled.
     advanced: {
+      cookiePrefix: realm === 'reader' ? 'rch-reader' : 'rch-admin',
+      cookies: {
+        session_token: { attributes: { path: realm === 'reader' ? '/v1' : '/v1/admin' } },
+        session_data: { attributes: { path: realm === 'reader' ? '/v1' : '/v1/admin' } },
+        account_data: { attributes: { path: realm === 'reader' ? '/v1' : '/v1/admin' } },
+        dont_remember: { attributes: { path: realm === 'reader' ? '/v1' : '/v1/admin' } },
+      },
       defaultCookieAttributes: { httpOnly: true, sameSite: 'lax' as const },
     },
+    ...(realm === 'reader'
+      ? {
+          databaseHooks: {
+            session: {
+              create: {
+                before: async (session: { userId: string }) => {
+                  const rows = await drizzle(db, { schema: identitySchema })
+                    .select({ role: identitySchema.user.role })
+                    .from(identitySchema.user)
+                    .where(eq(identitySchema.user.id, session.userId))
+                    .limit(1);
+                  return rows[0]?.role === 'admin' ? false : undefined;
+                },
+              },
+            },
+          },
+        }
+      : {
+          databaseHooks: {
+            session: {
+              create: {
+                before: async (session: { userId: string }) => {
+                  if (options.allowProvisionalAdministratorSession === true) return undefined;
+                  const rows = await drizzle(db, { schema: adminIdentitySchema })
+                    .select({ role: adminIdentitySchema.user.role })
+                    .from(adminIdentitySchema.user)
+                    .where(eq(adminIdentitySchema.user.id, session.userId))
+                    .limit(1);
+                  return rows[0]?.role === 'admin' ? undefined : false;
+                },
+              },
+            },
+          },
+        }),
     emailAndPassword: {
       enabled: policy.emailPasswordEnabled,
       disableSignUp: !policy.registrationEnabled,
@@ -229,16 +298,25 @@ function sharedOptions(
       // the configured consumer page (or the service-owned fallback route on
       // the request origin) plus the engine token.
       revokeSessionsOnPasswordReset: true,
-      sendResetPassword: ({ user, token }: { user: { email: string }; token: string }) => {
+      sendResetPassword: async ({
+        user,
+        token,
+      }: {
+        user: { email: string; role?: string };
+        token: string;
+      }) => {
+        if (realm === 'reader' && (await isLegacyAdministratorInReaderRealm(db, user.email))) {
+          return;
+        }
         const url = buildAuthActionUrl({
           varName: 'AUTH_RESET_PASSWORD_ACTION_URL',
-          configured: resetPasswordActionURL ?? '',
+          configured: realm === 'reader' ? (resetPasswordActionURL ?? '') : '',
           requestOrigin: baseURL,
-          fallbackPath: RESET_PASSWORD_ACTION_PATH,
+          fallbackPath:
+            realm === 'reader' ? RESET_PASSWORD_ACTION_PATH : ADMIN_RESET_PASSWORD_ACTION_PATH,
           token,
         });
         background(mailer.sendPasswordResetEmail({ to: user.email, url, token }));
-        return Promise.resolve();
       },
     },
     emailVerification: {
@@ -254,10 +332,12 @@ function sharedOptions(
         token,
         newEmail,
       }: {
-        user: { email: string };
+        user: { email: string; role?: string };
         token: string;
         newEmail?: string;
       }) => {
+        if (realm === 'reader' && (await isLegacyAdministratorInReaderRealm(db, user.email)))
+          return;
         const verifiedClaims = await jwtVerify(token, new TextEncoder().encode(secret), {
           algorithms: ['HS256'],
         });
@@ -275,15 +355,17 @@ function sharedOptions(
         const targetEmail = normalizeVerificationTarget(newEmail ?? user.email);
         await reserveLatestVerificationToken({
           db,
+          ...(realm === 'administrator' ? { realm } : {}),
           targetEmail,
           token: signedToken,
           expiresAt: new Date(Date.now() + policy.emailVerificationTTLSeconds * 1000),
         });
         const url = buildAuthActionUrl({
           varName: 'AUTH_VERIFY_EMAIL_ACTION_URL',
-          configured: verifyEmailActionURL ?? '',
+          configured: realm === 'reader' ? (verifyEmailActionURL ?? '') : '',
           requestOrigin: baseURL,
-          fallbackPath: VERIFY_EMAIL_ACTION_PATH,
+          fallbackPath:
+            realm === 'reader' ? VERIFY_EMAIL_ACTION_PATH : ADMIN_VERIFY_EMAIL_ACTION_PATH,
           token: signedToken,
         });
         const message = {

@@ -13,6 +13,7 @@ import type {
 } from './account-photo-operations.js';
 import {
   bootstrapAdminUser,
+  type BootstrapAdminOutcome,
   type BootstrapCreateUser,
   type BootstrapDeleteUser,
   type BootstrapSetRole,
@@ -25,19 +26,28 @@ import {
 } from './consumer-cors.js';
 import { createReaderStateOperations } from './reader-state-operations.js';
 import type { AuthMailer } from './mailer.js';
+import type { AdminBootstrapRequest } from './contract.js';
 import { createIdentityRuntime } from './identity-runtime.js';
 import type { IdentityRuntime } from './identity-runtime.js';
 import { createPasswordPolicyProblemDetails } from './problem.js';
 import {
   adminBootstrapRoute,
+  adminBootstrapLegacyRoute,
+  adminCheckPasswordResetRoute,
+  adminLoginRoute,
   accountDetailsRoute,
   uploadAccountPhotoRoute,
   getAccountPhotoRoute,
   deleteAccountPhotoRoute,
   adminMeRoute,
+  adminRequestPasswordResetRoute,
+  adminRequestVerificationRoute,
+  adminResetPasswordRoute,
+  adminSignOutRoute,
   adminUserDetailRoute,
   adminUserAccountDetailsRoute,
   adminUsersRoute,
+  adminVerifyEmailRoute,
   authConfigRoute,
   checkPasswordResetRoute,
   consumerJwksRoute,
@@ -120,6 +130,16 @@ function problem(
   );
 }
 
+// An Administrator endpoint never resolves a Reader cookie. It reports the
+// explicitly foreign realm as forbidden for the SPA's denied-session UX while
+// keeping anonymous and invalid Administrator credentials unauthenticated.
+function administratorSessionProblem(c: IdentityContext) {
+  const cookie = c.req.header('cookie') ?? '';
+  return /(?:^|;\s*)(?:__Secure-)?rch-reader\.session_token=/.test(cookie)
+    ? problem(c, 403, 'forbidden', 'Forbidden', 'Reader sessions cannot access Administration.')
+    : problem(c, 401, 'unauthenticated', 'Unauthenticated');
+}
+
 function credentialProblem(c: IdentityContext, failure: CredentialFailure, cacheControl?: string) {
   switch (failure.kind) {
     case 'email-password-disabled':
@@ -168,6 +188,48 @@ function credentialProblem(c: IdentityContext, failure: CredentialFailure, cache
     case 'internal-error':
       return problem(c, 500, 'internal-error', 'Internal Server Error', undefined, cacheControl);
   }
+}
+
+type AdministratorBootstrapOutcome =
+  | BootstrapAdminOutcome
+  | { readonly status: 'credential-failure'; readonly failure: CredentialFailure };
+
+async function runAdministratorBootstrap(input: {
+  readonly c: IdentityContext;
+  readonly runtime: IdentityRuntime;
+  readonly options: IdentityRouterOptions;
+  readonly request: AdminBootstrapRequest;
+}): Promise<AdministratorBootstrapOutcome> {
+  const credentials = createCredentialOperations({
+    runtime: input.runtime,
+    db: input.c.env.DB,
+    realm: 'administrator',
+  });
+  const validation = credentials.validateBootstrapPassword(input.request.password);
+  if (validation.kind === 'failure') {
+    return { status: 'credential-failure', failure: validation.failure };
+  }
+  return bootstrapAdminUser({
+    auth: input.runtime.administration(),
+    createBootstrapAuth: (userId) => input.runtime.bootstrapAdministrator(userId),
+    db: input.c.env.DB,
+    name: input.request.name,
+    email: input.request.email,
+    password: input.request.password,
+    ...(input.options.now === undefined ? {} : { now: input.options.now }),
+    ...(input.options.bootstrapLeaseTtlMs === undefined
+      ? {}
+      : { leaseTtlMs: input.options.bootstrapLeaseTtlMs }),
+    ...(input.options.bootstrapCreateUser === undefined
+      ? {}
+      : { createUser: input.options.bootstrapCreateUser }),
+    ...(input.options.bootstrapSetRole === undefined
+      ? {}
+      : { setRole: input.options.bootstrapSetRole }),
+    ...(input.options.bootstrapDeleteUser === undefined
+      ? {}
+      : { deleteUser: input.options.bootstrapDeleteUser }),
+  });
 }
 
 // Explicit Origin/Fetch Metadata protection for cookie-auth mutation
@@ -678,14 +740,17 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
 
   router.openapi(adminMeRoute, async (c) => {
     const runtime = requestIdentityRuntime(c, override);
-    const session = await runtime.resolveSessionContext(c.req.raw.headers, c.get('requestId'));
+    const session = await runtime.resolveAdministratorSessionContext(
+      c.req.raw.headers,
+      c.get('requestId'),
+    );
     if (session === null) {
-      return problem(c, 401, 'unauthenticated', 'Unauthenticated');
+      return administratorSessionProblem(c);
     }
     const reader = createAdminUserReader({
       auth: runtime.administration(),
       db: c.env.DB,
-      userId: session.user.id,
+      userId: session.administrator.id,
       headers: c.req.raw.headers,
     });
     const outcome = await reader.current();
@@ -695,16 +760,103 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     return c.json(outcome.value, 200);
   });
 
+  router.openapi(adminLoginRoute, async (c) => {
+    const runtime = requestIdentityRuntime(c, override);
+    const rejected = guardCookieMutation(c, runtime);
+    if (rejected !== null) return rejected;
+    const result = await createCredentialOperations({
+      runtime,
+      db: c.env.DB,
+      realm: 'administrator',
+    }).login(c.req.valid('json'), c.req.raw.headers);
+    if (result.kind === 'failure') return credentialProblem(c, result.failure);
+    forwardSessionCookies(c, result.cookies);
+    return c.json(result.value, 200);
+  });
+
+  router.openapi(adminSignOutRoute, async (c) => {
+    const runtime = requestIdentityRuntime(c, override);
+    const rejected = guardCookieMutation(c, runtime);
+    if (rejected !== null) return rejected;
+    const result = await createCredentialOperations({
+      runtime,
+      db: c.env.DB,
+      realm: 'administrator',
+    }).signOut(c.req.raw.headers);
+    forwardSessionCookies(c, result.cookies);
+    return result.kind === 'failure'
+      ? credentialProblem(c, result.failure)
+      : c.json(result.value, 200);
+  });
+
+  router.openapi(adminVerifyEmailRoute, async (c) => {
+    const result = await createCredentialOperations({
+      runtime: requestIdentityRuntime(c, override),
+      db: c.env.DB,
+      realm: 'administrator',
+    }).verifyEmail(c.req.valid('json'), c.req.raw.headers);
+    return result.kind === 'failure'
+      ? credentialProblem(c, result.failure)
+      : c.json(result.value, 200);
+  });
+
+  router.openapi(adminRequestVerificationRoute, async (c) => {
+    const result = await createCredentialOperations({
+      runtime: requestIdentityRuntime(c, override),
+      db: c.env.DB,
+      realm: 'administrator',
+    }).requestVerification(c.req.valid('json'), c.req.raw.headers);
+    return result.kind === 'failure'
+      ? credentialProblem(c, result.failure)
+      : c.json(result.value, 202);
+  });
+
+  router.openapi(adminRequestPasswordResetRoute, async (c) => {
+    const result = await createCredentialOperations({
+      runtime: requestIdentityRuntime(c, override),
+      db: c.env.DB,
+      realm: 'administrator',
+    }).requestPasswordReset(c.req.valid('json'), c.req.raw.headers);
+    return result.kind === 'failure'
+      ? credentialProblem(c, result.failure)
+      : c.json(result.value, 202);
+  });
+
+  router.openapi(adminCheckPasswordResetRoute, async (c) => {
+    const result = await createCredentialOperations({
+      runtime: requestIdentityRuntime(c, override),
+      db: c.env.DB,
+      realm: 'administrator',
+    }).checkPasswordReset(c.req.valid('json'));
+    return result.kind === 'failure'
+      ? credentialProblem(c, result.failure, 'no-store')
+      : c.json(result.value, 200, { 'Cache-Control': 'no-store' });
+  });
+
+  router.openapi(adminResetPasswordRoute, async (c) => {
+    const result = await createCredentialOperations({
+      runtime: requestIdentityRuntime(c, override),
+      db: c.env.DB,
+      realm: 'administrator',
+    }).resetPassword(c.req.valid('json'), c.req.raw.headers);
+    return result.kind === 'failure'
+      ? credentialProblem(c, result.failure)
+      : c.json(result.value, 200);
+  });
+
   router.openapi(adminUsersRoute, async (c) => {
     const runtime = requestIdentityRuntime(c, override);
-    const session = await runtime.resolveSessionContext(c.req.raw.headers, c.get('requestId'));
+    const session = await runtime.resolveAdministratorSessionContext(
+      c.req.raw.headers,
+      c.get('requestId'),
+    );
     if (session === null) {
-      return problem(c, 401, 'unauthenticated', 'Unauthenticated');
+      return administratorSessionProblem(c);
     }
     const reader = createAdminUserReader({
       auth: runtime.administration(),
       db: c.env.DB,
-      userId: session.user.id,
+      userId: session.administrator.id,
       headers: c.req.raw.headers,
     });
     const query = c.req.valid('query');
@@ -721,14 +873,17 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
 
   router.openapi(adminUserDetailRoute, async (c) => {
     const runtime = requestIdentityRuntime(c, override);
-    const session = await runtime.resolveSessionContext(c.req.raw.headers, c.get('requestId'));
+    const session = await runtime.resolveAdministratorSessionContext(
+      c.req.raw.headers,
+      c.get('requestId'),
+    );
     if (session === null) {
-      return problem(c, 401, 'unauthenticated', 'Unauthenticated');
+      return administratorSessionProblem(c);
     }
     const reader = createAdminUserReader({
       auth: runtime.administration(),
       db: c.env.DB,
-      userId: session.user.id,
+      userId: session.administrator.id,
       headers: c.req.raw.headers,
     });
     const params = c.req.valid('param');
@@ -746,12 +901,12 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     c.header('Cache-Control', 'private, no-store');
     const runtime = requestIdentityRuntime(c, override);
     const params = c.req.valid('param');
-    const outcome = await createAdminAccountDetailsOperations(runtime.administration()).get(
+    const outcome = await createAdminAccountDetailsOperations({ runtime, db: c.env.DB }).get(
       params.userId,
       c.req.raw.headers,
     );
     if (outcome.kind === 'unauthenticated') {
-      return problem(c, 401, 'unauthenticated', 'Unauthenticated');
+      return administratorSessionProblem(c);
     }
     if (outcome.kind === 'forbidden') {
       return problem(c, 403, 'forbidden', 'Forbidden', 'Administrator access is required.');
@@ -775,56 +930,11 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     const rejected = guardCookieMutation(c, runtime, 'private, no-store');
     if (rejected !== null) return rejected;
     const params = c.req.valid('param');
-    const adminDetails = createAdminAccountDetailsOperations(runtime.administration());
+    const adminDetails = createAdminAccountDetailsOperations({ runtime, db: c.env.DB });
     const patch = c.req.valid('json');
-    if (patch.image !== undefined) {
-      const current = await adminDetails.get(params.userId, c.req.raw.headers);
-      if (current.kind === 'unauthenticated') {
-        return problem(c, 401, 'unauthenticated', 'Unauthenticated');
-      }
-      if (current.kind === 'forbidden') {
-        return problem(c, 403, 'forbidden', 'Forbidden', 'Administrator access is required.');
-      }
-      if (current.kind === 'not-found') {
-        return problem(c, 404, 'not-found', 'Not Found', 'No such User.');
-      }
-      if (current.kind === 'internal-error') {
-        return problem(c, 500, 'internal-error', 'Internal Server Error');
-      }
-      if (current.kind === 'bad-request') return problem(c, 400, 'bad-request', 'Bad Request');
-      if (current.value.image?.startsWith('/v1/account-photo/')) {
-        return problem(
-          c,
-          400,
-          'bad-request',
-          'Bad Request',
-          'Account Photos can only be changed by their owning User.',
-        );
-      }
-    }
-    const updateAdminDetails = () => adminDetails.update(params.userId, c.req.raw.headers, patch);
-    const outcome =
-      patch.image === undefined
-        ? await updateAdminDetails()
-        : await createAccountPhotoOperations({
-            runtime,
-            db: c.env.DB,
-            files: c.env.FILES,
-            ...(options.accountPhotoLockTiming === undefined
-              ? {}
-              : { lockTiming: options.accountPhotoLockTiming }),
-            background: (task) => {
-              c.executionCtx.waitUntil(task);
-            },
-          }).updateAccountDetailsImage(
-            c.req.raw.headers,
-            patch.image ?? null,
-            updateAdminDetails,
-            params.userId,
-            () => adminDetails.get(params.userId, c.req.raw.headers),
-          );
+    const outcome = await adminDetails.update(params.userId, c.req.raw.headers, patch);
     if (outcome.kind === 'unauthenticated') {
-      return problem(c, 401, 'unauthenticated', 'Unauthenticated');
+      return administratorSessionProblem(c);
     }
     if (outcome.kind === 'forbidden') {
       return problem(c, 403, 'forbidden', 'Forbidden', 'Administrator access is required.');
@@ -833,19 +943,6 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
       return problem(c, 404, 'not-found', 'Not Found', 'No such User.');
     }
     if (outcome.kind === 'bad-request') return problem(c, 400, 'bad-request', 'Bad Request');
-    if (outcome.kind === 'photo-owner-required') {
-      return problem(
-        c,
-        400,
-        'bad-request',
-        'Bad Request',
-        'Account Photos can only be changed by their owning User.',
-      );
-    }
-    if (outcome.kind === 'conflict') return problem(c, 409, 'conflict', 'Conflict');
-    if (outcome.kind === 'service-unavailable') {
-      return problem(c, 503, 'service-unavailable', 'Service Unavailable');
-    }
     if (outcome.kind === 'internal-error') {
       return problem(c, 500, 'internal-error', 'Internal Server Error');
     }
@@ -857,64 +954,44 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
 
   router.openapi(adminBootstrapRoute, async (c) => {
     const runtime = requestIdentityRuntime(c, override);
-    const auth = runtime.authentication();
-    const credentialOperations = createCredentialOperations({ runtime, db: c.env.DB });
-    // Bootstrap provisions an email/password credential, so it honors the
-    // credential-mechanism switch. It stays independent of the public
-    // registration switch: operators must be able to provision the first
-    // administrator of a closed deployment.
-    const input = c.req.valid('json');
-    const validation = credentialOperations.validateBootstrapPassword(input.password);
-    if (validation.kind === 'failure') {
-      return credentialProblem(c, validation.failure);
-    }
-    const outcome = await bootstrapAdminUser({
-      auth,
-      createBootstrapAuth: (userId) => runtime.bootstrapAdministrator(userId),
-      db: c.env.DB,
-      name: input.name,
-      email: input.email,
-      password: input.password,
-      ...(options.now === undefined ? {} : { now: options.now }),
-      ...(options.bootstrapLeaseTtlMs === undefined
-        ? {}
-        : { leaseTtlMs: options.bootstrapLeaseTtlMs }),
-      ...(options.bootstrapCreateUser === undefined
-        ? {}
-        : { createUser: options.bootstrapCreateUser }),
-      ...(options.bootstrapSetRole === undefined ? {} : { setRole: options.bootstrapSetRole }),
-      ...(options.bootstrapDeleteUser === undefined
-        ? {}
-        : { deleteUser: options.bootstrapDeleteUser }),
+    const rejected = guardCookieMutation(c, runtime);
+    if (rejected !== null) return rejected;
+    const outcome = await runAdministratorBootstrap({
+      c,
+      runtime,
+      options,
+      request: c.req.valid('json'),
     });
-    if (outcome.status === 'created') {
-      return c.json(outcome.admin, 201);
-    }
+    if (outcome.status === 'credential-failure') return credentialProblem(c, outcome.failure);
+    if (outcome.status === 'created') return c.json(outcome.admin, 201);
     if (outcome.status === 'already-bootstrapped') {
-      return problem(
-        c,
-        409,
-        'admin-already-bootstrapped',
-        'Administrator already bootstrapped',
-        'An administrative User already exists; bootstrap cannot create another.',
-      );
+      return problem(c, 409, 'admin-already-bootstrapped', 'Administrator already bootstrapped');
     }
     if (outcome.status === 'in-progress') {
-      return problem(
-        c,
-        409,
-        'admin-bootstrap-in-progress',
-        'Administrator bootstrap in progress',
-        'Another administrator bootstrap is still in progress; retry shortly.',
-      );
+      return problem(c, 409, 'admin-bootstrap-in-progress', 'Administrator bootstrap in progress');
     }
-    return problem(
+    return problem(c, 409, 'admin-email-conflict', 'Administrator email conflict');
+  });
+
+  router.openapi(adminBootstrapLegacyRoute, async (c) => {
+    const runtime = requestIdentityRuntime(c, override);
+    const rejected = guardCookieMutation(c, runtime);
+    if (rejected !== null) return rejected;
+    const outcome = await runAdministratorBootstrap({
       c,
-      409,
-      'admin-email-conflict',
-      'Administrator email conflict',
-      'The email address is already registered; bootstrap cannot duplicate it.',
-    );
+      runtime,
+      options,
+      request: c.req.valid('json'),
+    });
+    if (outcome.status === 'credential-failure') return credentialProblem(c, outcome.failure);
+    if (outcome.status === 'created') return c.json(outcome.admin, 201);
+    if (outcome.status === 'already-bootstrapped') {
+      return problem(c, 409, 'admin-already-bootstrapped', 'Administrator already bootstrapped');
+    }
+    if (outcome.status === 'in-progress') {
+      return problem(c, 409, 'admin-bootstrap-in-progress', 'Administrator bootstrap in progress');
+    }
+    return problem(c, 409, 'admin-email-conflict', 'Administrator email conflict');
   });
 
   return router;

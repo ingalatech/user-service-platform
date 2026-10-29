@@ -20,15 +20,17 @@ export type AccountDetailsUpdateOutcome =
 // Better Auth owns session resolution and persistence; this module owns the
 // safe projection and maps engine outcomes into the public feature boundary.
 export function createAccountDetailsOperations(runtime: IdentityRuntime) {
-  const auth = runtime.administration();
+  const auth = runtime.authentication();
 
   async function read(headers: Headers): Promise<AccountDetailsReadOutcome> {
     try {
+      const identity = await runtime.resolveSessionContext(headers);
+      if (identity === null) return { kind: 'unauthenticated' };
       const session = await auth.api.getSession({
         headers,
         query: { disableCookieCache: true },
       });
-      if (session === null) return { kind: 'unauthenticated' };
+      if (session?.user.id !== identity.user.id) return { kind: 'unauthenticated' };
       return { kind: 'success', value: projectAccountDetails(session.user) };
     } catch {
       return { kind: 'internal-error' };
@@ -39,6 +41,8 @@ export function createAccountDetailsOperations(runtime: IdentityRuntime) {
     headers: Headers,
     patch: UpdateAccountDetails,
   ): Promise<AccountDetailsUpdateOutcome> {
+    const identity = await runtime.resolveSessionContext(headers);
+    if (identity === null) return { kind: 'unauthenticated' };
     // In pinned Better Auth 1.7.12, updateUser awaits the D1 adapter update
     // before signing/reissuing its session cookie. Cookie/cache work can still
     // fail after D1 commits; that commit and HTTP response delivery are not a

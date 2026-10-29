@@ -7,12 +7,13 @@ Accepted. Amended for ticket #233 on 2026-10-25.
 ## Context
 
 Ticket #124 delivers the first usable administration increment (spec #123):
-an operator signs in with an existing verified administrative User, sees
+an operator signs in with an existing verified Administrator identity, sees
 their real administrative identity, reloads without losing the session, and
 signs out. The UI is a client-only React + TypeScript + Vite application
 built on pinned Marmelab Shadcn Admin Kit registry sources and ra-core with
-Tailwind styling, reusing the existing `POST /v1/auth/login`,
-`POST /v1/auth/sign-out` and HttpOnly cookie session plus a new
+Tailwind styling, using application-owned `POST /v1/admin/auth/login`,
+`POST /v1/admin/auth/sign-out` and its distinct Administrator HttpOnly cookie
+plus a new
 `GET /v1/admin/me` application-owned contract.
 
 Authentication travels in HttpOnly cookies, so the SPA must share the
@@ -44,7 +45,8 @@ origin through Workers Static Assets:
 - The UI never stores an authentication token in browser storage, never
   parses session cookies, and never infers authorization from frontend
   state: `GET /v1/admin/me` (401 anonymous, 403 verified non-administrator)
-  is the single authorization signal behind the `authProvider`.
+  is the single authorization signal behind the `authProvider`. It resolves
+  only the Administrator realm and never reuses Reader auth operations.
 - Frontend dependencies are pinned in the `admin` npm workspace with
   recorded provenance (`admin/README.md`); copied kit components, if any,
   stay under repository maintenance. Frontend lint, typecheck and the

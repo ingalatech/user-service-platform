@@ -148,7 +148,7 @@ async function signedInUser(): Promise<string> {
 
 async function signedInAdmin(): Promise<string> {
   const email = `admin-photo-${crypto.randomUUID()}@example.test`;
-  const bootstrap = await request('/v1/auth/admin/bootstrap', {
+  const bootstrap = await request('/v1/admin/auth/bootstrap', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ name: 'Photo Admin', email, password: 'Correct-horse-41' }),
@@ -159,7 +159,7 @@ async function signedInAdmin(): Promise<string> {
   if (token === null) throw new Error('Expected an admin verification token.');
   expect(
     (
-      await request('/v1/auth/verify-email', {
+      await request('/v1/admin/auth/verify-email', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ token }),
@@ -167,7 +167,7 @@ async function signedInAdmin(): Promise<string> {
     ).status,
   ).toBe(200);
   return cookieFrom(
-    await request('/v1/auth/login', {
+    await request('/v1/admin/auth/login', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ email, password: 'Correct-horse-41' }),
@@ -567,7 +567,7 @@ describe('Account Photo HTTP boundary', () => {
     const administratorCookie = await signedInAdmin();
 
     const privatePhoto = await request(account.image, { cookie: administratorCookie });
-    expect(privatePhoto.status).toBe(404);
+    expect(privatePhoto.status).toBe(401);
     const adminPatch = await request(
       `/v1/admin/users/${encodeURIComponent(owner.id)}/account-details`,
       {
