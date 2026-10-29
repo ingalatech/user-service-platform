@@ -70,22 +70,18 @@ function UsersListContent() {
       <p role="status">
         {total} {total === 1 ? 'usuario' : 'usuarios'} en total
       </p>
-      <div role="region" aria-label="Listado de usuarios">
-        <DataTable bulkActionButtons={false} rowClick={false}>
-          <DataTable.Col source="email" label="Correo electrónico" />
-          <DataTable.Col
-            source="emailVerified"
-            label="Verificación"
-            render={(record) =>
-              record.emailVerified ? 'Correo verificado' : 'Correo sin verificar'
-            }
-          />
-          <DataTable.Col source="role" label="Rol" />
-          <DataTable.Col label="Acciones">
-            <ShowButton label="Ver detalle" />
-          </DataTable.Col>
-        </DataTable>
-      </div>
+      <DataTable bulkActionButtons={false} rowClick={false} tableLabel="Listado de usuarios">
+        <DataTable.Col source="email" label="Correo electrónico" />
+        <DataTable.Col
+          source="emailVerified"
+          label="Verificación"
+          render={(record) => (record.emailVerified ? 'Correo verificado' : 'Correo sin verificar')}
+        />
+        <DataTable.Col source="role" label="Rol" />
+        <DataTable.Col label="Acciones">
+          <ShowButton label="Ver detalle" />
+        </DataTable.Col>
+      </DataTable>
     </>
   );
 }

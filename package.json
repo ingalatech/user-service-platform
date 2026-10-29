@@ -19,7 +19,7 @@
     "admin:bootstrap": "tsx scripts/bootstrap-admin.ts",
     "admin:contracts:generate": "npm run openapi:generate && tsx scripts/generate-admin-contracts.ts",
     "admin:contracts:check": "npm run admin:contracts:generate && git diff --exit-code -- admin/src/generated",
-    "admin:kit:check": "node scripts/check-admin-kit.mjs",
+    "admin:shadcn-css:check": "node scripts/check-shadcn-css.mjs",
     "build:admin": "npm run build --workspace admin",
     "test:admin:browser": "tsx scripts/admin-browser-test.ts",
     "lint": "eslint . --max-warnings=0",

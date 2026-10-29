@@ -27,6 +27,7 @@ are intentionally small and must be retained when updating the pinned source:
 - `theme-mode-toggle.tsx` and `ui/sidebar.tsx`: Spanish visible/accessibility labels.
 - `user-menu.tsx`: accessible Spanish menu label and safe logout failure notification.
 - `refresh-button.tsx`: accessible Spanish label.
+- `data-table.tsx`: adds the typed `tableLabel` prop for an accessible rendered table name.
 
 Other kit files retain upstream content and formatting; the two indexed column
 lookups carry only the non-null assertions required by this repository's strict
@@ -44,7 +45,7 @@ in `src/kit/SHADCN-LICENSE.md`; this does not replace the Marmelab license in
 `https://github.com/shadcn-ui/ui/tree/shadcn@4.22.1`, and the upstream file's
 SHA-256 is
 `4c371f7a1ff5d219ae2f7ff28bd256b4346fd546fe46fbae22092e57db2f0fae`.
-Run `npm run admin:kit:check` to verify that committed artifact hash.
+Run `npm run admin:shadcn-css:check` to verify that committed shadcn CSS artifact hash.
 React Admin's named `query-string` imports are routed through the local Vite
 `src/query-string-compat.ts` adapter, backed by the fixed
 `query-string@9.5.1` package and preserving both named and default exports.

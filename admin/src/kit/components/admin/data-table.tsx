@@ -95,6 +95,7 @@ export function DataTable<RecordType extends RaRecord = RaRecord>(
     rowClassName,
     bulkActionButtons = defaultBulkActionButtons,
     bulkActionsToolbar,
+    tableLabel,
     ...rest
   } = props;
   const hasBulkActions = !!bulkActionsToolbar || bulkActionButtons !== false;
@@ -113,7 +114,7 @@ export function DataTable<RecordType extends RaRecord = RaRecord>(
       {...rest}
     >
       <div className={cn("rounded-md border", className)}>
-        <Table>
+        <Table aria-label={tableLabel}>
           <DataTableRenderContext.Provider value="header">
             <DataTableHead>{columns}</DataTableHead>
           </DataTableRenderContext.Provider>
@@ -301,6 +302,8 @@ export interface DataTableProps<
   rowClassName?: (record: RecordType) => string | undefined;
   bulkActionButtons?: ReactNode;
   bulkActionsToolbar?: ReactNode;
+  /** Accessible name for the rendered table. */
+  tableLabel?: string;
 }
 
 export function DataTableColumn<
