@@ -197,11 +197,7 @@ export function App() {
         />
         <Route
           path="/prototype/account-administration"
-          element={
-            <ProtectedView>
-              <PrototypeAccountAdministration />
-            </ProtectedView>
-          }
+          element={<PrototypeAccountAdministration />}
         />
         <Route
           path="/"
