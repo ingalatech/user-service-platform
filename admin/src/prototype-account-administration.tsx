@@ -407,26 +407,6 @@ function DangerZone({
             Solicitar
           </Button>
         </ActionRow>
-        {sessions
-          .filter(({ current }) => !current)
-          .map(({ device, location }) => (
-            <ActionRow
-              key={device}
-              icon={Laptop}
-              title={`Revocar sesión · ${device}`}
-              detail={location}
-            >
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  onAction(`sesión revocada en ${device}`, true);
-                }}
-              >
-                Revocar
-              </Button>
-            </ActionRow>
-          ))}
       </div>
       {showUnlinkDialog && (
         <SocialUnlinkDialog onDismiss={onDismissUnlinkDialog} onConfirm={onConfirmUnlink} />
@@ -614,7 +594,15 @@ function PrototypeRecordDetail() {
                   {current ? (
                     <Status tone="success">Este dispositivo</Status>
                   ) : (
-                    <Status>Sesión activa</Status>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => {
+                        action(`sesión revocada en ${device}`, true);
+                      }}
+                    >
+                      Revocar
+                    </Button>
                   )}
                 </ActionRow>
               ))}
