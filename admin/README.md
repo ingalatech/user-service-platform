@@ -3,16 +3,18 @@
 React + TypeScript + Vite SPA under `/admin`, served by the existing Hono
 Worker's Static Assets binding on the same origin. This first slice signs in
 an existing verified administrator, shows the real identity, restores access
-on reload and signs out. The Users resource (#125) reads real accounts with
-server-side literal email search and bounded pagination. User detail belongs
-to #126; Profile is deferred.
+on reload and signs out. The Users resource reads real accounts with
+server-side literal email search, bounded pagination, safe detail projection
+and Account Details editing. Profile is deferred.
 
 ## Kit provenance and maintenance
 
 The real Marmelab [Shadcn Admin Kit](https://marmelab.com/shadcn-admin-kit/docs/install/)
 is distributed as source registry components, not as the community npm package
-named `shadcn-admin-kit`. `src/kit` vendors the 38-file transitive closure used
-by Admin, Layout, TextInput and Button from upstream tag **v2.0.0**, commit
+named `shadcn-admin-kit`. `src/kit` vendors the 75-source-file transitive
+closure used by Admin, Layout, List, DataTable, SearchInput, ListPagination,
+Show, RecordField, Edit, SimpleForm, TextInput and Button from upstream tag
+**v2.0.0**, commit
 [`11983abe4afc60a3904991820526aafe4d0588d3`](https://github.com/marmelab/shadcn-admin-kit/tree/11983abe4afc60a3904991820526aafe4d0588d3/src).
 The upstream Marmelab MIT license is preserved in `src/kit/LICENSE`.
 
@@ -26,7 +28,9 @@ are intentionally small and must be retained when updating the pinned source:
 - `user-menu.tsx`: accessible Spanish menu label and safe logout failure notification.
 - `refresh-button.tsx`: accessible Spanish label.
 
-Other kit files retain upstream content and formatting. The vendor subtree is
+Other kit files retain upstream content and formatting; the two indexed column
+lookups carry only the non-null assertions required by this repository's strict
+TypeScript settings. The vendor subtree is
 excluded from repository formatter/lint rewriting; the complete imported code
 is still typechecked and bundled. All owned TS/TSX files have typed lint gates.
 Dependencies are pinned in `package.json` and the root lock. Tailwind/static CSS
@@ -66,15 +70,17 @@ wraps the real kit Layout: 401 shows login, 403 shows access denial preserving
 the regular User's session, and 500/transport failure offers retry preserving
 the cookie. The authProvider implements real login/identity/logout operations.
 Spanish strings used by these slices are defined in `src/i18n.ts` and the owned
-resource views. The Users resource has no mutation or detail controls.
+resource views. The Users resource exposes only its canonical list/show/edit
+routes; the edit form updates Account Details and never Identity-owned fields.
 
-`src/data-provider.ts` adapts the exact Identity-owned `GET /v1/admin/users`
-representation to ra-core list metadata. It supports only User listing;
-unsupported operations reject without making an HTTP request. Runtime parsing
-and TypeScript types reuse the source contracts (`schemaInference`). Requests
-carry bounded limit/offset and an optional literal email substring. Changing
-search resets the page, cancels obsolete requests and hides previous results
-while the new query is pending. Search terms and result contents are never logged.
+`src/data-provider.ts` adapts the exact Identity-owned User representations to
+ra-core list/show/edit metadata. It supports only Users and Account Details
+editing; unsupported operations reject without making an HTTP request. Runtime
+parsing and TypeScript types reuse the source contracts (`schemaInference`).
+Requests carry bounded limit/offset and an optional literal email substring.
+Changing search resets the page, cancels obsolete requests and hides previous
+results while the new query is pending. Search terms and result contents are
+never logged.
 
 ## Run locally
 

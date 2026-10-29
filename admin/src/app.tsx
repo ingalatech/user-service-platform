@@ -22,6 +22,7 @@ import { LoginPage } from './login-page.js';
 import { dataProvider } from './data-provider.js';
 import { UsersList } from './users-list.js';
 import { UsersShow } from './users-show.js';
+import { UsersEdit } from './users-edit.js';
 
 const store = memoryStore();
 
@@ -184,16 +185,14 @@ export function App() {
       authenticationError={ServiceFailure}
       accessDenied={Denied}
     >
-      <Resource name="users" list={UsersList} options={{ label: 'Usuarios' }} />
+      <Resource
+        name="users"
+        list={UsersList}
+        show={UsersShow}
+        edit={UsersEdit}
+        options={{ label: 'Usuarios' }}
+      />
       <CustomRoutes noLayout>
-        <Route
-          path="/users/:userId"
-          element={
-            <ProtectedView>
-              <UsersShow />
-            </ProtectedView>
-          }
-        />
         <Route
           path="/"
           element={
