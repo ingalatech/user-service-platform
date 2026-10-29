@@ -10,7 +10,7 @@ import {
   useGetIdentity,
   useLogout,
 } from 'ra-core';
-import { Link, Navigate, Route, useNavigate } from 'react-router';
+import { Link, Navigate, Route, useLocation, useNavigate } from 'react-router';
 import { Admin } from './kit/components/admin/admin.js';
 import { Button } from './kit/components/ui/button.js';
 import { authProvider } from './auth-provider.js';
@@ -169,6 +169,11 @@ function ProtectedLayout({ children }: CoreLayoutProps) {
 }
 
 export function App() {
+  const location = useLocation();
+  if (location.pathname === '/prototype/account-administration') {
+    return <PrototypeAccountAdministration />;
+  }
+
   return (
     <Admin
       title="Administración"
@@ -194,10 +199,6 @@ export function App() {
               <UsersShow />
             </ProtectedView>
           }
-        />
-        <Route
-          path="/prototype/account-administration"
-          element={<PrototypeAccountAdministration />}
         />
         <Route
           path="/"
