@@ -266,7 +266,7 @@ export async function runAdminBrowserTest(): Promise<void> {
     await page.getByRole('link', { name: 'Volver al inicio', exact: true }).click();
     await visible(page, 'Sesión de administración');
     const cookies = await context.cookies();
-    const token = cookies.find((cookie) => cookie.name.endsWith('session_token'));
+    let token = cookies.find((cookie) => cookie.name.endsWith('session_token'));
     assert(
       token?.httpOnly && token.path === '/v1/admin',
       'Admin cookie is HttpOnly and path-scoped',
@@ -280,7 +280,7 @@ export async function runAdminBrowserTest(): Promise<void> {
     })()`),
       'UI storage contains no password or session token',
     );
-    const cookieHeader = cookies.map(({ name, value }) => `${name}=${value}`).join('; ');
+    let cookieHeader = cookies.map(({ name, value }) => `${name}=${value}`).join('; ');
     for (const [path, fields] of [
       ['/v1/admin/me', ['email', 'emailVerified', 'id', 'realm', 'role']],
     ] as const) {
@@ -310,9 +310,11 @@ export async function runAdminBrowserTest(): Promise<void> {
     }
     await page.goto(`${base}/admin/users`);
     await visible(page, 'Usuarios');
-    const table = page.getByRole('table');
     await page.getByText('14 usuarios en total', { exact: true }).waitFor();
     await page.getByText('1-10 de 14', { exact: true }).waitFor();
+    const tableRegion = page.getByRole('region', { name: 'Listado de usuarios', exact: true });
+    await tableRegion.waitFor();
+    const table = tableRegion.getByRole('table');
     assert(
       (await table.getByText(admin, { exact: true }).count()) === 0,
       'Admin identity is not a Reader row',
@@ -323,8 +325,11 @@ export async function runAdminBrowserTest(): Promise<void> {
       !/fecha de nacimiento|teléfono|referencia de imagen/i.test(listHeaders),
       'User list keeps Account Details private',
     );
-    const searchBox = page.locator('input').first();
-    await searchBox.fill(regular.toUpperCase());
+    const searchBox = page.getByRole('textbox', {
+      name: 'Buscar por correo electrónico',
+      exact: true,
+    });
+    await searchBox.fill(`  ${regular.toUpperCase()}  `);
     await page.getByText('1 usuario en total', { exact: true }).waitFor();
     await page.getByText('1-1 de 1', { exact: true }).waitFor();
     await table.getByText(regular, { exact: true }).waitFor();
@@ -332,6 +337,10 @@ export async function runAdminBrowserTest(): Promise<void> {
     assert((await table.getByText(admin, { exact: true }).count()) === 0, 'search replaces rows');
     await searchBox.fill('no-such-user@example.com');
     await visible(page, 'Sin resultados');
+    await searchBox.fill('   ');
+    await page.getByText('14 usuarios en total', { exact: true }).waitFor();
+    await page.getByText('1-10 de 14', { exact: true }).waitFor();
+    assert((await page.getByRole('alert').count()) === 0, 'whitespace-only search is empty');
     await page.getByRole('button', { name: 'Limpiar búsqueda', exact: true }).click();
     await page.getByText('14 usuarios en total', { exact: true }).waitFor();
     await page
@@ -354,7 +363,36 @@ export async function runAdminBrowserTest(): Promise<void> {
       (await table.getByText(admin, { exact: true }).count()) === 0,
       'Admin identity stays outside Reader listing',
     );
+    const deletedEmail = 'qa-deleted-on-save@example.com';
+    const deletedRegistration = await http('/v1/auth/register', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'QA Deleted', email: deletedEmail, password }),
+    });
+    assert(deletedRegistration.status === 201, 'deleted User fixture created');
+    await deletedRegistration.arrayBuffer();
+    await sql(`UPDATE "user" SET email_verified = 1 WHERE email = '${deletedEmail}'`);
+    const deletedLookup = await http(`/v1/admin/users?email=${encodeURIComponent(deletedEmail)}`, {
+      headers: { cookie: cookieHeader },
+    });
+    assert(deletedLookup.status === 200, 'deleted User detail lookup');
+    const deletedPayload = (await deletedLookup.json()) as {
+      items?: { id?: unknown }[];
+    };
+    const deletedId = deletedPayload.items?.[0]?.id;
+    assert(
+      typeof deletedId === 'string' && deletedId.length > 0,
+      'deleted User identifier resolved',
+    );
+    await page.goto(`${base}/admin/users/${encodeURIComponent(deletedId)}`);
+    await visible(page, 'Editar datos de cuenta');
+    await sql(`DELETE FROM "user" WHERE id = '${deletedId}'`);
+    await page.getByRole('textbox', { name: 'Nombre', exact: true }).fill('Deleted');
+    await page.getByRole('button', { name: 'Guardar cambios', exact: true }).click();
+    await page.getByText('Usuario no encontrado', { exact: true }).waitFor();
     phase = 'user detail, reload, back and direct navigation';
+    await page.goto(`${base}/admin/users`);
+    await visible(page, 'Usuarios');
     const detailLookup = await http(`/v1/admin/users?email=${encodeURIComponent(regular)}`, {
       headers: { cookie: cookieHeader },
     });
@@ -414,6 +452,21 @@ export async function runAdminBrowserTest(): Promise<void> {
         accountDetails.image === 'https://images.example.test/ada.png',
       'Admin form persisted real Account Details through HTTP',
     );
+    phase = 'account edit authorization failures';
+    await firstNameInput.fill('Grace');
+    await sql('UPDATE "admin_session" SET expires_at = 0');
+    await page.getByRole('button', { name: 'Guardar cambios', exact: true }).click();
+    await visible(page, 'Administración');
+    await signIn(page, admin, password);
+    await visible(page, 'Sesión de administración');
+    cookieHeader = (await context.cookies())
+      .map(({ name, value }) => `${name}=${value}`)
+      .join('; ');
+    token = (await context.cookies()).find((cookie) => cookie.name.endsWith('session_token'));
+    await page.goto(`${base}/admin/users/${encodeURIComponent(regularDetailId)}`);
+    await visible(page, 'Editar datos de cuenta');
+    const activeToken = token;
+    assert(activeToken !== undefined, 'refreshed Admin cookie is available');
     await page
       .getByRole('textbox', { name: 'Referencia de imagen HTTPS', exact: true })
       .fill('http://images.example.test/insecure.png');
@@ -446,8 +499,6 @@ export async function runAdminBrowserTest(): Promise<void> {
           '1815-12-10',
       'Account Details reload from saved Worker values',
     );
-    await page.getByRole('button', { name: 'Cancelar', exact: true }).click();
-    await visible(page, 'Detalle de usuario');
     await page.goto(`${base}/admin/users`);
     await visible(page, 'Usuarios');
     await page.getByText('14 usuarios en total', { exact: true }).waitFor();
@@ -508,7 +559,7 @@ export async function runAdminBrowserTest(): Promise<void> {
       await visible(page, 'El servicio no está disponible');
       assert(
         (await context.cookies()).some(
-          (cookie) => cookie.name === token.name && cookie.value === token.value,
+          (cookie) => cookie.name === activeToken.name && cookie.value === activeToken.value,
         ),
         'server failure preserves cookie',
       );

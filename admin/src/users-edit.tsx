@@ -1,6 +1,6 @@
 import { useGetOne, useSaveContext } from 'ra-core';
 import { useState, type MouseEvent, type ReactNode } from 'react';
-import { Navigate, useParams } from 'react-router';
+import { Link, Navigate, useParams } from 'react-router';
 import type { AdminUser } from './generated/contracts.js';
 import { ApiError } from './api.js';
 import { Edit } from './kit/components/admin/edit.js';
@@ -83,6 +83,7 @@ export function UsersEdit() {
   const { id } = useParams();
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState<unknown>(null);
+  const [saveOutcome, setSaveOutcome] = useState<'expired' | 'deleted' | null>(null);
   const validId = id !== undefined && id.length > 0 && id.length <= 128;
   const query = useGetOne<AdminUser>(
     'users',
@@ -150,6 +151,22 @@ export function UsersEdit() {
     );
   }
 
+  if (saveOutcome === 'expired') {
+    return <Navigate to="/login" replace />;
+  }
+
+  if (saveOutcome === 'deleted') {
+    return (
+      <EditState>
+        <div role="alert">
+          <h2>Usuario no encontrado</h2>
+          <p>No existe ningún usuario con este identificador.</p>
+        </div>
+        <Link to="/users">Volver a la lista</Link>
+      </EditState>
+    );
+  }
+
   return (
     <Edit
       title="Editar datos de cuenta"
@@ -159,6 +176,7 @@ export function UsersEdit() {
       queryOptions={{ enabled: false, initialData: query.data }}
       mutationOptions={{
         onSuccess: () => {
+          setSaveOutcome(null);
           setSaveError(null);
           setSaved(true);
         },
@@ -186,7 +204,13 @@ export function UsersEdit() {
         }}
         onError={(error) => {
           setSaved(false);
-          setSaveError(error);
+          if (error instanceof ApiError && error.status === 401) {
+            setSaveOutcome('expired');
+          } else if (error instanceof ApiError && error.status === 404) {
+            setSaveOutcome('deleted');
+          } else {
+            setSaveError(error);
+          }
         }}
       />
     </Edit>

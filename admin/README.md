@@ -44,6 +44,7 @@ in `src/kit/SHADCN-LICENSE.md`; this does not replace the Marmelab license in
 `https://github.com/shadcn-ui/ui/tree/shadcn@4.22.1`, and the upstream file's
 SHA-256 is
 `4c371f7a1ff5d219ae2f7ff28bd256b4346fd546fe46fbae22092e57db2f0fae`.
+Run `npm run admin:kit:check` to verify that committed artifact hash.
 React Admin's named `query-string` imports are routed through the local Vite
 `src/query-string-compat.ts` adapter, backed by the fixed
 `query-string@9.5.1` package and preserving both named and default exports.

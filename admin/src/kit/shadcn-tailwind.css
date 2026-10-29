@@ -1,10 +1,3 @@
-/*
- * Exact vendored copy of shadcn@4.22.1 dist/tailwind.css.
- * Registry: https://registry.npmjs.org/shadcn/-/shadcn-4.22.1.tgz
- * Repository: https://github.com/shadcn-ui/ui/tree/shadcn@4.22.1
- * License: admin/src/kit/SHADCN-LICENSE.md (MIT, Copyright (c) 2023 shadcn).
- * SHA-256 of the unmodified upstream file: 4c371f7a1ff5d219ae2f7ff28bd256b4346fd546fe46fbae22092e57db2f0fae
- */
 @theme inline {
   @keyframes accordion-down {
     from {
