@@ -22,6 +22,7 @@ import { LoginPage } from './login-page.js';
 import { dataProvider } from './data-provider.js';
 import { UsersList } from './users-list.js';
 import { UsersShow } from './users-show.js';
+import { PrototypeAccountAdministration } from './prototype-account-administration.js';
 
 const store = memoryStore();
 
@@ -191,6 +192,14 @@ export function App() {
           element={
             <ProtectedView>
               <UsersShow />
+            </ProtectedView>
+          }
+        />
+        <Route
+          path="/prototype/account-administration"
+          element={
+            <ProtectedView>
+              <PrototypeAccountAdministration />
             </ProtectedView>
           }
         />
