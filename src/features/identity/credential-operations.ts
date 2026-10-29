@@ -95,6 +95,7 @@ export interface CredentialOperations {
 export interface CredentialOperationsInput {
   readonly runtime: IdentityRuntime;
   readonly db: D1Database;
+  readonly realm?: 'administrator';
 }
 
 function success<T>(value: T, cookies: readonly string[] = []): CredentialOperationOutcome<T> {
@@ -122,7 +123,38 @@ function passwordPolicyFailure(
 }
 
 function readUser(payload: unknown): RegisteredUser | null {
-  return toAuthenticatedUser(payload);
+  const user = toAuthenticatedUser(payload);
+  return user === null
+    ? null
+    : { id: user.id, email: user.email, emailVerified: user.emailVerified };
+}
+
+function readLoginIdentity(
+  payload: unknown,
+  realm: 'reader' | 'administrator',
+): LoginResult | null {
+  if (realm === 'reader') {
+    const user = toAuthenticatedUser(payload);
+    return user === null
+      ? null
+      : { id: user.id, email: user.email, emailVerified: user.emailVerified };
+  }
+  if (typeof payload !== 'object' || payload === null || !('user' in payload)) return null;
+  const user = payload.user;
+  if (
+    typeof user !== 'object' ||
+    user === null ||
+    !('role' in user) ||
+    user.role !== 'admin' ||
+    !('id' in user) ||
+    typeof user.id !== 'string' ||
+    !('email' in user) ||
+    typeof user.email !== 'string' ||
+    !('emailVerified' in user) ||
+    typeof user.emailVerified !== 'boolean'
+  )
+    return null;
+  return { id: user.id, email: user.email, emailVerified: user.emailVerified };
 }
 
 // Application-owned credential lifecycle. These operations own AuthPolicy
@@ -130,13 +162,15 @@ function readUser(payload: unknown): RegisteredUser | null {
 // the stable contracts; the router retains only HTTP adaptation.
 export function createCredentialOperations(input: CredentialOperationsInput): CredentialOperations {
   const { runtime, db } = input;
+  const realm = input.realm ?? 'reader';
+  const auth = () => (realm === 'reader' ? runtime.authentication() : runtime.administration());
 
   async function registerIdentity(
     request: Pick<RegisterRequest, 'email' | 'password'>,
     technicalName: string,
     headers: Headers,
   ): Promise<CredentialOperationOutcome<RegisteredUser>> {
-    const auth = runtime.authentication();
+    const engine = auth();
     const policy = runtime.authPolicy;
     if (!policy.emailPasswordEnabled) return failure({ kind: 'email-password-disabled' });
     if (!policy.registrationEnabled) return failure({ kind: 'registration-disabled' });
@@ -144,7 +178,7 @@ export function createCredentialOperations(input: CredentialOperationsInput): Cr
     if (invalidPassword !== null) return failure(invalidPassword);
 
     const outcome = await callIdentityEngine(() =>
-      auth.api.signUpEmail({
+      engine.api.signUpEmail({
         body: { name: technicalName, email: request.email, password: request.password },
         headers,
         asResponse: true,
@@ -180,13 +214,13 @@ export function createCredentialOperations(input: CredentialOperationsInput): Cr
     },
 
     async login(request, headers) {
-      const auth = runtime.authentication();
+      const engine = auth();
       if (!runtime.authPolicy.emailPasswordEnabled) {
         return failure({ kind: 'email-password-disabled' });
       }
 
       const outcome = await callIdentityEngine(() =>
-        auth.api.signInEmail({
+        engine.api.signInEmail({
           body: { email: request.email, password: request.password },
           headers,
           asResponse: true,
@@ -201,7 +235,7 @@ export function createCredentialOperations(input: CredentialOperationsInput): Cr
         if (engineFailure.status === 401) return failure({ kind: 'invalid-credentials' });
         return failure({ kind: 'bad-request' });
       }
-      const user = readUser(await outcome.json().catch(() => null));
+      const user = readLoginIdentity(await outcome.json().catch(() => null), realm);
       return user === null
         ? failure({ kind: 'internal-error' })
         : success(user, responseCookies(outcome));
@@ -210,14 +244,18 @@ export function createCredentialOperations(input: CredentialOperationsInput): Cr
     async verifyEmail(request, headers) {
       let consumed: boolean;
       try {
-        consumed = await consumeLatestVerificationToken({ db, token: request.token });
+        consumed = await consumeLatestVerificationToken({
+          db,
+          realm: input.realm,
+          token: request.token,
+        });
       } catch {
         consumed = false;
       }
       if (!consumed) return failure({ kind: 'verification-invalid' });
 
       const outcome = await callIdentityEngine(() =>
-        runtime.authentication().api.verifyEmail({
+        auth().api.verifyEmail({
           query: { token: request.token },
           headers,
           asResponse: true,
@@ -230,13 +268,13 @@ export function createCredentialOperations(input: CredentialOperationsInput): Cr
     },
 
     async requestVerification(request, headers) {
-      const auth = runtime.authentication();
+      const engine = auth();
       if (!runtime.authPolicy.emailPasswordEnabled) {
         return failure({ kind: 'email-password-disabled' });
       }
 
       const outcome = await callIdentityEngine(() =>
-        auth.api.sendVerificationEmail({
+        engine.api.sendVerificationEmail({
           body: { email: request.email },
           headers,
           asResponse: true,
@@ -252,13 +290,13 @@ export function createCredentialOperations(input: CredentialOperationsInput): Cr
     },
 
     async requestPasswordReset(request, headers) {
-      const auth = runtime.authentication();
+      const engine = auth();
       if (!runtime.authPolicy.emailPasswordEnabled) {
         return failure({ kind: 'email-password-disabled' });
       }
 
       const outcome = await callIdentityEngine(() =>
-        auth.api.requestPasswordReset({
+        engine.api.requestPasswordReset({
           body: { email: request.email },
           headers,
           asResponse: true,
@@ -277,7 +315,11 @@ export function createCredentialOperations(input: CredentialOperationsInput): Cr
         return failure({ kind: 'email-password-disabled' });
       }
       try {
-        const valid = await isCurrentPasswordResetToken({ db, token: request.token });
+        const valid = await isCurrentPasswordResetToken({
+          db,
+          realm: input.realm,
+          token: request.token,
+        });
         return success({ valid });
       } catch {
         return failure({ kind: 'internal-error' });
@@ -285,14 +327,14 @@ export function createCredentialOperations(input: CredentialOperationsInput): Cr
     },
 
     async resetPassword(request, headers) {
-      const auth = runtime.authentication();
+      const engine = auth();
       const policy = runtime.authPolicy;
       if (!policy.emailPasswordEnabled) return failure({ kind: 'email-password-disabled' });
       const invalidPassword = passwordPolicyFailure(request.newPassword, policy.passwordPolicy);
       if (invalidPassword !== null) return failure(invalidPassword);
 
       const outcome = await callIdentityEngine(() =>
-        auth.api.resetPassword({
+        engine.api.resetPassword({
           body: { newPassword: request.newPassword, token: request.token },
           headers,
           asResponse: true,
@@ -308,7 +350,7 @@ export function createCredentialOperations(input: CredentialOperationsInput): Cr
 
     async signOut(headers) {
       const outcome = await callIdentityEngine(() =>
-        runtime.authentication().api.signOut({ headers, asResponse: true }),
+        auth().api.signOut({ headers, asResponse: true }),
       );
       if (!(outcome instanceof Response)) {
         return outcome.status >= 500

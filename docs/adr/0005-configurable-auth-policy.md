@@ -42,7 +42,7 @@ The policy model should be extendable later, but the initial implementation does
 - passkeys;
 - new-device authentication alerts;
 - per-user authentication policy;
-- internal operator/admin authentication.
+- authentication realms and administrator sessions, now specified by ADR-0014.
 
 These are future capabilities, not placeholders that must be implemented in the MVP.
 

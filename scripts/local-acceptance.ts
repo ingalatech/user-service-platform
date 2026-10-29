@@ -660,7 +660,7 @@ async function main(): Promise<void> {
     }
 
     // First-admin bootstrap against the same fresh environment.
-    const bootstrap = await request('admin-bootstrap', '/v1/auth/admin/bootstrap', {
+    const bootstrap = await request('admin-bootstrap', '/v1/admin/auth/bootstrap', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ name: admin.name, email: admin.email, password: admin.password }),

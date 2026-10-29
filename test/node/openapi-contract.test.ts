@@ -124,6 +124,7 @@ describe('generated OpenAPI artifact', () => {
       'id',
       'email',
       'emailVerified',
+      'realm',
     ]);
     const serialized = JSON.stringify(document.components.schemas.CurrentUser);
     expect(serialized).not.toContain('password');

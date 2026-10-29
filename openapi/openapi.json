@@ -516,12 +516,20 @@
           "emailVerified": {
             "type": "boolean",
             "example": true
+          },
+          "realm": {
+            "type": "string",
+            "enum": [
+              "reader"
+            ],
+            "example": "reader"
           }
         },
         "required": [
           "id",
           "email",
-          "emailVerified"
+          "emailVerified",
+          "realm"
         ]
       },
       "SignOutResult": {
@@ -733,6 +741,13 @@
             "type": "boolean",
             "example": true
           },
+          "realm": {
+            "type": "string",
+            "enum": [
+              "administrator"
+            ],
+            "example": "administrator"
+          },
           "role": {
             "type": "string",
             "example": "admin"
@@ -742,6 +757,7 @@
           "id",
           "email",
           "emailVerified",
+          "realm",
           "role"
         ]
       },
@@ -784,15 +800,23 @@
             "type": "boolean",
             "example": true
           },
+          "realm": {
+            "type": "string",
+            "enum": [
+              "reader"
+            ],
+            "example": "reader"
+          },
           "role": {
             "type": "string",
-            "example": "admin"
+            "example": "user"
           }
         },
         "required": [
           "id",
           "email",
           "emailVerified",
+          "realm",
           "role"
         ]
       },
@@ -809,6 +833,13 @@
             "format": "email",
             "example": "ada@example.com"
           },
+          "realm": {
+            "type": "string",
+            "enum": [
+              "administrator"
+            ],
+            "example": "administrator"
+          },
           "role": {
             "type": "string",
             "enum": [
@@ -824,6 +855,7 @@
         "required": [
           "id",
           "email",
+          "realm",
           "role",
           "emailVerified"
         ]
@@ -1584,6 +1616,277 @@
         }
       }
     },
+    "/v1/admin/auth/login": {
+      "post": {
+        "operationId": "loginAdministrator",
+        "summary": "Establish an Administrator session",
+        "tags": [
+          "admin"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Authenticated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginResult"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Administrator authentication failure.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/auth/sign-out": {
+      "post": {
+        "operationId": "signOutAdministrator",
+        "summary": "Invalidate the current Administrator session",
+        "tags": [
+          "admin"
+        ],
+        "responses": {
+          "200": {
+            "description": "Signed out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignOutResult"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Administrator sign-out failure.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/auth/verify-email": {
+      "post": {
+        "operationId": "verifyAdministratorEmail",
+        "summary": "Complete Administrator email verification",
+        "tags": [
+          "admin"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyEmailRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Verified.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VerifyEmailResult"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Verification failure.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/auth/request-verification": {
+      "post": {
+        "operationId": "requestAdministratorVerification",
+        "summary": "Request Administrator email verification",
+        "tags": [
+          "admin"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequestVerificationRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Accepted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestVerificationResult"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Verification request failure.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/auth/request-password-reset": {
+      "post": {
+        "operationId": "requestAdministratorPasswordReset",
+        "summary": "Request Administrator password recovery",
+        "tags": [
+          "admin"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RequestPasswordResetRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Accepted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestPasswordResetResult"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Password reset request failure.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/auth/check-password-reset": {
+      "post": {
+        "operationId": "checkAdministratorPasswordReset",
+        "summary": "Check an Administrator password-reset action",
+        "tags": [
+          "admin"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CheckPasswordResetRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Token status.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckPasswordResetResult"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Password reset check failure.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/auth/reset-password": {
+      "post": {
+        "operationId": "resetAdministratorPassword",
+        "summary": "Complete Administrator password reset",
+        "tags": [
+          "admin"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResetPasswordRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Password reset.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResetPasswordResult"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Password reset failure.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/admin/users": {
       "get": {
         "operationId": "listAdminUsers",
@@ -1805,9 +2108,9 @@
         }
       }
     },
-    "/v1/auth/admin/bootstrap": {
+    "/v1/admin/auth/bootstrap": {
       "post": {
-        "operationId": "bootstrapAdmin",
+        "operationId": "bootstrapAdministrator",
         "summary": "Bootstrap the first administrator",
         "description": "Creates the first administrative User through the auth engine after migrations, using explicit operator-supplied credentials. Succeeds only while no administrator exists; repeats and conflicting identities fail with stable machine codes instead of duplicating privileged accounts. The bootstrapped administrator remains subject to the deployment email verification policy before signing in. Creation schedules its first verification message; delivery failure does not undo the administrator. A concurrent active bootstrap may return a retryable 409 while its lease is still held.",
         "tags": [
@@ -1825,6 +2128,47 @@
         "responses": {
           "201": {
             "description": "The first administrator was created and verification was requested.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminBootstrapResult"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Bootstrap failure as RFC 9457 Problem Details.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/admin/bootstrap": {
+      "post": {
+        "operationId": "bootstrapAdmin",
+        "summary": "Bootstrap the first administrator (deprecated path)",
+        "description": "Deprecated compatibility alias for POST /v1/admin/auth/bootstrap. The request, authorization, first-Administrator claim and storage all belong exclusively to the Administrator realm.",
+        "tags": [
+          "admin"
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminBootstrapRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The first Administrator was created and verification was requested.",
             "content": {
               "application/json": {
                 "schema": {

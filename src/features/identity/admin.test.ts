@@ -68,14 +68,16 @@ function sessionCookieFrom(res: Response): string | null {
 }
 
 async function userCount(): Promise<number> {
-  const row = await workerEnv.DB.prepare('SELECT COUNT(*) AS total FROM "user"').first<{
+  const row = await workerEnv.DB.prepare('SELECT COUNT(*) AS total FROM "admin_user"').first<{
     total: number;
   }>();
   return row?.total ?? 0;
 }
 
 async function adminCount(): Promise<number> {
-  const row = await workerEnv.DB.prepare('SELECT COUNT(*) AS total FROM "user" WHERE role = ?')
+  const row = await workerEnv.DB.prepare(
+    'SELECT COUNT(*) AS total FROM "admin_user" WHERE role = ?',
+  )
     .bind('admin')
     .first<{ total: number }>();
   return row?.total ?? 0;
@@ -83,10 +85,10 @@ async function adminCount(): Promise<number> {
 
 async function associationCounts(userId: string): Promise<{ accounts: number; sessions: number }> {
   const [accountRow, sessionRow] = await Promise.all([
-    workerEnv.DB.prepare('SELECT COUNT(*) AS total FROM "account" WHERE user_id = ?')
+    workerEnv.DB.prepare('SELECT COUNT(*) AS total FROM "admin_account" WHERE user_id = ?')
       .bind(userId)
       .first<{ total: number }>(),
-    workerEnv.DB.prepare('SELECT COUNT(*) AS total FROM "session" WHERE user_id = ?')
+    workerEnv.DB.prepare('SELECT COUNT(*) AS total FROM "admin_session" WHERE user_id = ?')
       .bind(userId)
       .first<{ total: number }>(),
   ]);
@@ -136,7 +138,7 @@ class FailOnceAuthMailer implements AuthMailer {
   }
 }
 
-const ADMIN_BOOTSTRAP_PATH = '/v1/auth/admin/bootstrap';
+const ADMIN_BOOTSTRAP_PATH = '/v1/admin/auth/bootstrap';
 
 const adminInput = {
   name: 'Ada Admin',
@@ -151,6 +153,11 @@ beforeAll(async () => {
 beforeEach(async () => {
   const db = workerEnv.DB;
   await db.batch([
+    db.prepare('DELETE FROM "admin_session"'),
+    db.prepare('DELETE FROM "admin_account"'),
+    db.prepare('DELETE FROM "admin_verification"'),
+    db.prepare('DELETE FROM "admin_email_verification_token"'),
+    db.prepare('DELETE FROM "admin_user"'),
     db.prepare('DELETE FROM "session"'),
     db.prepare('DELETE FROM "account"'),
     db.prepare('DELETE FROM "verification"'),
@@ -162,7 +169,7 @@ beforeEach(async () => {
   mailer.clear();
 });
 
-describe('POST /v1/auth/admin/bootstrap', () => {
+describe('POST /v1/admin/auth/bootstrap', () => {
   it('creates the first administrator with the admin role through Better Auth APIs', async () => {
     const res = await post(ADMIN_BOOTSTRAP_PATH, adminInput);
 
@@ -194,7 +201,7 @@ describe('POST /v1/auth/admin/bootstrap', () => {
     });
 
     const persistedTimestamps = await workerEnv.DB.prepare(
-      'SELECT created_at, updated_at FROM "user" WHERE id = ?',
+      'SELECT created_at, updated_at FROM "admin_user" WHERE id = ?',
     )
       .bind(body.id)
       .first<{ created_at: number; updated_at: number }>();
@@ -215,13 +222,13 @@ describe('POST /v1/auth/admin/bootstrap', () => {
     expect(JSON.stringify(body)).not.toContain('Correct-horse-41');
   });
 
-  it('keeps the verification gate for the bootstrapped admin, then admits them after verification', async () => {
+  it('keeps the verification gate, then admits the Administrator only in its own realm', async () => {
     const bootstrap = await post(ADMIN_BOOTSTRAP_PATH, adminInput);
     expect(bootstrap.status).toBe(201);
     await waitForVerificationMessages(1);
     expect(mailer.sent).toHaveLength(1);
 
-    const gated = await post('/v1/auth/login', {
+    const gated = await post('/v1/admin/auth/login', {
       email: 'admin@example.com',
       password: 'Correct-horse-41',
     });
@@ -231,18 +238,18 @@ describe('POST /v1/auth/admin/bootstrap', () => {
       status: 403,
     });
 
-    const verifyRes = await post('/v1/auth/verify-email', { token: tokenFromLastMessage() });
+    const verifyRes = await post('/v1/admin/auth/verify-email', { token: tokenFromLastMessage() });
     expect(verifyRes.status).toBe(200);
 
     // The bootstrapped credential was hashed by the auth engine: only the
     // operator-supplied password establishes a session.
-    const wrongPassword = await post('/v1/auth/login', {
+    const wrongPassword = await post('/v1/admin/auth/login', {
       email: 'admin@example.com',
       password: 'wrong-password-99',
     });
     expect(wrongPassword.status).toBe(401);
 
-    const loginRes = await post('/v1/auth/login', {
+    const loginRes = await post('/v1/admin/auth/login', {
       email: 'admin@example.com',
       password: 'Correct-horse-41',
     });
@@ -250,12 +257,14 @@ describe('POST /v1/auth/admin/bootstrap', () => {
     const cookie = sessionCookieFrom(loginRes);
     expect(cookie).not.toBeNull();
 
-    const meRes = await get('/v1/me', { cookie });
+    const meRes = await get('/v1/admin/me', { cookie });
     expect(meRes.status).toBe(200);
     expect(await meRes.json()).toMatchObject({
       email: 'admin@example.com',
       emailVerified: true,
+      realm: 'administrator',
     });
+    expect((await get('/v1/me', { cookie })).status).toBe(401);
   });
 
   it('serializes concurrent first-admin bootstraps with one durable winner', async () => {
@@ -436,7 +445,7 @@ describe('POST /v1/auth/admin/bootstrap', () => {
       'SELECT winner_user_id, completed_at FROM admin_bootstrap_guard WHERE id = 1',
     ).first<{ winner_user_id: string | null; completed_at: number | null }>();
     expect(guard).toEqual({ winner_user_id: winner.id, completed_at: TEST_NOW + 31 });
-    const lateUser = await workerEnv.DB.prepare('SELECT id FROM "user" WHERE email = ?')
+    const lateUser = await workerEnv.DB.prepare('SELECT id FROM "admin_user" WHERE email = ?')
       .bind('late-admin@example.com')
       .first();
     expect(lateUser).toBeNull();
@@ -572,7 +581,7 @@ describe('POST /v1/auth/admin/bootstrap', () => {
     expect(retryOrphanOwner.status).toBe(409);
     expect(await adminCount()).toBe(1);
     expect(await userCount()).toBe(1);
-    const deletedOrphan = await workerEnv.DB.prepare('SELECT id FROM "user" WHERE id = ?')
+    const deletedOrphan = await workerEnv.DB.prepare('SELECT id FROM "admin_user" WHERE id = ?')
       .bind(orphanId)
       .first();
     expect(deletedOrphan).toBeNull();
@@ -689,7 +698,7 @@ describe('POST /v1/auth/admin/bootstrap', () => {
     expect(await adminCount()).toBe(1);
     expect(flakyMailer.sent).toHaveLength(0);
 
-    const retry = await request('/v1/auth/request-verification', { email: adminInput.email });
+    const retry = await request('/v1/admin/auth/request-verification', { email: adminInput.email });
     expect(retry.status).toBe(202);
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(flakyMailer.sent).toHaveLength(1);
@@ -732,7 +741,7 @@ describe('POST /v1/auth/admin/bootstrap', () => {
     expect(delivered?.verification_status).toBe('delivered');
   });
 
-  it('rejects bootstrap for an already-registered email without duplicating identities', async () => {
+  it('allows the same email in Reader and Administrator realms', async () => {
     const registerRes = await post('/v1/auth/register', {
       name: 'Ordinary User',
       email: 'ordinary@example.com',
@@ -747,41 +756,49 @@ describe('POST /v1/auth/admin/bootstrap', () => {
       password: 'Correct-horse-41',
     });
 
-    expect(res.status).toBe(409);
-    expect(res.headers.get('content-type')).toContain('application/problem+json');
-    expect(await res.json()).toMatchObject({ code: 'admin-email-conflict', status: 409 });
-
+    expect(res.status).toBe(201);
     expect(await userCount()).toBe(1);
-    expect(await adminCount()).toBe(0);
-    const existingUser = await workerEnv.DB.prepare('SELECT id FROM "user" WHERE email = ?')
+    expect(await adminCount()).toBe(1);
+    const readerUser = await workerEnv.DB.prepare('SELECT id FROM "user" WHERE email = ?')
       .bind('ordinary@example.com')
       .first<{ id: string }>();
-    expect(existingUser).not.toBeNull();
-    expect(await associationCounts(existingUser?.id ?? '')).toEqual({ accounts: 1, sessions: 0 });
-    expect(mailer.sent).toHaveLength(1);
+    const adminUser = await workerEnv.DB.prepare('SELECT id FROM "admin_user" WHERE email = ?')
+      .bind('ordinary@example.com')
+      .first<{ id: string }>();
+    expect(readerUser).not.toBeNull();
+    expect(adminUser).not.toBeNull();
+    expect(readerUser?.id).not.toBe(adminUser?.id);
+    expect(mailer.sent).toHaveLength(2);
   });
 
-  it('releases the reservation after a creation conflict so a later bootstrap can retry', async () => {
-    const registerRes = await post('/v1/auth/register', {
-      name: 'Ordinary User',
-      email: 'ordinary@example.com',
-      password: 'Correct-horse-41',
-    });
-    expect(registerRes.status).toBe(201);
-    await waitForVerificationMessages(1);
-
+  it('releases the reservation after an email conflict within the Administrator realm', async () => {
+    await workerEnv.DB.prepare(
+      'INSERT INTO "admin_user" (id, name, email, email_verified, created_at, updated_at, role, banned) VALUES (?, ?, ?, 0, ?, ?, ?, 0)',
+    )
+      .bind(
+        'existing-admin-realm-user',
+        'Existing Admin Realm User',
+        'admin-conflict@example.com',
+        Date.now(),
+        Date.now(),
+        'user',
+      )
+      .run();
     const conflict = await post(ADMIN_BOOTSTRAP_PATH, {
       ...adminInput,
-      email: 'ordinary@example.com',
+      email: 'admin-conflict@example.com',
     });
     expect(conflict.status).toBe(409);
     expect(await adminCount()).toBe(0);
 
+    await workerEnv.DB.prepare('DELETE FROM "admin_user" WHERE id = ?')
+      .bind('existing-admin-realm-user')
+      .run();
     const retry = await post(ADMIN_BOOTSTRAP_PATH, adminInput);
     expect(retry.status).toBe(201);
-    await waitForVerificationMessages(2);
+    await waitForVerificationMessages(1);
     expect(await adminCount()).toBe(1);
-    expect(mailer.sent).toHaveLength(2);
+    expect(mailer.sent).toHaveLength(1);
   });
 
   it('closes the guard when an administrator predates the reservation migration', async () => {
@@ -815,7 +832,11 @@ describe('POST /v1/auth/admin/bootstrap', () => {
 
     expect(res.status).toBe(201);
     expect(await res.json()).toMatchObject({ email: 'admin@example.com', role: 'admin' });
-    expect(await userCount()).toBe(2);
+    expect(await userCount()).toBe(1);
+    const readerCount = await workerEnv.DB.prepare('SELECT COUNT(*) AS total FROM "user"').first<{
+      total: number;
+    }>();
+    expect(readerCount?.total).toBe(1);
     expect(await adminCount()).toBe(1);
   });
 
@@ -873,7 +894,7 @@ describe('POST /v1/auth/admin/bootstrap', () => {
         policyEnv,
       );
       expect(res.status).toBe(201);
-      await workerEnv.DB.prepare('DELETE FROM "user"').run();
+      await workerEnv.DB.prepare('DELETE FROM "admin_user"').run();
       await workerEnv.DB.prepare('DELETE FROM "admin_bootstrap_guard"').run();
       await workerEnv.DB.prepare('DELETE FROM "admin_bootstrap_attempt"').run();
     }

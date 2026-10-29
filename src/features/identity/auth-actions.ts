@@ -1,6 +1,11 @@
 import { Hono } from 'hono';
 import type { Env } from '../../env.js';
-import { RESET_PASSWORD_ACTION_PATH, VERIFY_EMAIL_ACTION_PATH } from './action-urls.js';
+import {
+  ADMIN_RESET_PASSWORD_ACTION_PATH,
+  ADMIN_VERIFY_EMAIL_ACTION_PATH,
+  RESET_PASSWORD_ACTION_PATH,
+  VERIFY_EMAIL_ACTION_PATH,
+} from './action-urls.js';
 import { PASSWORD_POLICY_REQUIREMENTS } from './password-policy-rules.js';
 
 // Service-owned fallback browser action pages (ticket #77).
@@ -34,9 +39,15 @@ const PAGE_STYLE = String.raw`
 @media (prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
 `;
 
-const VERIFY_SCRIPT = String.raw`(async()=>{const status=document.getElementById("status"),token=new URLSearchParams(location.search).get("token");history.replaceState(null,"",location.pathname);if(!token){status.textContent="This verification link is invalid or has expired.";status.className="status error";return}try{const response=await fetch("/v1/auth/verify-email",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({token})});if(!response.ok)throw new Error();status.textContent="Your email address is verified. You can now sign in.";status.className="status ok"}catch{status.textContent="This verification link is invalid or has expired.";status.className="status error"}})();`;
+function verifyScript(administrator: boolean): string {
+  const endpoint = administrator ? '/v1/admin/auth/verify-email' : '/v1/auth/verify-email';
+  return String.raw`(async()=>{const status=document.getElementById("status"),token=new URLSearchParams(location.search).get("token");history.replaceState(null,"",location.pathname);if(!token){status.textContent="This verification link is invalid or has expired.";status.className="status error";return}try{const response=await fetch(${JSON.stringify(endpoint)},{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({token})});if(!response.ok)throw new Error();status.textContent="Your email address is verified. You can now sign in.";status.className="status ok"}catch{status.textContent="This verification link is invalid or has expired.";status.className="status error"}})();`;
+}
 
-const RESET_SCRIPT = String.raw`(()=>{const policyRequirements=${JSON.stringify(PASSWORD_POLICY_REQUIREMENTS)},form=document.getElementById("reset-form"),password=document.getElementById("new-password"),status=document.getElementById("status"),requirements=document.getElementById("requirements"),token=new URLSearchParams(location.search).get("token");history.replaceState(null,"",location.pathname);if(!token){status.textContent="This password-reset link is invalid or has expired.";status.className="status error";form.hidden=true;return}let policy=null;const renderPolicy=()=>{if(!policy)return;requirements.replaceChildren();const rules=[];for(const requirement of policyRequirements){const count=policy[requirement.policyKey];if(requirement.comparison==="minimum"&&count===0)continue;rules.push((requirement.comparison==="minimum"?"Use at least ":"Use no more than ")+count+" "+requirement.label)}for(const rule of rules){const item=document.createElement("li");item.textContent=rule;requirements.append(item)}};fetch("/v1/auth/config").then(response=>response.ok?response.json():null).then(config=>{policy=config?.passwordPolicy??null;renderPolicy()}).catch(()=>{});form.addEventListener("submit",async event=>{event.preventDefault();status.textContent="Setting your new password.";status.className="status pending";try{const response=await fetch("/v1/auth/reset-password",{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({token,newPassword:password.value})});if(!response.ok){const failure=await response.json().catch(()=>null);if(failure?.code==="password-policy-violation"){status.textContent="Your password does not meet the current requirements.";status.className="status error";return}throw new Error()}status.textContent="Your password was reset. You can now sign in.";status.className="status ok";form.hidden=true}catch{status.textContent="This password-reset link is invalid or has expired.";status.className="status error"}})})();`;
+function resetScript(administrator: boolean): string {
+  const endpoint = administrator ? '/v1/admin/auth/reset-password' : '/v1/auth/reset-password';
+  return String.raw`(()=>{const policyRequirements=${JSON.stringify(PASSWORD_POLICY_REQUIREMENTS)},form=document.getElementById("reset-form"),password=document.getElementById("new-password"),status=document.getElementById("status"),requirements=document.getElementById("requirements"),token=new URLSearchParams(location.search).get("token");history.replaceState(null,"",location.pathname);if(!token){status.textContent="This password-reset link is invalid or has expired.";status.className="status error";form.hidden=true;return}let policy=null;const renderPolicy=()=>{if(!policy)return;requirements.replaceChildren();const rules=[];for(const requirement of policyRequirements){const count=policy[requirement.policyKey];if(requirement.comparison==="minimum"&&count===0)continue;rules.push((requirement.comparison==="minimum"?"Use at least ":"Use no more than ")+count+" "+requirement.label)}for(const rule of rules){const item=document.createElement("li");item.textContent=rule;requirements.append(item)}};fetch("/v1/auth/config").then(response=>response.ok?response.json():null).then(config=>{policy=config?.passwordPolicy??null;renderPolicy()}).catch(()=>{});form.addEventListener("submit",async event=>{event.preventDefault();status.textContent="Setting your new password.";status.className="status pending";try{const response=await fetch(${JSON.stringify(endpoint)},{method:"POST",headers:{"content-type":"application/json"},body:JSON.stringify({token,newPassword:password.value})});if(!response.ok){const failure=await response.json().catch(()=>null);if(failure?.code==="password-policy-violation"){status.textContent="Your password does not meet the current requirements.";status.className="status error";return}throw new Error()}status.textContent="Your password was reset. You can now sign in.";status.className="status ok";form.hidden=true}catch{status.textContent="This password-reset link is invalid or has expired.";status.className="status error"}})})();`;
+}
 
 async function sourceHash(source: string): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(source));
@@ -65,19 +76,21 @@ function pageShell(title: string, content: string, script: string): string {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${title}</title><style>${PAGE_STYLE}</style></head><body><main class="auth-screen"><section class="auth-card">${content}</section></main><script>${script}</script></body></html>`;
 }
 
-function verifyEmailPage(): string {
+function verifyEmailPage(administrator: boolean): string {
+  const script = verifyScript(administrator);
   return pageShell(
     'Verify email',
     '<h1>Verify your email</h1><p class="auth-description">We are confirming your email address. This page will update automatically.</p><p id="status" class="status" role="status" aria-live="polite">Verifying your email address.</p>',
-    VERIFY_SCRIPT,
+    script,
   );
 }
 
-function resetPasswordPage(): string {
+function resetPasswordPage(administrator: boolean): string {
+  const script = resetScript(administrator);
   return pageShell(
     'Choose a new password',
     '<h1>Choose a new password</h1><p class="auth-description">Set a new password for your account.</p><form id="reset-form" class="login-form"><label for="new-password">New password<input id="new-password" name="new-password" type="password" autocomplete="new-password" required aria-describedby="requirements"></label><ul id="requirements" aria-live="polite"></ul><button type="submit">Set new password</button></form><p id="status" role="status" aria-live="polite"></p>',
-    RESET_SCRIPT,
+    script,
   );
 }
 
@@ -87,12 +100,24 @@ function resetPasswordPage(): string {
 export function createAuthActionsRouter(): Hono<{ Bindings: Env }> {
   const router = new Hono<{ Bindings: Env }>();
 
-  router.get(VERIFY_EMAIL_ACTION_PATH.replace('/auth-actions', ''), async (c) =>
-    c.html(verifyEmailPage(), 200, await securityHeaders(VERIFY_SCRIPT)),
-  );
-  router.get(RESET_PASSWORD_ACTION_PATH.replace('/auth-actions', ''), async (c) =>
-    c.html(resetPasswordPage(), 200, await securityHeaders(RESET_SCRIPT)),
-  );
+  for (const [path, administrator] of [
+    [VERIFY_EMAIL_ACTION_PATH, false],
+    [ADMIN_VERIFY_EMAIL_ACTION_PATH, true],
+  ] as const) {
+    const script = verifyScript(administrator);
+    router.get(path.replace('/auth-actions', ''), async (c) =>
+      c.html(verifyEmailPage(administrator), 200, await securityHeaders(script)),
+    );
+  }
+  for (const [path, administrator] of [
+    [RESET_PASSWORD_ACTION_PATH, false],
+    [ADMIN_RESET_PASSWORD_ACTION_PATH, true],
+  ] as const) {
+    const script = resetScript(administrator);
+    router.get(path.replace('/auth-actions', ''), async (c) =>
+      c.html(resetPasswordPage(administrator), 200, await securityHeaders(script)),
+    );
+  }
 
   return router;
 }

@@ -1,7 +1,7 @@
 // First-administrator bootstrap operator script (ticket #59, spec #8).
 //
 // Creates the first administrative User through the running Worker's public
-// HTTP boundary (`POST /v1/auth/admin/bootstrap`) after the versioned D1
+// HTTP boundary (`POST /v1/admin/auth/bootstrap`) after the versioned D1
 // migrations have been applied. That one command also requests the first
 // verification email. Credentials travel only as explicit operator inputs;
 // the repository defines no default admin password and this script stores none.
@@ -101,7 +101,7 @@ async function main(): Promise<void> {
   const target = assertSafeBootstrapTarget(config.baseUrl);
   const origin = target.origin;
 
-  const res = await fetch(`${origin}/v1/auth/admin/bootstrap`, {
+  const res = await fetch(`${origin}/v1/admin/auth/bootstrap`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ name: config.name, email: config.email, password: config.password }),

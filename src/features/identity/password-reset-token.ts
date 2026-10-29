@@ -7,13 +7,15 @@ import type { D1Database } from '@cloudflare/workers-types';
 // Reset consumption remains exclusively owned by the engine's reset endpoint.
 export async function isCurrentPasswordResetToken(input: {
   readonly db: D1Database;
+  readonly realm?: 'administrator';
   readonly token: string;
   readonly nowSeconds?: number;
 }): Promise<boolean> {
+  const table = input.realm === 'administrator' ? 'admin_verification' : 'verification';
   const row = await input.db
     .prepare(
       `SELECT "id"
-       FROM "verification"
+       FROM "${table}"
        WHERE "identifier" = ?
           AND "expires_at" > ?
        LIMIT 1`,

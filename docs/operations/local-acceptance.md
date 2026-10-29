@@ -142,7 +142,7 @@ order:
 11. `login-old-rejected` — the old password returns `401
 invalid-credentials`.
 12. `login-new` — the new password establishes a session.
-13. `admin-bootstrap` — `POST /v1/auth/admin/bootstrap` against the same
+13. `admin-bootstrap` — `POST /v1/admin/auth/bootstrap` against the same
     fresh environment returns `201` with the application-owned admin
     representation (`role: "admin"`).
 

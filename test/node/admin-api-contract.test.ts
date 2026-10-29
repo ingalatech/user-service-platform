@@ -80,6 +80,7 @@ describe('Admin HTTP adapter contract behavior', () => {
               id: 'admin-1',
               email: 'ada@example.com',
               emailVerified: true,
+              realm: 'administrator',
               role: 'admin',
               privateInternalValue: 'strip me',
             }),
@@ -93,6 +94,7 @@ describe('Admin HTTP adapter contract behavior', () => {
                   id: 'user-1',
                   email: 'grace@example.com',
                   emailVerified: false,
+                  realm: 'reader',
                   role: 'user',
                   privateInternalValue: 'strip me',
                 },
@@ -116,10 +118,19 @@ describe('Admin HTTP adapter contract behavior', () => {
       id: 'admin-1',
       email: 'ada@example.com',
       emailVerified: true,
+      realm: 'administrator',
       role: 'admin',
     });
     await expect(adminUsers({ limit: 10, offset: 0, email: ' grace ' })).resolves.toEqual({
-      items: [{ id: 'user-1', email: 'grace@example.com', emailVerified: false, role: 'user' }],
+      items: [
+        {
+          id: 'user-1',
+          email: 'grace@example.com',
+          emailVerified: false,
+          realm: 'reader',
+          role: 'user',
+        },
+      ],
       total: 1,
     });
     await expect(adminUserDetail('')).rejects.toMatchObject({ status: 400 });

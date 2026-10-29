@@ -124,6 +124,7 @@ export const CurrentUserSchema = z
     id: z.string().openapi({ example: 'abc123' }),
     email: emailField,
     emailVerified: z.boolean().openapi({ example: true }),
+    realm: z.literal('reader').openapi({ example: 'reader' }),
   })
   .openapi('CurrentUser');
 
@@ -244,6 +245,7 @@ export const AdminMeSchema = z
     id: z.string().openapi({ example: 'abc123' }),
     email: emailField,
     emailVerified: z.boolean().openapi({ example: true }),
+    realm: z.literal('administrator').openapi({ example: 'administrator' }),
     // The engine role as observed by the application-owned authorization
     // boundary (ticket #124). A plain string so future administrative roles
     // remain representable; only roles holding User listing/read access ever
@@ -264,6 +266,7 @@ export const AdminBootstrapResultSchema = z
   .object({
     id: z.string().openapi({ example: 'abc123' }),
     email: emailField,
+    realm: z.literal('administrator').openapi({ example: 'administrator' }),
     // The only role this operation ever assigns. A literal (not a free
     // string) so consumers and the generated OpenAPI contract cannot mistake
     // bootstrap for general role management.
@@ -277,10 +280,11 @@ export const AdminUserSchema = z
     id: z.string().openapi({ example: 'abc123' }),
     email: emailField,
     emailVerified: z.boolean().openapi({ example: true }),
+    realm: z.literal('reader').openapi({ example: 'reader' }),
     // The engine role as observed by the application-owned authorization
     // boundary (tickets #124/#125). A plain string so future administrative
     // roles remain representable; storage nulls never reach this contract.
-    role: z.string().openapi({ example: 'admin' }),
+    role: z.string().openapi({ example: 'user' }),
   })
   .openapi('AdminUser');
 

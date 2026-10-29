@@ -490,15 +490,16 @@ export default {
       'V2 registration invents no Account Details',
     );
     assert(!versionedLifecycle.scriptReadableSessionCookie, 'V2 session remains HttpOnly');
-    const versionedServiceCookies = await context.cookies(`${serviceBase}/`);
+    const versionedServiceCookies = await context.cookies(`${serviceBase}/v1/me`);
     const versionedSession = versionedServiceCookies.find((cookie) =>
       cookie.name.includes('session_token'),
     );
     assert(
       versionedSession?.httpOnly &&
         versionedSession.domain === 'service.rc.test' &&
+        versionedSession.path === '/v1' &&
         !versionedSession.domain.startsWith('.'),
-      'V2 login keeps the service session cookie host-only',
+      'V2 login keeps the Reader session cookie host-only and scoped to Reader endpoints',
     );
 
     phase = 'direct-browser lifecycle';
@@ -556,14 +557,15 @@ export default {
     );
 
     phase = 'service-cookie hostname isolation';
-    const serviceCookies = await context.cookies(`${serviceBase}/`);
+    const serviceCookies = await context.cookies(`${serviceBase}/v1/me`);
     const session = serviceCookies.find((cookie) => cookie.name.includes('session_token'));
     assert(session !== undefined, 'browser stores the service session cookie');
     assert(session.httpOnly, 'service session cookie is HttpOnly');
     assert(
       session.domain === 'service.rc.test' && !session.domain.startsWith('.'),
-      'service session cookie is host-only to the service hostname',
+      'Reader session cookie is host-only to the service hostname',
     );
+    assert(session.path === '/v1', 'Reader session cookie is scoped to the Reader API prefix');
     const editorialCookies = await context.cookies(`${frontendBase}/`);
     assert(
       !editorialCookies.some((cookie) => cookie.name.includes('session_token')),

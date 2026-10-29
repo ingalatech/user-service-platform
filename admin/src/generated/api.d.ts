@@ -347,6 +347,125 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/admin/auth/login": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Establish an Administrator session */
+        post: operations["loginAdministrator"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/auth/sign-out": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Invalidate the current Administrator session */
+        post: operations["signOutAdministrator"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/auth/verify-email": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Complete Administrator email verification */
+        post: operations["verifyAdministratorEmail"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/auth/request-verification": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Request Administrator email verification */
+        post: operations["requestAdministratorVerification"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/auth/request-password-reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Request Administrator password recovery */
+        post: operations["requestAdministratorPasswordReset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/auth/check-password-reset": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Check an Administrator password-reset action */
+        post: operations["checkAdministratorPasswordReset"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/auth/reset-password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Complete Administrator password reset */
+        post: operations["resetAdministratorPassword"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/admin/users": {
         parameters: {
             query?: never;
@@ -411,7 +530,7 @@ export interface paths {
         patch: operations["updateAdminUserAccountDetails"];
         trace?: never;
     };
-    "/v1/auth/admin/bootstrap": {
+    "/v1/admin/auth/bootstrap": {
         parameters: {
             query?: never;
             header?: never;
@@ -423,6 +542,26 @@ export interface paths {
         /**
          * Bootstrap the first administrator
          * @description Creates the first administrative User through the auth engine after migrations, using explicit operator-supplied credentials. Succeeds only while no administrator exists; repeats and conflicting identities fail with stable machine codes instead of duplicating privileged accounts. The bootstrapped administrator remains subject to the deployment email verification policy before signing in. Creation schedules its first verification message; delivery failure does not undo the administrator. A concurrent active bootstrap may return a retryable 409 while its lease is still held.
+         */
+        post: operations["bootstrapAdministrator"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/auth/admin/bootstrap": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Bootstrap the first administrator (deprecated path)
+         * @description Deprecated compatibility alias for POST /v1/admin/auth/bootstrap. The request, authorization, first-Administrator claim and storage all belong exclusively to the Administrator realm.
          */
         post: operations["bootstrapAdmin"];
         delete?: never;
@@ -639,6 +778,11 @@ export interface components {
             email: string;
             /** @example true */
             emailVerified: boolean;
+            /**
+             * @example reader
+             * @enum {string}
+             */
+            realm: "reader";
         };
         SignOutResult: {
             /**
@@ -732,6 +876,11 @@ export interface components {
             email: string;
             /** @example true */
             emailVerified: boolean;
+            /**
+             * @example administrator
+             * @enum {string}
+             */
+            realm: "administrator";
             /** @example admin */
             role: string;
         };
@@ -754,7 +903,12 @@ export interface components {
             email: string;
             /** @example true */
             emailVerified: boolean;
-            /** @example admin */
+            /**
+             * @example reader
+             * @enum {string}
+             */
+            realm: "reader";
+            /** @example user */
             role: string;
         };
         AdminBootstrapResult: {
@@ -765,6 +919,11 @@ export interface components {
              * @example ada@example.com
              */
             email: string;
+            /**
+             * @example administrator
+             * @enum {string}
+             */
+            realm: "administrator";
             /**
              * @example admin
              * @enum {string}
@@ -1389,6 +1548,233 @@ export interface operations {
             };
         };
     };
+    loginAdministrator: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["LoginRequest"];
+            };
+        };
+        responses: {
+            /** @description Authenticated. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LoginResult"];
+                };
+            };
+            /** @description Administrator authentication failure. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+        };
+    };
+    signOutAdministrator: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Signed out. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SignOutResult"];
+                };
+            };
+            /** @description Administrator sign-out failure. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+        };
+    };
+    verifyAdministratorEmail: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["VerifyEmailRequest"];
+            };
+        };
+        responses: {
+            /** @description Verified. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VerifyEmailResult"];
+                };
+            };
+            /** @description Verification failure. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+        };
+    };
+    requestAdministratorVerification: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["RequestVerificationRequest"];
+            };
+        };
+        responses: {
+            /** @description Accepted. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequestVerificationResult"];
+                };
+            };
+            /** @description Verification request failure. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+        };
+    };
+    requestAdministratorPasswordReset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["RequestPasswordResetRequest"];
+            };
+        };
+        responses: {
+            /** @description Accepted. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RequestPasswordResetResult"];
+                };
+            };
+            /** @description Password reset request failure. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+        };
+    };
+    checkAdministratorPasswordReset: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["CheckPasswordResetRequest"];
+            };
+        };
+        responses: {
+            /** @description Token status. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CheckPasswordResetResult"];
+                };
+            };
+            /** @description Password reset check failure. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+        };
+    };
+    resetAdministratorPassword: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["ResetPasswordRequest"];
+            };
+        };
+        responses: {
+            /** @description Password reset. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResetPasswordResult"];
+                };
+            };
+            /** @description Password reset failure. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+        };
+    };
     listAdminUsers: {
         parameters: {
             query?: {
@@ -1523,7 +1909,7 @@ export interface operations {
             };
         };
     };
-    bootstrapAdmin: {
+    bootstrapAdministrator: {
         parameters: {
             query?: never;
             header?: never;
@@ -1537,6 +1923,39 @@ export interface operations {
         };
         responses: {
             /** @description The first administrator was created and verification was requested. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminBootstrapResult"];
+                };
+            };
+            /** @description Bootstrap failure as RFC 9457 Problem Details. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+        };
+    };
+    bootstrapAdmin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["AdminBootstrapRequest"];
+            };
+        };
+        responses: {
+            /** @description The first Administrator was created and verification was requested. */
             201: {
                 headers: {
                     [name: string]: unknown;

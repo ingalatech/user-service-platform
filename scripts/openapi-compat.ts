@@ -72,6 +72,42 @@ function mediaSchema(root: unknown, operation: unknown, location: 'request' | 'r
   return null;
 }
 
+function collectSchemaReferences(root: unknown, value: unknown, output: Set<string>): void {
+  if (Array.isArray(value)) {
+    for (const entry of value) collectSchemaReferences(root, entry, output);
+    return;
+  }
+  const record = asRecord(value);
+  if (record === null) return;
+  if (typeof record.$ref === 'string') {
+    const match = /^#\/components\/schemas\/([^/]+)$/.exec(record.$ref);
+    const name = match?.[1];
+    if (name !== undefined && !output.has(name)) {
+      output.add(name);
+      collectSchemaReferences(root, resolveRef(root, record.$ref), output);
+    }
+    return;
+  }
+  for (const child of Object.values(record)) collectSchemaReferences(root, child, output);
+}
+
+function responseOnlySchemas(document: unknown): ReadonlySet<string> {
+  const requests = new Set<string>();
+  const responses = new Set<string>();
+  const paths = asRecord(asRecord(document)?.paths) ?? {};
+  for (const pathItem of Object.values(paths)) {
+    const operations = asRecord(pathItem) ?? {};
+    for (const method of HTTP_METHODS) {
+      const operation = asRecord(operations[method]);
+      if (operation === null) continue;
+      collectSchemaReferences(document, operation.requestBody, requests);
+      collectSchemaReferences(document, operation.parameters, requests);
+      collectSchemaReferences(document, operation.responses, responses);
+    }
+  }
+  return new Set([...responses].filter((name) => !requests.has(name)));
+}
+
 // Compares two schemas for breaking changes. `where` names the contract
 // location for deterministic messages. Added `required` entries, removed
 // properties and type/format changes break. Requests cannot require more
@@ -273,6 +309,7 @@ function compareParameters(
 
 export function compareOpenApiDocuments(baseline: unknown, current: unknown): CompatFinding[] {
   const findings: CompatFinding[] = [];
+  const baselineResponseOnly = responseOnlySchemas(baseline);
   const basePaths = asRecord(asRecord(baseline)?.paths) ?? {};
   const nextPaths = asRecord(asRecord(current)?.paths) ?? {};
   for (const path of Object.keys(basePaths)) {
@@ -377,6 +414,7 @@ export function compareOpenApiDocuments(baseline: unknown, current: unknown): Co
       nextSchemas[name],
       `schema ${name}`,
       findings,
+      baselineResponseOnly.has(name) ? 'response' : 'conservative',
     );
   }
   return findings;

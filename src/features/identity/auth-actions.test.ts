@@ -75,6 +75,13 @@ beforeAll(async () => {
 beforeEach(async () => {
   const db = workerEnv.DB;
   await db.batch([
+    db.prepare('DELETE FROM "admin_session"'),
+    db.prepare('DELETE FROM "admin_account"'),
+    db.prepare('DELETE FROM "admin_verification"'),
+    db.prepare('DELETE FROM "admin_email_verification_token"'),
+    db.prepare('DELETE FROM "admin_user"'),
+    db.prepare('DELETE FROM "admin_bootstrap_attempt"'),
+    db.prepare('DELETE FROM "admin_bootstrap_guard"'),
     db.prepare('DELETE FROM "session"'),
     db.prepare('DELETE FROM "account"'),
     db.prepare('DELETE FROM "verification"'),
@@ -165,6 +172,33 @@ describe('application-owned mail action URLs', () => {
 });
 
 describe('service-owned fallback browser pages', () => {
+  it('serves Administrator verification through the explicit Admin realm action route', async () => {
+    const bootstrap = await post('/v1/admin/auth/bootstrap', {
+      name: 'Action Admin',
+      email: 'action-admin@example.com',
+      password: 'Correct-horse-41',
+    });
+    expect(bootstrap.status).toBe(201);
+    await waitForVerificationMessages(1);
+    const actionUrl = new URL(mailer.sent.at(-1)?.url ?? '');
+    expect(actionUrl.pathname).toBe('/auth-actions/admin/verify-email');
+    const page = await get(actionUrl.pathname);
+    expect(page.status).toBe(200);
+    const html = await page.text();
+    expect(html).toContain('/v1/admin/auth/verify-email');
+    expect(html).not.toContain('/v1/auth/verify-email');
+    const verify = await post('/v1/admin/auth/verify-email', {
+      token: actionUrl.searchParams.get('token'),
+    });
+    expect(verify.status).toBe(200);
+    const login = await post('/v1/admin/auth/login', {
+      email: 'action-admin@example.com',
+      password: 'Correct-horse-41',
+    });
+    expect(login.status).toBe(200);
+    expect(login.headers.get('set-cookie')).toContain('rch-admin.session_token=');
+  });
+
   it('serves a verification action page that completes through POST /v1/auth/verify-email', async () => {
     const page = await get('/auth-actions/verify-email?token=placeholder');
     expect(page.status).toBe(200);
@@ -218,6 +252,64 @@ describe('service-owned fallback browser pages', () => {
       password: 'Brand-new-horse-42',
     });
     expect(loginRes.status).toBe(200);
+  });
+
+  it('completes the Administrator reset fallback only in the Administrator realm', async () => {
+    const email = 'same-realm@example.com';
+    const adminPassword = 'Admin-old-horse-41';
+    const readerPassword = 'Reader-old-horse-41';
+    const adminBootstrap = await post('/v1/admin/auth/bootstrap', {
+      name: 'Fallback Admin',
+      email,
+      password: adminPassword,
+    });
+    expect(adminBootstrap.status).toBe(201);
+    const adminVerificationToken = new URL(mailer.sent.at(-1)?.url ?? '').searchParams.get('token');
+    expect(
+      (await post('/v1/admin/auth/verify-email', { token: adminVerificationToken })).status,
+    ).toBe(200);
+
+    const readerRegistration = await post('/v1/auth/register', {
+      name: 'Fallback Reader',
+      email,
+      password: readerPassword,
+    });
+    expect(readerRegistration.status).toBe(201);
+    const readerVerificationToken = new URL(mailer.sent.at(-1)?.url ?? '').searchParams.get(
+      'token',
+    );
+    expect((await post('/v1/auth/verify-email', { token: readerVerificationToken })).status).toBe(
+      200,
+    );
+
+    mailer.clear();
+    const request = await post('/v1/admin/auth/request-password-reset', { email });
+    expect(request.status).toBe(202);
+    const message = mailer.passwordResets.at(-1);
+    expect(message).toBeDefined();
+    const actionUrl = new URL(message?.url ?? '');
+    expect(actionUrl.pathname).toBe('/auth-actions/admin/reset-password');
+    expect(await (await get(actionUrl.pathname)).text()).toContain('/v1/admin/auth/reset-password');
+    const adminToken = message?.token;
+    expect(adminToken).toBeDefined();
+    expect(
+      await (await post('/v1/auth/check-password-reset', { token: adminToken })).json(),
+    ).toEqual({
+      valid: false,
+    });
+
+    const reset = await post('/v1/admin/auth/reset-password', {
+      token: adminToken,
+      newPassword: 'Admin-new-horse-42',
+    });
+    expect(reset.status).toBe(200);
+    expect(
+      (await post('/v1/admin/auth/login', { email, password: adminPassword })).status,
+    ).not.toBe(200);
+    expect(
+      (await post('/v1/admin/auth/login', { email, password: 'Admin-new-horse-42' })).status,
+    ).toBe(200);
+    expect((await post('/v1/auth/login', { email, password: readerPassword })).status).toBe(200);
   });
 
   it('sends restrictive security headers and generic states without engine internals', async () => {

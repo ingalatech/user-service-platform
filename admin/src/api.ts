@@ -80,7 +80,7 @@ async function request(
 export async function login(params: unknown): Promise<void> {
   const input = LoginRequestSchema.safeParse(params);
   if (!input.success) throw new ApiError(400);
-  await request('/v1/auth/login', input.data);
+  await request('/v1/admin/auth/login', input.data);
 }
 
 export async function adminIdentity(): Promise<AdminMe> {
@@ -90,7 +90,7 @@ export async function adminIdentity(): Promise<AdminMe> {
 }
 
 export async function signOut(): Promise<void> {
-  await request('/v1/auth/sign-out', {});
+  await request('/v1/admin/auth/sign-out', {});
 }
 
 export async function adminUsers(

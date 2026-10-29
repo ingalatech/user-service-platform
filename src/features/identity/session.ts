@@ -10,6 +10,15 @@ export interface AuthenticatedUser {
   readonly id: string;
   readonly email: string;
   readonly emailVerified: boolean;
+  readonly realm: 'reader';
+}
+
+export interface AuthenticatedAdministrator {
+  readonly id: string;
+  readonly email: string;
+  readonly emailVerified: boolean;
+  readonly role: 'admin';
+  readonly realm: 'administrator';
 }
 
 // Stable application-facing session data available to authenticated feature
@@ -17,6 +26,10 @@ export interface AuthenticatedUser {
 // storage rows) stay inside the identity slice.
 export interface SessionContext {
   readonly user: AuthenticatedUser;
+}
+
+export interface AdministratorSessionContext {
+  readonly administrator: AuthenticatedAdministrator;
 }
 
 export interface ResolveSessionInput {
@@ -62,7 +75,8 @@ export function toAuthenticatedUser(payload: unknown): AuthenticatedUser | null 
   ) {
     return null;
   }
-  return { id: user.id, email: user.email, emailVerified: user.emailVerified };
+  if (user.role === 'admin') return null;
+  return { id: user.id, email: user.email, emailVerified: user.emailVerified, realm: 'reader' };
 }
 
 export function toSessionContext(payload: unknown): SessionContext | null {
@@ -71,4 +85,28 @@ export function toSessionContext(payload: unknown): SessionContext | null {
     return null;
   }
   return { user };
+}
+
+export function toAdministratorSessionContext(
+  payload: unknown,
+): AdministratorSessionContext | null {
+  const user = asRecord(asRecord(payload)?.user);
+  if (
+    user === null ||
+    typeof user.id !== 'string' ||
+    typeof user.email !== 'string' ||
+    typeof user.emailVerified !== 'boolean' ||
+    user.role !== 'admin'
+  ) {
+    return null;
+  }
+  return {
+    administrator: {
+      id: user.id,
+      email: user.email,
+      emailVerified: user.emailVerified,
+      role: 'admin',
+      realm: 'administrator',
+    },
+  };
 }

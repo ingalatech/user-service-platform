@@ -125,6 +125,79 @@ describe('OpenAPI compatibility gate', () => {
     expect(findings).toEqual([]);
   });
 
+  it('permits a required additive discriminator on response-only identity contracts', () => {
+    const baseline = {
+      paths: {
+        '/v1/me': {
+          get: {
+            responses: {
+              200: {
+                content: {
+                  'application/json': { schema: { $ref: '#/components/schemas/CurrentUser' } },
+                },
+              },
+            },
+          },
+        },
+      },
+      components: {
+        schemas: {
+          CurrentUser: {
+            type: 'object',
+            required: ['id'],
+            properties: { id: { type: 'string' } },
+          },
+        },
+      },
+    };
+    const current = clone(baseline);
+    const schema = current.components.schemas.CurrentUser as {
+      required: string[];
+      properties: Record<string, unknown>;
+    };
+    schema.required.push('realm');
+    schema.properties.realm = { type: 'string', enum: ['reader'] };
+    expect(
+      compareOpenApiDocuments(baseline, current).filter((finding) => finding.breaking),
+    ).toEqual([]);
+  });
+
+  it('still rejects a newly required field when its schema is used as request input', () => {
+    const baseline = {
+      paths: {
+        '/v1/register': {
+          post: {
+            requestBody: {
+              content: {
+                'application/json': { schema: { $ref: '#/components/schemas/RegisterRequest' } },
+              },
+            },
+            responses: { 200: { description: 'ok' } },
+          },
+        },
+      },
+      components: {
+        schemas: {
+          RegisterRequest: {
+            type: 'object',
+            required: ['email'],
+            properties: { email: { type: 'string' } },
+          },
+        },
+      },
+    };
+    const current = clone(baseline);
+    const schema = current.components.schemas.RegisterRequest as {
+      required: string[];
+      properties: Record<string, unknown>;
+    };
+    schema.required.push('realm');
+    schema.properties.realm = { type: 'string' };
+    expect(compareOpenApiDocuments(baseline, current).some((finding) => finding.breaking)).toBe(
+      true,
+    );
+  });
+
   it('detects a removed operation as breaking', async () => {
     const baseline = (await readJson('openapi/openapi.json')) as Record<string, unknown>;
     const current = clone(baseline);

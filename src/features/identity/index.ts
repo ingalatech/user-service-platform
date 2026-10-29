@@ -69,7 +69,13 @@ export type { BootstrapAdminInput, BootstrapAdminOutcome } from './admin.js';
 export { bootstrapAdminUser } from './admin.js';
 export type { GetAdminUserInput, ListAdminUsersInput } from './admin-users.js';
 export { getAdminUserById, listAdminUsers } from './admin-users.js';
-export type { AuthenticatedUser, SessionContext, SessionResolvePhase } from './session.js';
+export type {
+  AdministratorSessionContext,
+  AuthenticatedAdministrator,
+  AuthenticatedUser,
+  SessionContext,
+  SessionResolvePhase,
+} from './session.js';
 export type { ResolveSessionInput } from './session.js';
 export { toAuthenticatedUser, toSessionContext } from './session.js';
 export { resolveSessionContext } from './identity-runtime.js';

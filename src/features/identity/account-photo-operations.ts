@@ -293,16 +293,20 @@ async function accountSession(
   headers: Headers,
 ): Promise<PhotoSession | null> {
   try {
-    const result = await runtime.administration().api.getSession({
+    const identity = await runtime.resolveSessionContext(headers);
+    if (identity === null) return null;
+    const result = await runtime.authentication().api.getSession({
       headers,
       query: { disableCookieCache: true },
     });
     return result === null
       ? null
-      : {
-          userId: result.user.id,
-          image: typeof result.user.image === 'string' ? result.user.image : null,
-        };
+      : result.user.id !== identity.user.id
+        ? null
+        : {
+            userId: result.user.id,
+            image: typeof result.user.image === 'string' ? result.user.image : null,
+          };
   } catch {
     return null;
   }

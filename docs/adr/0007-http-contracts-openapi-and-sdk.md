@@ -31,7 +31,7 @@ HTTP error responses use an RFC 9457-compatible Problem Details representation (
 
 ## Compatibility policy
 
-Changes within `/v1` must be backward compatible by default. Additive endpoints, optional fields and optional parameters may remain in `/v1` when existing clients continue to behave correctly.
+Changes within `/v1` must be backward compatible by default. Additive endpoints, optional fields and optional parameters may remain in `/v1` when existing clients continue to behave correctly. A required additive property on a schema used only as a response may also remain in `/v1`: existing consumers can ignore the new output property, while generated consumers learn the stronger response contract. The compatibility checker derives this response-only use from operations; a schema shared with request input retains the conservative rule that newly required fields break compatibility.
 
 Removing/renaming contract members, changing their type or meaning, making optional input mandatory, or materially changing existing operation semantics is breaking and requires an explicit versioned transition, normally `/v2`, with migration/deprecation planning.
 

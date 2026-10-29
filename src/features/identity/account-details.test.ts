@@ -96,12 +96,12 @@ describe('Account Details HTTP boundary', () => {
     });
     const legacyMe = await request('/v1/me', { cookie });
     const legacyUser = (await legacyMe.json()) as Record<string, unknown>;
-    expect(Object.keys(legacyUser).sort()).toEqual(['email', 'emailVerified', 'id']);
+    expect(Object.keys(legacyUser).sort()).toEqual(['email', 'emailVerified', 'id', 'realm']);
+    expect(legacyUser.realm).toBe('reader');
     expect(typeof legacyUser.id).toBe('string');
     expect(legacyUser.email).toBe('details@example.com');
     expect(legacyUser.emailVerified).toBe(true);
     const updateStartedAtSeconds = Math.floor(Date.now() / 1000);
-
     const updated = await request('/v1/account-details', {
       method: 'PATCH',
       cookie,
@@ -167,6 +167,7 @@ describe('Account Details HTTP boundary', () => {
       id: legacyUser.id,
       email: 'details@example.com',
       emailVerified: true,
+      realm: 'reader',
     });
     expect((await request('/v1/admin/me', { cookie })).status).toBe(403);
     const engineRouter = await request('/api/auth/update-user', {

@@ -542,8 +542,8 @@ export const updateAdminUserAccountDetailsRoute = createRoute({
 
 export const adminBootstrapRoute = createRoute({
   method: 'post',
-  path: '/auth/admin/bootstrap',
-  operationId: 'bootstrapAdmin',
+  path: '/admin/auth/bootstrap',
+  operationId: 'bootstrapAdministrator',
   summary: 'Bootstrap the first administrator',
   description:
     'Creates the first administrative User through the auth engine after ' +
@@ -565,5 +565,146 @@ export const adminBootstrapRoute = createRoute({
       description: 'The first administrator was created and verification was requested.',
     },
     ...problemResponses('Bootstrap failure as RFC 9457 Problem Details.'),
+  },
+});
+
+// Deprecated compatibility alias retained for existing bootstrap clients. It
+// is explicitly Admin-scoped by its path and uses only the Admin realm; new
+// tools use /v1/admin/auth/bootstrap.
+export const adminBootstrapLegacyRoute = createRoute({
+  method: 'post',
+  path: '/auth/admin/bootstrap',
+  operationId: 'bootstrapAdmin',
+  summary: 'Bootstrap the first administrator (deprecated path)',
+  description:
+    'Deprecated compatibility alias for POST /v1/admin/auth/bootstrap. The request, authorization, ' +
+    'first-Administrator claim and storage all belong exclusively to the Administrator realm.',
+  tags: ['admin'],
+  request: {
+    body: { content: { 'application/json': { schema: AdminBootstrapRequestSchema } } },
+  },
+  responses: {
+    201: {
+      content: { 'application/json': { schema: AdminBootstrapResultSchema } },
+      description: 'The first Administrator was created and verification was requested.',
+    },
+    ...problemResponses('Bootstrap failure as RFC 9457 Problem Details.'),
+  },
+});
+
+export const adminLoginRoute = createRoute({
+  method: 'post',
+  path: '/admin/auth/login',
+  operationId: 'loginAdministrator',
+  summary: 'Establish an Administrator session',
+  tags: ['admin'],
+  request: { body: { content: { 'application/json': { schema: LoginRequestSchema } } } },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: LoginResultSchema } },
+      description: 'Authenticated.',
+    },
+    ...problemResponses('Administrator authentication failure.'),
+  },
+});
+
+export const adminSignOutRoute = createRoute({
+  method: 'post',
+  path: '/admin/auth/sign-out',
+  operationId: 'signOutAdministrator',
+  summary: 'Invalidate the current Administrator session',
+  tags: ['admin'],
+  responses: {
+    200: {
+      content: { 'application/json': { schema: SignOutResultSchema } },
+      description: 'Signed out.',
+    },
+    ...problemResponses('Administrator sign-out failure.'),
+  },
+});
+
+export const adminVerifyEmailRoute = createRoute({
+  method: 'post',
+  path: '/admin/auth/verify-email',
+  operationId: 'verifyAdministratorEmail',
+  summary: 'Complete Administrator email verification',
+  tags: ['admin'],
+  request: { body: { content: { 'application/json': { schema: VerifyEmailRequestSchema } } } },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: VerifyEmailResultSchema } },
+      description: 'Verified.',
+    },
+    ...problemResponses('Verification failure.'),
+  },
+});
+
+export const adminRequestVerificationRoute = createRoute({
+  method: 'post',
+  path: '/admin/auth/request-verification',
+  operationId: 'requestAdministratorVerification',
+  summary: 'Request Administrator email verification',
+  tags: ['admin'],
+  request: {
+    body: { content: { 'application/json': { schema: RequestVerificationRequestSchema } } },
+  },
+  responses: {
+    202: {
+      content: { 'application/json': { schema: RequestVerificationResultSchema } },
+      description: 'Accepted.',
+    },
+    ...problemResponses('Verification request failure.'),
+  },
+});
+
+export const adminRequestPasswordResetRoute = createRoute({
+  method: 'post',
+  path: '/admin/auth/request-password-reset',
+  operationId: 'requestAdministratorPasswordReset',
+  summary: 'Request Administrator password recovery',
+  tags: ['admin'],
+  request: {
+    body: { content: { 'application/json': { schema: RequestPasswordResetRequestSchema } } },
+  },
+  responses: {
+    202: {
+      content: { 'application/json': { schema: RequestPasswordResetResultSchema } },
+      description: 'Accepted.',
+    },
+    ...problemResponses('Password reset request failure.'),
+  },
+});
+
+export const adminCheckPasswordResetRoute = createRoute({
+  method: 'post',
+  path: '/admin/auth/check-password-reset',
+  operationId: 'checkAdministratorPasswordReset',
+  summary: 'Check an Administrator password-reset action',
+  tags: ['admin'],
+  request: {
+    body: { content: { 'application/json': { schema: CheckPasswordResetRequestSchema } } },
+  },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: CheckPasswordResetResultSchema } },
+      description: 'Token status.',
+    },
+    ...problemResponses('Password reset check failure.'),
+  },
+});
+
+export const adminResetPasswordRoute = createRoute({
+  method: 'post',
+  path: '/admin/auth/reset-password',
+  operationId: 'resetAdministratorPassword',
+  summary: 'Complete Administrator password reset',
+  tags: ['admin'],
+  request: { body: { content: { 'application/json': { schema: ResetPasswordRequestSchema } } } },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: ResetPasswordResultSchema } },
+      description: 'Password reset.',
+    },
+    ...problemResponses('Password reset failure.'),
   },
 });

@@ -74,6 +74,13 @@ beforeAll(async () => {
 beforeEach(async () => {
   const db = workerEnv.DB;
   await db.batch([
+    db.prepare('DELETE FROM "admin_session"'),
+    db.prepare('DELETE FROM "admin_account"'),
+    db.prepare('DELETE FROM "admin_verification"'),
+    db.prepare('DELETE FROM "admin_email_verification_token"'),
+    db.prepare('DELETE FROM "admin_user"'),
+    db.prepare('DELETE FROM "admin_bootstrap_attempt"'),
+    db.prepare('DELETE FROM "admin_bootstrap_guard"'),
     db.prepare('DELETE FROM "session"'),
     db.prepare('DELETE FROM "account"'),
     db.prepare('DELETE FROM "verification"'),
@@ -169,10 +176,16 @@ describe('sandbox-like anonymous session reads (ticket #93)', () => {
       sandboxLikeEnv(),
     );
     expect(meRes.status).toBe(200);
-    const me = (await meRes.json()) as { id: string; email: string; emailVerified: boolean };
+    const me = (await meRes.json()) as {
+      id: string;
+      email: string;
+      emailVerified: boolean;
+      realm: string;
+    };
     expect(typeof me.id).toBe('string');
     expect(me.email).toBe('sandbox-probe@example.com');
     expect(me.emailVerified).toBe(true);
+    expect(me.realm).toBe('reader');
   });
 
   it('keeps session-backed administration and Reader State independent from mail configuration', async () => {
@@ -184,7 +197,7 @@ describe('sandbox-like anonymous session reads (ticket #93)', () => {
       AUTH_READER_STATE_TTL_SECONDS: '900',
     });
     const bootstrap = await setupApp.request(
-      '/v1/auth/admin/bootstrap',
+      '/v1/admin/auth/bootstrap',
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -202,7 +215,7 @@ describe('sandbox-like anonymous session reads (ticket #93)', () => {
     const verificationToken = new URL(mailer.sent[0]?.url ?? '').searchParams.get('token');
     expect(verificationToken).not.toBeNull();
     const verify = await setupApp.request(
-      '/v1/auth/verify-email',
+      '/v1/admin/auth/verify-email',
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -212,7 +225,7 @@ describe('sandbox-like anonymous session reads (ticket #93)', () => {
     );
     expect(verify.status).toBe(200);
     const login = await setupApp.request(
-      '/v1/auth/login',
+      '/v1/admin/auth/login',
       {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
@@ -234,10 +247,10 @@ describe('sandbox-like anonymous session reads (ticket #93)', () => {
         { method: 'GET', headers: { cookie: cookie ?? '' } },
         environment,
       );
-    expect((await request('/v1/me')).status).toBe(200);
+    expect((await request('/v1/me')).status).toBe(401);
     expect((await request('/v1/admin/me')).status).toBe(200);
     expect((await request('/v1/admin/users')).status).toBe(200);
-    expect((await request(`/v1/admin/users/${administrator.id}`)).status).toBe(200);
+    expect((await request(`/v1/admin/users/${administrator.id}`)).status).toBe(404);
 
     const readerState = await noMailRuntime.request(
       '/v1/auth/reader-state',
@@ -248,10 +261,8 @@ describe('sandbox-like anonymous session reads (ticket #93)', () => {
       },
       environment,
     );
-    expect(readerState.status).toBe(200);
+    expect(readerState.status).toBe(401);
     expect(readerState.headers.get('cache-control')).toBe('private, no-store');
-    const readerStateBody = (await readerState.json()) as { readerState: string };
-    expect(typeof readerStateBody.readerState).toBe('string');
   });
 
   it('keeps transactional-mail routes fail-closed without SMTP credentials', async () => {

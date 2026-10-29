@@ -167,7 +167,7 @@ export async function runAdminBrowserTest(): Promise<void> {
     const regular = 'qa-user@example.com';
     const unverified = 'qa-unverified@example.com';
     for (const [path, name, email] of [
-      ['/v1/auth/admin/bootstrap', 'QA Administrator', admin],
+      ['/v1/admin/auth/bootstrap', 'QA Administrator', admin],
       ['/v1/auth/register', 'QA User', regular],
       ['/v1/auth/register', 'QA Unverified', unverified],
     ]) {
@@ -180,7 +180,8 @@ export async function runAdminBrowserTest(): Promise<void> {
       await response.arrayBuffer();
     }
     // Actual verify-email transitions are covered by Workers-runtime tests.
-    await sql(`UPDATE "user" SET email_verified = 1 WHERE email IN ('${admin}', '${regular}')`);
+    await sql(`UPDATE "admin_user" SET email_verified = 1 WHERE email = '${admin}'`);
+    await sql(`UPDATE "user" SET email_verified = 1 WHERE email = '${regular}'`);
     phase = 'assets';
     for (const path of ['/admin', '/admin/', '/admin/login', '/admin/denegado']) {
       const response = await http(path);
@@ -266,7 +267,10 @@ export async function runAdminBrowserTest(): Promise<void> {
     await visible(page, 'Sesión de administración');
     const cookies = await context.cookies();
     const token = cookies.find((cookie) => cookie.name.endsWith('session_token'));
-    assert(token?.httpOnly, 'browser stores HttpOnly session');
+    assert(
+      token?.httpOnly && token.path === '/v1/admin',
+      'Admin cookie is HttpOnly and path-scoped',
+    );
     const credentials = JSON.stringify({ password, token: token.value });
     assert(
       await page.evaluate<boolean>(`(() => {
@@ -278,8 +282,7 @@ export async function runAdminBrowserTest(): Promise<void> {
     );
     const cookieHeader = cookies.map(({ name, value }) => `${name}=${value}`).join('; ');
     for (const [path, fields] of [
-      ['/v1/me', ['email', 'emailVerified', 'id']],
-      ['/v1/admin/me', ['email', 'emailVerified', 'id', 'role']],
+      ['/v1/admin/me', ['email', 'emailVerified', 'id', 'realm', 'role']],
     ] as const) {
       const response = await http(path, { headers: { cookie: cookieHeader } });
       assert(response.status === 200, 'authenticated HTTP identity');
@@ -291,6 +294,9 @@ export async function runAdminBrowserTest(): Promise<void> {
         'exact application-owned identity fields',
       );
     }
+    const readerMe = await http('/v1/me', { headers: { cookie: cookieHeader } });
+    assert(readerMe.status === 401, 'Administrator cookie is not a Reader session');
+    await readerMe.arrayBuffer();
     phase = 'user list, search and pagination';
     for (let i = 0; i < 12; i++) {
       const email = `qa-list-${String(i).padStart(2, '0')}@example.com`;
@@ -305,10 +311,13 @@ export async function runAdminBrowserTest(): Promise<void> {
     await page.goto(`${base}/admin/users`);
     await visible(page, 'Usuarios');
     const table = page.getByRole('table');
-    await page.getByText('15 usuarios en total', { exact: true }).waitFor();
+    await page.getByText('14 usuarios en total', { exact: true }).waitFor();
     await page.getByText('Página 1 de 2', { exact: true }).waitFor();
-    await table.getByText(admin, { exact: true }).waitFor();
-    await table.getByText('Correo verificado', { exact: true }).first().waitFor();
+    assert(
+      (await table.getByText(admin, { exact: true }).count()) === 0,
+      'Admin identity is not a Reader row',
+    );
+    await table.getByText('Correo sin verificar', { exact: true }).first().waitFor();
     const listHeaders = (await table.getByRole('columnheader').allTextContents()).join(' ');
     assert(
       !/fecha de nacimiento|teléfono|referencia de imagen/i.test(listHeaders),
@@ -323,12 +332,13 @@ export async function runAdminBrowserTest(): Promise<void> {
     await page.getByText('1 usuario en total', { exact: true }).waitFor();
     await page.getByText('Página 1 de 1', { exact: true }).waitFor();
     await table.getByText(regular, { exact: true }).waitFor();
+    await table.getByText('Correo verificado', { exact: true }).waitFor();
     assert((await table.getByText(admin, { exact: true }).count()) === 0, 'search replaces rows');
     await searchBox.fill('no-such-user@example.com');
     await page.getByRole('button', { name: 'Buscar', exact: true }).click();
     await visible(page, 'Sin resultados');
     await page.getByRole('button', { name: 'Limpiar búsqueda', exact: true }).click();
-    await page.getByText('15 usuarios en total', { exact: true }).waitFor();
+    await page.getByText('14 usuarios en total', { exact: true }).waitFor();
     await page.getByText('Página 1 de 2', { exact: true }).waitFor();
     await page.getByRole('button', { name: 'Siguiente', exact: true }).click();
     await page.getByText('Página 2 de 2', { exact: true }).waitFor();
@@ -344,7 +354,10 @@ export async function runAdminBrowserTest(): Promise<void> {
     await table.getByText(regular, { exact: true }).waitFor();
     await page.getByRole('button', { name: 'Limpiar búsqueda', exact: true }).click();
     await page.getByText('Página 1 de 2', { exact: true }).waitFor();
-    await table.getByText(admin, { exact: true }).waitFor();
+    assert(
+      (await table.getByText(admin, { exact: true }).count()) === 0,
+      'Admin identity stays outside Reader listing',
+    );
     phase = 'user detail, reload, back and direct navigation';
     const detailLookup = await http(`/v1/admin/users?email=${encodeURIComponent(regular)}`, {
       headers: { cookie: cookieHeader },
@@ -446,9 +459,9 @@ export async function runAdminBrowserTest(): Promise<void> {
     await visible(page, 'Usuario no encontrado');
     await page.getByRole('link', { name: 'Volver a la lista', exact: true }).click();
     await visible(page, 'Usuarios');
-    await page.getByText('15 usuarios en total', { exact: true }).waitFor();
+    await page.getByText('14 usuarios en total', { exact: true }).waitFor();
     phase = 'retryable User list failure';
-    await sql('ALTER TABLE "session" RENAME TO "session_qa_list_unavailable"');
+    await sql('ALTER TABLE "admin_session" RENAME TO "admin_session_qa_list_unavailable"');
     try {
       await page.getByRole('button', { name: 'Siguiente', exact: true }).click();
       await page
@@ -457,18 +470,21 @@ export async function runAdminBrowserTest(): Promise<void> {
         .waitFor();
       assert((await page.getByRole('table').count()) === 0, 'list error hides previous page');
     } finally {
-      await sql('ALTER TABLE "session_qa_list_unavailable" RENAME TO "session"');
+      await sql('ALTER TABLE "admin_session_qa_list_unavailable" RENAME TO "admin_session"');
     }
     await page.getByRole('button', { name: 'Reintentar', exact: true }).click();
     await page.getByText('Página 2 de 2', { exact: true }).waitFor();
     await table.getByText('qa-list-11@example.com', { exact: true }).waitFor();
     await page.getByRole('button', { name: 'Anterior', exact: true }).click();
     await page.getByText('Página 1 de 2', { exact: true }).waitFor();
-    await table.getByText(admin, { exact: true }).waitFor();
+    assert(
+      (await table.getByText(admin, { exact: true }).count()) === 0,
+      'Admin identity is not listed as a Reader',
+    );
     await page.goto(`${base}/admin/`);
     await visible(page, 'Sesión de administración');
     phase = 'retryable service failure';
-    await sql('ALTER TABLE "session" RENAME TO "session_qa_unavailable"');
+    await sql('ALTER TABLE "admin_session" RENAME TO "admin_session_qa_unavailable"');
     try {
       await page.reload();
       await visible(page, 'El servicio no está disponible');
@@ -479,7 +495,7 @@ export async function runAdminBrowserTest(): Promise<void> {
         'server failure preserves cookie',
       );
     } finally {
-      await sql('ALTER TABLE "session_qa_unavailable" RENAME TO "session"');
+      await sql('ALTER TABLE "admin_session_qa_unavailable" RENAME TO "admin_session"');
     }
     await page.getByRole('button', { name: 'Reintentar', exact: true }).click();
     await visible(page, 'Sesión de administración');
@@ -494,7 +510,12 @@ export async function runAdminBrowserTest(): Promise<void> {
     await page.goto(`${base}/admin/`);
     await visible(page, 'Administración');
     phase = 'regular User login and denial';
-    await signIn(page, regular, password);
+    const readerLogin = await context.request.post(`${base}/v1/auth/login`, {
+      data: { email: regular, password },
+    });
+    assert(readerLogin.status() === 200, 'Reader credentials establish only a Reader session');
+    await readerLogin.body();
+    await page.goto(`${base}/admin/`);
     await visible(page, 'Acceso denegado');
     await page.reload();
     await visible(page, 'Acceso denegado');
@@ -521,17 +542,22 @@ export async function runAdminBrowserTest(): Promise<void> {
     const deniedList = await context.request.get(`${base}/v1/admin/users`);
     assert(deniedList.status() === 403, 'user list stays protected for regular Users');
     await deniedList.body();
-    await page.getByRole('button', { name: 'Cerrar sesión', exact: true }).click();
+    const readerLogout = await context.request.post(`${base}/v1/auth/sign-out`, { data: {} });
+    assert(readerLogout.status() === 200, 'Reader logout targets Reader session only');
+    await readerLogout.body();
     await visible(page, 'Administración');
     await page.goto(`${base}/admin/users/${encodeURIComponent(regularDetailId)}`);
     await visible(page, 'Administración');
     phase = 'unverified login';
-    await signIn(page, unverified, password);
-    await page.getByRole('alert').filter({ hasText: 'Verifica tu correo electrónico' }).waitFor();
+    const unverifiedLogin = await context.request.post(`${base}/v1/auth/login`, {
+      data: { email: unverified, password },
+    });
+    assert(unverifiedLogin.status() === 403, 'unverified Reader remains blocked by Reader policy');
+    await unverifiedLogin.body();
     phase = 'expired session';
     await signIn(page, admin, password);
     await visible(page, 'Sesión de administración');
-    await sql('UPDATE "session" SET expires_at = 0');
+    await sql('UPDATE "admin_session" SET expires_at = 0');
     await page.reload();
     await visible(page, 'Administración');
     const expired = await context.request.get(`${base}/v1/admin/me`);
@@ -542,7 +568,7 @@ export async function runAdminBrowserTest(): Promise<void> {
     let identityReads = 0;
     await page.route('**/v1/admin/me', async (route) => {
       identityReads++;
-      if (identityReads === 2) await sql('UPDATE "session" SET expires_at = 0');
+      if (identityReads === 2) await sql('UPDATE "admin_session" SET expires_at = 0');
       await route.continue();
     });
     // Delay only a real request to mutate isolated D1 between the two reads;
@@ -567,10 +593,7 @@ export async function runAdminBrowserTest(): Promise<void> {
       await page.evaluate<boolean>('document.documentElement.scrollWidth <= window.innerWidth'),
       'narrow user list fits viewport',
     );
-    await page
-      .getByRole('link', { name: `Ver detalle de ${admin}`, exact: true })
-      .first()
-      .click();
+    await page.goto(`${base}/admin/users/${encodeURIComponent(regularDetailId)}`);
     await visible(page, 'Detalle de usuario');
     assert(
       await page.evaluate<boolean>('document.documentElement.scrollWidth <= window.innerWidth'),

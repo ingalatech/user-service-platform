@@ -1,9 +1,9 @@
 import type { D1Database } from '@cloudflare/workers-types';
-import { asc, count, eq, sql } from 'drizzle-orm';
+import { and, asc, count, eq, isNull, or, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/d1';
-import type { createIdentityAuth } from './auth.js';
+import type { createAdministrationAuth } from './auth.js';
 import type { AdminMe, AdminUser, AdminUserList } from './contract.js';
-import { identitySchema, user } from './schema.js';
+import { adminIdentitySchema, identitySchema, user } from './schema.js';
 
 // Application-owned protected User listing (ticket #125, spec #123). This
 // module owns the read query inside Identity's infrastructure boundary: it
@@ -40,8 +40,7 @@ function toAdminUser(row: {
     id: row.id,
     email: row.email,
     emailVerified: row.emailVerified,
-    // The plugin supplies the application default for rows predating the
-    // role capability; storage nulls never reach the public contract.
+    realm: 'reader',
     role: row.role ?? 'user',
   };
 }
@@ -54,7 +53,7 @@ export interface GetAdminUserInput {
 }
 
 export interface AdminUserReaderInput {
-  readonly auth: ReturnType<typeof createIdentityAuth>;
+  readonly auth: ReturnType<typeof createAdministrationAuth>;
   readonly db: D1Database;
   readonly userId: string;
   readonly headers: Headers;
@@ -85,11 +84,16 @@ async function authorizedAdministrator(input: AdminUserReaderInput): Promise<Adm
   });
   if (asRecord(outcome)?.success !== true) return null;
 
-  const database = drizzle(input.db, { schema: identitySchema });
+  const database = drizzle(input.db, { schema: adminIdentitySchema });
   const rows = await database
-    .select({ id: user.id, email: user.email, emailVerified: user.emailVerified, role: user.role })
-    .from(user)
-    .where(eq(user.id, input.userId))
+    .select({
+      id: adminIdentitySchema.user.id,
+      email: adminIdentitySchema.user.email,
+      emailVerified: adminIdentitySchema.user.emailVerified,
+      role: adminIdentitySchema.user.role,
+    })
+    .from(adminIdentitySchema.user)
+    .where(eq(adminIdentitySchema.user.id, input.userId))
     .limit(1);
   const row = rows[0];
   if (row === undefined) return null;
@@ -97,9 +101,8 @@ async function authorizedAdministrator(input: AdminUserReaderInput): Promise<Adm
     id: row.id,
     email: row.email,
     emailVerified: row.emailVerified,
-    // The plugin supplies the application default for rows predating the
-    // role capability; storage nulls never reach the public contract.
-    role: row.role ?? 'user',
+    realm: 'administrator',
+    role: 'admin',
   };
 }
 
@@ -144,7 +147,7 @@ export async function getAdminUserById(input: GetAdminUserInput): Promise<AdminU
       role: user.role,
     })
     .from(user)
-    .where(eq(user.id, input.userId))
+    .where(and(eq(user.id, input.userId), or(isNull(user.role), sql`${user.role} <> 'admin'`)))
     .limit(1);
   const row = rows[0];
   if (row === undefined) {
@@ -170,10 +173,14 @@ export async function listAdminUsers(input: ListAdminUsersInput): Promise<AdminU
       database
         .select(selection)
         .from(user)
+        .where(or(isNull(user.role), sql`${user.role} <> 'admin'`))
         .orderBy(asc(user.email))
         .limit(input.limit)
         .offset(input.offset),
-      database.select({ total: count() }).from(user),
+      database
+        .select({ total: count() })
+        .from(user)
+        .where(or(isNull(user.role), sql`${user.role} <> 'admin'`)),
     ]);
     return { items: rows.map(toAdminUser), total: totals[0]?.total ?? 0 };
   }
@@ -184,11 +191,14 @@ export async function listAdminUsers(input: ListAdminUsersInput): Promise<AdminU
     database
       .select(selection)
       .from(user)
-      .where(matches)
+      .where(and(matches, or(isNull(user.role), sql`${user.role} <> 'admin'`)))
       .orderBy(asc(user.email))
       .limit(input.limit)
       .offset(input.offset),
-    database.select({ total: count() }).from(user).where(matches),
+    database
+      .select({ total: count() })
+      .from(user)
+      .where(and(matches, or(isNull(user.role), sql`${user.role} <> 'admin'`))),
   ]);
   return { items: rows.map(toAdminUser), total: totals[0]?.total ?? 0 };
 }

@@ -2,9 +2,9 @@ import type { D1Database } from '@cloudflare/workers-types';
 import { parseSetCookieHeader, stripSecureCookiePrefix } from 'better-auth/cookies';
 import { drizzle } from 'drizzle-orm/d1';
 import { eq } from 'drizzle-orm';
-import type { createBootstrapIdentityAuth, createIdentityAuth } from './auth.js';
+import type { createAdministrationAuth, createBootstrapIdentityAuth } from './auth.js';
 import type { AdminBootstrapResult } from './contract.js';
-import { identitySchema, user } from './schema.js';
+import { adminIdentitySchema, adminUser } from './schema.js';
 
 // Explicit first-administrator bootstrap (ticket #59, spec #8). Better Auth
 // creates an ordinary provisional User; an owner-fenced application claim is
@@ -19,7 +19,7 @@ import { identitySchema, user } from './schema.js';
 export interface BootstrapAdminInput {
   // Request-scoped Better Auth instance from the identity infrastructure
   // boundary (already carries the Admin plugin, policy, mailer and secret).
-  readonly auth: ReturnType<typeof createIdentityAuth>;
+  readonly auth: ReturnType<typeof createAdministrationAuth>;
   // Private, unmounted Better Auth context whose Admin capability is scoped to
   // the provisional identity currently being promoted or cleaned up.
   readonly createBootstrapAuth: (userId: string) => ReturnType<typeof createBootstrapIdentityAuth>;
@@ -120,15 +120,15 @@ function toBootstrappedAdmin(payload: unknown): AdminBootstrapResult | null {
   ) {
     return null;
   }
-  return { id, email, role: 'admin', emailVerified };
+  return { id, email, realm: 'administrator', role: 'admin', emailVerified };
 }
 
 async function hasBootstrappedAdmin(db: D1Database): Promise<boolean> {
-  const database = drizzle(db, { schema: identitySchema });
+  const database = drizzle(db, { schema: adminIdentitySchema });
   const rows = await database
-    .select({ id: user.id })
-    .from(user)
-    .where(eq(user.role, 'admin'))
+    .select({ id: adminUser.id })
+    .from(adminUser)
+    .where(eq(adminUser.role, 'admin'))
     .limit(1);
   return rows.length > 0;
 }
@@ -236,7 +236,7 @@ async function bootstrapSession(
   const signedInUser = asRecord(record?.user);
   const setCookie = response.headers.get('set-cookie') ?? '';
   const sessionCookie = [...parseSetCookieHeader(setCookie)].find(
-    ([name]) => stripSecureCookiePrefix(name) === 'better-auth.session_token',
+    ([name]) => stripSecureCookiePrefix(name) === 'rch-admin.session_token',
   );
   if (signedInUser === null || sessionCookie === undefined) {
     throw new Error('Better Auth returned an unexpected internal bootstrap session.');
