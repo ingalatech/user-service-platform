@@ -14,6 +14,11 @@ const messages = {
       close: 'Cerrar',
       open_menu: 'Abrir menú',
       close_menu: 'Cerrar menú',
+      show: 'Ver detalle',
+      save: 'Guardar cambios',
+      cancel: 'Cancelar',
+      search: 'Buscar',
+      clear_search: 'Limpiar búsqueda',
     },
     page: {
       ...englishMessages.ra.page,
@@ -33,6 +38,13 @@ const messages = {
       loading: 'Espera un momento',
       error: 'Inténtalo de nuevo',
       not_found: 'No encontramos esta página',
+    },
+    navigation: {
+      ...englishMessages.ra.navigation,
+      page_rows_per_page: 'Filas por página',
+      page_range_info: '%{offsetBegin}-%{offsetEnd} de %{total}',
+      next: 'Siguiente',
+      previous: 'Anterior',
     },
     validation: {
       ...englishMessages.ra.validation,

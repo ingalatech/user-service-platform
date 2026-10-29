@@ -5,8 +5,15 @@ import type {
   GetOneParams,
   GetOneResult,
   RaRecord,
+  UpdateParams,
+  UpdateResult,
 } from 'ra-core';
-import { adminUserDetail, adminUsers } from './api.js';
+import {
+  adminUserAccountDetails,
+  adminUserDetail,
+  adminUsers,
+  updateAdminUserAccountDetails,
+} from './api.js';
 
 const unsupported = (): Promise<never> =>
   Promise.reject(new Error('Esta operación no está disponible en el panel.'));
@@ -41,15 +48,25 @@ export const dataProvider: DataProvider = {
   ): Promise<GetOneResult<RecordType>> => {
     if (resource !== 'users') return unsupported();
     if (typeof params.id !== 'string') return unsupported();
-    const user = await adminUserDetail(params.id, params.signal ?? undefined);
+    const [user, accountDetails] = await Promise.all([
+      adminUserDetail(params.id, params.signal ?? undefined),
+      adminUserAccountDetails(params.id, params.signal ?? undefined),
+    ]);
     // ra-core's provider interface is generic over the consumer's record type.
     // This single-resource adapter has already parsed the application contract.
-    return { data: user as unknown as RecordType };
+    return { data: { ...user, ...accountDetails } as unknown as RecordType };
   },
   getMany: unsupported,
   getManyReference: unsupported,
   create: unsupported,
-  update: unsupported,
+  update: async <RecordType extends RaRecord>(
+    resource: string,
+    params: UpdateParams<RecordType>,
+  ): Promise<UpdateResult<RecordType>> => {
+    if (resource !== 'users' || typeof params.id !== 'string') return unsupported();
+    const accountDetails = await updateAdminUserAccountDetails(params.id, params.data);
+    return { data: { id: params.id, ...accountDetails } as unknown as RecordType };
+  },
   updateMany: unsupported,
   delete: unsupported,
   deleteMany: unsupported,
