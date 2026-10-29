@@ -1,10 +1,16 @@
-import type { ComponentProps, ReactNode } from 'react';
-import { useState, useEffect, Children } from 'react';
-import { createPortal } from 'react-dom';
+import type { ComponentProps, ReactNode } from "react";
+import { useState, useEffect, Children } from "react";
+import { createPortal } from "react-dom";
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore
-import * as diacritic from 'diacritic';
-import type { RaRecord, Identifier, SortPayload, HintedString, ExtractRecordPaths } from 'ra-core';
+import * as diacritic from "diacritic";
+import type {
+  RaRecord,
+  Identifier,
+  SortPayload,
+  HintedString,
+  ExtractRecordPaths,
+} from "ra-core";
 import {
   useDataTableStoreContext,
   useStore,
@@ -15,15 +21,24 @@ import {
   useTranslateLabel,
   DataTableColumnRankContext,
   DataTableColumnFilterContext,
-} from 'ra-core';
-import { Columns, Search } from 'lucide-react';
-import { useIsMobile } from '@/hooks/use-mobile';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { FieldToggle } from '@/components/admin/field-toggle';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { cn } from '@/lib/utils';
+} from "ra-core";
+import { Columns, Search } from "lucide-react";
+import { useIsMobile } from "@/hooks/use-mobile";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { FieldToggle } from "@/components/admin/field-toggle";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
+import { cn } from "@/lib/utils";
 
 /**
  * Renders a button that lets users show / hide columns in a DataTable
@@ -59,10 +74,10 @@ export const ColumnsButton = (props: ColumnsButtonProps) => {
   const isMobile = useIsMobile();
   const translate = useTranslate();
 
-  const title = translate('ra.action.select_columns', { _: 'Columns' });
+  const title = translate("ra.action.select_columns", { _: "Columns" });
 
   return (
-    <span className={cn('inline-flex', className)}>
+    <span className={cn("inline-flex", className)}>
       <Popover open={open} onOpenChange={setOpen}>
         {isMobile ? (
           // Base UI defaults tooltips to a 600ms open delay; the provider keeps
@@ -72,7 +87,14 @@ export const ColumnsButton = (props: ColumnsButtonProps) => {
               <PopoverTrigger
                 render={
                   <TooltipTrigger
-                    render={<Button variant="ghost" size="icon" aria-label={title} {...rest} />}
+                    render={
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        aria-label={title}
+                        {...rest}
+                      />
+                    }
                   />
                 }
               >
@@ -83,7 +105,9 @@ export const ColumnsButton = (props: ColumnsButtonProps) => {
           </TooltipProvider>
         ) : (
           <PopoverTrigger
-            render={<Button variant="outline" className="cursor-pointer" {...rest} />}
+            render={
+              <Button variant="outline" className="cursor-pointer" {...rest} />
+            }
           >
             <Columns />
             {title}
@@ -110,15 +134,20 @@ export interface ColumnsButtonProps extends ComponentProps<typeof Button> {
 export const ColumnsSelector = ({ children }: ColumnsSelectorProps) => {
   const translate = useTranslate();
   const { storeKey, defaultHiddenColumns } = useDataTableStoreContext();
-  const [columnRanks, setColumnRanks] = useStore<number[] | undefined>(`${storeKey}_columnRanks`);
-  const [_hiddenColumns, setHiddenColumns] = useStore<string[]>(storeKey, defaultHiddenColumns);
+  const [columnRanks, setColumnRanks] = useStore<number[] | undefined>(
+    `${storeKey}_columnRanks`,
+  );
+  const [_hiddenColumns, setHiddenColumns] = useStore<string[]>(
+    storeKey,
+    defaultHiddenColumns,
+  );
   const elementId = `${storeKey}-columnsSelector`;
 
   const [container, setContainer] = useState<HTMLElement | null>(null);
 
   // Track the portal container across popover mount/unmount cycles.
   useEffect(() => {
-    if (typeof document === 'undefined') return;
+    if (typeof document === "undefined") return;
 
     const resolveContainer = () => {
       const target = document.getElementById(elementId);
@@ -145,7 +174,7 @@ export const ColumnsSelector = ({ children }: ColumnsSelectorProps) => {
     };
   }, [elementId]);
 
-  const [columnFilter, setColumnFilter] = useState<string>('');
+  const [columnFilter, setColumnFilter] = useState<string>("");
 
   if (!container) return null;
 
@@ -162,15 +191,15 @@ export const ColumnsSelector = ({ children }: ColumnsSelectorProps) => {
             onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
               setColumnFilter(e.target.value);
             }}
-            placeholder={translate('ra.action.search_columns', {
-              _: 'Search columns',
+            placeholder={translate("ra.action.search_columns", {
+              _: "Search columns",
             })}
             className="pr-8"
           />
           <Search className="absolute right-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground pointer-events-none" />
           {columnFilter && (
             <button
-              onClick={() => setColumnFilter('')}
+              onClick={() => setColumnFilter("")}
               className="absolute right-8 top-2 h-4 w-4 text-muted-foreground"
               aria-label="Clear"
             >
@@ -182,7 +211,10 @@ export const ColumnsSelector = ({ children }: ColumnsSelectorProps) => {
       <ul className="max-h-[50vh] p-1 overflow-auto">
         {paddedColumnRanks.map((position, index) => (
           <DataTableColumnRankContext.Provider value={position} key={index}>
-            <DataTableColumnFilterContext.Provider value={columnFilter} key={index}>
+            <DataTableColumnFilterContext.Provider
+              value={columnFilter}
+              key={index}
+            >
               {childrenArray[position]}
             </DataTableColumnFilterContext.Provider>
           </DataTableColumnRankContext.Provider>
@@ -217,25 +249,36 @@ export const ColumnsSelectorItem = <
 }: ColumnsSelectorItemProps<RecordType>) => {
   const resource = useResourceContext();
   const { storeKey, defaultHiddenColumns } = useDataTableStoreContext();
-  const [hiddenColumns, setHiddenColumns] = useStore<string[]>(storeKey, defaultHiddenColumns);
+  const [hiddenColumns, setHiddenColumns] = useStore<string[]>(
+    storeKey,
+    defaultHiddenColumns,
+  );
   const columnRank = useDataTableColumnRankContext();
-  const [columnRanks, setColumnRanks] = useStore<number[]>(`${storeKey}_columnRanks`);
+  const [columnRanks, setColumnRanks] = useStore<number[]>(
+    `${storeKey}_columnRanks`,
+  );
   const columnFilter = useDataTableColumnFilterContext();
   const translateLabel = useTranslateLabel();
   if (!source && !label) return null;
   const fieldLabel = translateLabel({
-    label: typeof label === 'string' ? label : undefined,
+    label: typeof label === "string" ? label : undefined,
     resource,
     source,
   }) as string;
   const isColumnHidden = hiddenColumns.includes(source!);
   const isColumnFiltered = fieldLabelMatchesFilter(fieldLabel, columnFilter);
 
-  const handleMove = (index1: number | string, index2: number | string | null) => {
+  const handleMove = (
+    index1: number | string,
+    index2: number | string | null,
+  ) => {
     const colRanks = !columnRanks
       ? padRanks([], Math.max(Number(index1), Number(index2 || 0)) + 1)
       : Math.max(Number(index1), Number(index2 || 0)) > columnRanks.length - 1
-        ? padRanks(columnRanks, Math.max(Number(index1), Number(index2 || 0)) + 1)
+        ? padRanks(
+            columnRanks,
+            Math.max(Number(index1), Number(index2 || 0)) + 1,
+          )
         : columnRanks;
     const index1Pos = colRanks.findIndex((index) => index == Number(index1));
     const index2Pos = colRanks.findIndex((index) => index == Number(index2));
@@ -270,7 +313,9 @@ export const ColumnsSelectorItem = <
       selected={!isColumnHidden}
       onToggle={() =>
         isColumnHidden
-          ? setHiddenColumns(hiddenColumns.filter((column) => column !== source!))
+          ? setHiddenColumns(
+              hiddenColumns.filter((column) => column !== source!),
+            )
           : setHiddenColumns([...hiddenColumns, source!])
       }
       onMove={handleMove}
@@ -293,11 +338,13 @@ export interface ColumnsSelectorItemProps<
   source?: NoInfer<HintedString<ExtractRecordPaths<RecordType>>>;
   label?: React.ReactNode;
   disableSort?: boolean;
-  sortByOrder?: SortPayload['order'];
+  sortByOrder?: SortPayload["order"];
 }
 // Function to help with column ranking
 const padRanks = (ranks: number[], length: number) =>
-  ranks.concat(Array.from({ length: length - ranks.length }, (_, i) => ranks.length + i));
+  ranks.concat(
+    Array.from({ length: length - ranks.length }, (_, i) => ranks.length + i),
+  );
 
 const fieldLabelMatchesFilter = (fieldLabel: string, columnFilter?: string) =>
   columnFilter

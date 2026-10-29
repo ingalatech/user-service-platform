@@ -1,5 +1,5 @@
 import { useListContext } from 'ra-core';
-import type { ReactElement } from 'react';
+import type { ComponentProps, ReactElement } from 'react';
 import type { AdminUser } from './generated/contracts.js';
 import { ApiError } from './api.js';
 import { DataTable } from './kit/components/admin/data-table.js';
@@ -11,8 +11,17 @@ import { Button } from './kit/components/ui/button.js';
 
 const perPage = 10;
 
+function EmailSearchInput(props: ComponentProps<typeof SearchInput>) {
+  return (
+    <label className="flex flex-col gap-1">
+      <span>Buscar por correo electrónico</span>
+      <SearchInput {...props} aria-label="Buscar por correo electrónico" />
+    </label>
+  );
+}
+
 const filters: ReactElement[] = [
-  <SearchInput
+  <EmailSearchInput
     key="email"
     source="email"
     alwaysOn
@@ -61,18 +70,22 @@ function UsersListContent() {
       <p role="status">
         {total} {total === 1 ? 'usuario' : 'usuarios'} en total
       </p>
-      <DataTable bulkActionButtons={false} rowClick={false}>
-        <DataTable.Col source="email" label="Correo electrónico" />
-        <DataTable.Col
-          source="emailVerified"
-          label="Verificación"
-          render={(record) => (record.emailVerified ? 'Correo verificado' : 'Correo sin verificar')}
-        />
-        <DataTable.Col source="role" label="Rol" />
-        <DataTable.Col label="Acciones">
-          <ShowButton label="Ver detalle" />
-        </DataTable.Col>
-      </DataTable>
+      <div role="region" aria-label="Listado de usuarios">
+        <DataTable bulkActionButtons={false} rowClick={false}>
+          <DataTable.Col source="email" label="Correo electrónico" />
+          <DataTable.Col
+            source="emailVerified"
+            label="Verificación"
+            render={(record) =>
+              record.emailVerified ? 'Correo verificado' : 'Correo sin verificar'
+            }
+          />
+          <DataTable.Col source="role" label="Rol" />
+          <DataTable.Col label="Acciones">
+            <ShowButton label="Ver detalle" />
+          </DataTable.Col>
+        </DataTable>
+      </div>
     </>
   );
 }
