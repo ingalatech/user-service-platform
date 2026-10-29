@@ -170,7 +170,7 @@ function ProtectedLayout({ children }: CoreLayoutProps) {
 
 export function App() {
   const location = useLocation();
-  if (location.pathname === '/prototype/account-administration') {
+  if (import.meta.env.DEV && location.pathname === '/prototype/account-administration') {
     return <PrototypeAccountAdministration />;
   }
 

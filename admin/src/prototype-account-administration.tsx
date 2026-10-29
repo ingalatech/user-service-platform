@@ -5,18 +5,14 @@ import {
   CircleHelp,
   Laptop,
   Link2,
-  Mail,
-  MoreHorizontal,
   ShieldCheck,
   Smartphone,
-  UsersRound,
   X,
 } from 'lucide-react';
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import {
-  CoreAdminContext,
+  CustomRoutes,
   Resource,
-  memoryStore,
   type AuthProvider,
   type DataProvider,
   type GetListResult,
@@ -24,10 +20,10 @@ import {
   type GetOneResult,
   type RaRecord,
 } from 'ra-core';
-import { Link } from 'react-router';
+import { Link, Route } from 'react-router';
+import { Admin } from './kit/components/admin/admin.js';
 import { Layout } from './kit/components/admin/layout.js';
 import { Button } from './kit/components/ui/button.js';
-import { Separator } from './kit/components/ui/separator.js';
 import { i18nProvider } from './i18n.js';
 
 // Throwaway answer for ticket #258: one canonical Reader record detail on the real Admin shell.
@@ -123,25 +119,35 @@ const sectionLinks = [
   ['Actividad', 'activity'],
 ] as const;
 
-function PrototypeAdministrators() {
+function PrototypeResourceTarget() {
   return null;
 }
 
 function PrototypeShell({ children }: { children: ReactNode }) {
   return (
-    <CoreAdminContext
+    <Admin
+      title="Administración"
       authProvider={prototypeAuthProvider}
       dataProvider={prototypeDataProvider}
       i18nProvider={i18nProvider}
-      store={memoryStore()}
+      layout={Layout}
+      disableTelemetry
     >
+      <Resource name="users" list={PrototypeResourceTarget} options={{ label: 'Usuarios' }} />
       <Resource
         name="administrators"
-        list={PrototypeAdministrators}
+        list={PrototypeResourceTarget}
         options={{ label: 'Administradores' }}
       />
-      <Layout>{children}</Layout>
-    </CoreAdminContext>
+      <Resource
+        name="invitations"
+        list={PrototypeResourceTarget}
+        options={{ label: 'Invitaciones' }}
+      />
+      <CustomRoutes>
+        <Route path="/prototype/account-administration" element={children} />
+      </CustomRoutes>
+    </Admin>
   );
 }
 
@@ -213,7 +219,7 @@ function ActionRow({
   detail,
   children,
 }: {
-  icon: typeof Mail;
+  icon: typeof ShieldCheck;
   title: string;
   detail: string;
   children: ReactNode;
@@ -250,24 +256,51 @@ function ConfirmationNotice({ onClose, children }: { onClose: () => void; childr
   );
 }
 
-function SocialUnlinkWarning({
-  onCancel,
+function SocialUnlinkDialog({
+  onDismiss,
   onConfirm,
 }: {
-  onCancel: () => void;
+  onDismiss: () => void;
   onConfirm: () => void;
 }) {
+  const dialogRef = useRef<HTMLDialogElement>(null);
   const cancelRef = useRef<HTMLButtonElement>(null);
-  useEffect(() => cancelRef.current?.focus(), []);
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    if (dialog === null) return;
+    dialog.showModal();
+    cancelRef.current?.focus();
+    return () => {
+      if (dialog.open) dialog.close();
+    };
+  }, []);
   return (
-    <div
-      className="rounded-lg border border-destructive/40 bg-destructive/5 p-4"
-      role="alertdialog"
-      aria-modal="true"
+    <dialog
+      ref={dialogRef}
+      onClose={onDismiss}
+      onKeyDown={(event) => {
+        if (event.key !== 'Tab') return;
+        const focusable = Array.from(
+          event.currentTarget.querySelectorAll<HTMLElement>(
+            'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
+          ),
+        ).filter((element) => !element.hasAttribute('disabled'));
+        if (focusable.length === 0) return;
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+        if (event.shiftKey && document.activeElement === first) {
+          event.preventDefault();
+          last?.focus();
+        } else if (!event.shiftKey && document.activeElement === last) {
+          event.preventDefault();
+          first?.focus();
+        }
+      }}
+      className="m-auto w-[min(32rem,calc(100%-2rem))] rounded-lg border border-destructive/40 bg-background p-0 text-foreground shadow-lg backdrop:bg-black/40"
       aria-labelledby="social-unlink-title"
       aria-describedby="social-unlink-description"
     >
-      <div className="flex items-start gap-3">
+      <div className="flex items-start gap-3 bg-destructive/5 p-5">
         <AlertTriangle className="mt-0.5 size-5 shrink-0 text-destructive" />
         <div className="min-w-0 flex-1">
           <h3 id="social-unlink-title" className="font-semibold">
@@ -278,22 +311,138 @@ function SocialUnlinkWarning({
             tiene otra credencial.
           </p>
           <div className="mt-4 flex flex-wrap gap-2">
-            <Button variant="destructive" onClick={onConfirm}>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                dialogRef.current?.close();
+                onConfirm();
+              }}
+            >
               Entiendo, desvincular
             </Button>
-            <Button ref={cancelRef} variant="outline" onClick={onCancel}>
+            <Button ref={cancelRef} variant="outline" onClick={() => dialogRef.current?.close()}>
               Cancelar
             </Button>
           </div>
         </div>
       </div>
-    </div>
+    </dialog>
+  );
+}
+
+function DangerZone({
+  onAction,
+  showUnlinkDialog,
+  onShowUnlinkDialog,
+  onDismissUnlinkDialog,
+  onConfirmUnlink,
+  unlinkTriggerRef,
+}: {
+  onAction: (message: string, confirm?: boolean) => void;
+  showUnlinkDialog: boolean;
+  onShowUnlinkDialog: () => void;
+  onDismissUnlinkDialog: () => void;
+  onConfirmUnlink: () => void;
+  unlinkTriggerRef: RefObject<HTMLButtonElement | null>;
+}) {
+  return (
+    <section
+      aria-labelledby="danger-zone-title"
+      className="rounded-lg border border-destructive/40 bg-destructive/5 p-4"
+    >
+      <div className="flex items-start gap-3">
+        <AlertTriangle className="mt-0.5 size-4 shrink-0 text-destructive" />
+        <div>
+          <h2 id="danger-zone-title" className="text-sm font-semibold">
+            Zona de peligro
+          </h2>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Acciones que pueden cortar el acceso o iniciar una eliminación. Las confirmaciones
+            explican su impacto.
+          </p>
+        </div>
+      </div>
+      <div className="mt-4 rounded-lg border bg-background p-4">
+        <ActionRow
+          icon={Link2}
+          title="Desvincular Google"
+          detail="Acción irreversible; requiere otra credencial"
+        >
+          <Button
+            ref={unlinkTriggerRef}
+            variant="destructive"
+            size="sm"
+            onClick={onShowUnlinkDialog}
+          >
+            Desvincular
+          </Button>
+        </ActionRow>
+        <ActionRow
+          icon={ShieldCheck}
+          title="Deshabilitar cuenta"
+          detail="Impedirá nuevos inicios de sesión"
+        >
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              onAction('deshabilitar cuenta', true);
+            }}
+          >
+            Deshabilitar
+          </Button>
+        </ActionRow>
+        <ActionRow
+          icon={AlertTriangle}
+          title="Solicitar eliminación"
+          detail="Inicia el flujo de eliminación de la cuenta"
+        >
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              onAction('solicitud de eliminación iniciada', true);
+            }}
+          >
+            Solicitar
+          </Button>
+        </ActionRow>
+        {sessions
+          .filter(({ current }) => !current)
+          .map(({ device, location }) => (
+            <ActionRow
+              key={device}
+              icon={Laptop}
+              title={`Revocar sesión · ${device}`}
+              detail={location}
+            >
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  onAction(`sesión revocada en ${device}`, true);
+                }}
+              >
+                Revocar
+              </Button>
+            </ActionRow>
+          ))}
+      </div>
+      {showUnlinkDialog && (
+        <SocialUnlinkDialog onDismiss={onDismissUnlinkDialog} onConfirm={onConfirmUnlink} />
+      )}
+    </section>
   );
 }
 
 function PrototypeRecordDetail() {
   const [notice, setNotice] = useState('');
   const [showUnlinkWarning, setShowUnlinkWarning] = useState(false);
+  const unlinkTriggerRef = useRef<HTMLButtonElement>(null);
+  const dismissUnlinkDialog = () => {
+    setShowUnlinkWarning(false);
+    requestAnimationFrame(() => unlinkTriggerRef.current?.focus());
+  };
   const action = (message: string, confirm = false) => {
     if (confirm && !window.confirm(`¿Confirmar ${message}?`)) return;
     setNotice(`Demo estática: ${message}. No se ha enviado ningún cambio.`);
@@ -334,9 +483,6 @@ function PrototypeRecordDetail() {
           <Status tone="success">
             <Check className="size-3" /> Activa
           </Status>
-          <Button variant="ghost" size="icon" aria-label="Más acciones">
-            <MoreHorizontal className="size-4" />
-          </Button>
         </div>
       </header>
 
@@ -356,19 +502,6 @@ function PrototypeRecordDetail() {
               </a>
             ))}
           </nav>
-          <Separator className="my-4" />
-          <p className="mb-2 text-xs font-semibold uppercase tracking-[0.12em] text-muted-foreground">
-            Administración
-          </p>
-          <p className="flex items-center gap-2 px-2 py-1.5 text-sm text-muted-foreground">
-            <UsersRound className="size-4" /> Administradores
-          </p>
-          <p className="flex items-center gap-2 px-2 py-1.5 text-sm text-muted-foreground">
-            <Mail className="size-4" /> Invitaciones
-          </p>
-          <p className="mt-2 px-2 text-xs text-muted-foreground">
-            Recursos separados de la cuenta del Reader.
-          </p>
         </aside>
 
         <div className="min-w-0 space-y-8">
@@ -445,29 +578,6 @@ function PrototypeRecordDetail() {
                 <Status>Proveedor vinculado</Status>
               </ActionRow>
             </div>
-            {showUnlinkWarning ? (
-              <SocialUnlinkWarning
-                onCancel={() => {
-                  setShowUnlinkWarning(false);
-                }}
-                onConfirm={() => {
-                  setShowUnlinkWarning(false);
-                  setNotice(
-                    'Demo estática: proveedor Google desvinculado. No se ha enviado ningún cambio.',
-                  );
-                }}
-              />
-            ) : (
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  setShowUnlinkWarning(true);
-                }}
-              >
-                Desvincular Google
-              </Button>
-            )}
           </DetailSection>
 
           <DetailSection
@@ -484,26 +594,6 @@ function PrototypeRecordDetail() {
                   </p>
                 </div>
                 <Status tone="success">Sin restricciones</Status>
-              </div>
-              <div className="mt-4 flex flex-wrap gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    action('deshabilitar cuenta', true);
-                  }}
-                >
-                  Deshabilitar cuenta
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    action('solicitud de eliminación iniciada', true);
-                  }}
-                >
-                  Solicitar eliminación
-                </Button>
               </div>
             </div>
           </DetailSection>
@@ -524,15 +614,7 @@ function PrototypeRecordDetail() {
                   {current ? (
                     <Status tone="success">Este dispositivo</Status>
                   ) : (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => {
-                        action(`sesión revocada en ${device}`, true);
-                      }}
-                    >
-                      Revocar
-                    </Button>
+                    <Status>Sesión activa</Status>
                   )}
                 </ActionRow>
               ))}
@@ -563,23 +645,21 @@ function PrototypeRecordDetail() {
             </div>
           </DetailSection>
 
-          <section
-            aria-labelledby="danger-zone-title"
-            className="rounded-lg border border-destructive/40 bg-destructive/5 p-4"
-          >
-            <div className="flex items-start gap-3">
-              <AlertTriangle className="mt-0.5 size-4 shrink-0 text-destructive" />
-              <div>
-                <h2 id="danger-zone-title" className="text-sm font-semibold">
-                  Zona de peligro
-                </h2>
-                <p className="mt-1 text-sm text-muted-foreground">
-                  Las acciones irreversibles viven separadas del trabajo rutinario y siempre
-                  explican su impacto.
-                </p>
-              </div>
-            </div>
-          </section>
+          <DangerZone
+            onAction={action}
+            showUnlinkDialog={showUnlinkWarning}
+            onShowUnlinkDialog={() => {
+              setShowUnlinkWarning(true);
+            }}
+            onDismissUnlinkDialog={dismissUnlinkDialog}
+            onConfirmUnlink={() => {
+              dismissUnlinkDialog();
+              setNotice(
+                'Demo estática: proveedor Google desvinculado. No se ha enviado ningún cambio.',
+              );
+            }}
+            unlinkTriggerRef={unlinkTriggerRef}
+          />
         </div>
       </div>
       {notice && (

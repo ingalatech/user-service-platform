@@ -7,6 +7,7 @@ Throwaway source for ticket #258. This document records the design answer only; 
 - Use the current Marmelab Shadcn Admin Kit v2 `Layout`, `AppSidebar`, header, responsive sidebar drawer, theme control, locale control, refresh control, and user menu.
 - Keep the owned Admin content width, density, Inter typography, semantic color tokens, `Button`, `Separator`, and existing `users-list`/`users-detail` language.
 - The prototype route uses a static, local Admin identity/data adapter only to let the real shell render without credentials or backend calls. This seam exists only on the throwaway branch.
+- The prototype route is registered only when `import.meta.env.DEV` is true; production/current Admin routes keep their existing authentication path.
 
 ## Allowed Page Templates
 
