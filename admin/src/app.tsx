@@ -14,6 +14,7 @@ import {
 import { Link, Navigate, Route, useNavigate } from 'react-router';
 import { Admin } from './kit/components/admin/admin.js';
 import { Button } from './kit/components/ui/button.js';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from './kit/components/ui/tabs.js';
 import { authProvider } from './auth-provider.js';
 import { AdminMeSchema } from './generated/contracts.js';
 import { ApiError } from './api.js';
@@ -180,6 +181,28 @@ function PlannedSection({ title }: { title: string }) {
   );
 }
 
+function PlannedAdministrators() {
+  return (
+    <section className="space-y-3 py-4" aria-labelledby="administrators-title">
+      <h1 id="administrators-title" className="text-2xl font-bold tracking-tight">
+        Administradores
+      </h1>
+      <Tabs defaultValue="accounts">
+        <TabsList aria-label="Secciones de administradores">
+          <TabsTrigger value="accounts">Cuentas</TabsTrigger>
+          <TabsTrigger value="invitations">Invitaciones</TabsTrigger>
+        </TabsList>
+        <TabsContent value="accounts">
+          Esta sección se habilitará con sus contratos productivos.
+        </TabsContent>
+        <TabsContent value="invitations">
+          Esta sección se habilitará con sus contratos productivos.
+        </TabsContent>
+      </Tabs>
+    </section>
+  );
+}
+
 export function App() {
   return (
     <Admin
@@ -200,7 +223,7 @@ export function App() {
       <Resource name="users" list={UsersList} show={UsersShow} options={{ label: 'Usuarios' }} />
       <Resource
         name="administrators"
-        list={() => <PlannedSection title="Administradores" />}
+        list={PlannedAdministrators}
         options={{ label: 'Administradores' }}
       />
       <Resource

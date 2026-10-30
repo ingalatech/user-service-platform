@@ -422,6 +422,11 @@ export async function runAdminBrowserTest(): Promise<void> {
     await searchBox.fill(regular);
     await page.getByText('1 usuario en total', { exact: true }).waitFor();
     await table.getByText(regular, { exact: true }).waitFor();
+    let detailAccountDetailsReads = 0;
+    await page.route('**/v1/admin/users/*/account-details', async (route) => {
+      detailAccountDetailsReads++;
+      await route.continue();
+    });
     await page.getByRole('link', { name: 'Ver detalle', exact: true }).click();
     await visible(page, 'Detalle de usuario');
     await page.getByText(regular, { exact: true }).waitFor();
@@ -433,6 +438,8 @@ export async function runAdminBrowserTest(): Promise<void> {
         !page.url().includes('/show'),
       'list preserves the established User detail route',
     );
+    assert(detailAccountDetailsReads === 0, 'safe User detail does not depend on Account Details');
+    await page.unroute('**/v1/admin/users/*/account-details');
     await page.getByRole('link', { name: 'Volver a la lista', exact: true }).click();
     await visible(page, 'Usuarios');
     assert((await searchBox.inputValue()).trim().toLowerCase() === regular, 'back restores search');
@@ -681,6 +688,12 @@ export async function runAdminBrowserTest(): Promise<void> {
     );
     await signIn(page, admin, password);
     await page.goto(`${base}/admin/users`);
+    await visible(page, 'Usuarios');
+    await page.getByRole('button', { name: 'Alternar menú', exact: true }).click();
+    await page.getByRole('link', { name: 'Inicio', exact: true }).click();
+    await visible(page, 'Sesión de administración');
+    await page.getByRole('button', { name: 'Alternar menú', exact: true }).click();
+    await page.getByRole('link', { name: 'Usuarios', exact: true }).click();
     await visible(page, 'Usuarios');
     await page.getByRole('table').waitFor();
     assert(

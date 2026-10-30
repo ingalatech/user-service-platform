@@ -1,8 +1,9 @@
+import { useQuery } from '@tanstack/react-query';
 import { useGetOne, useSaveContext } from 'ra-core';
 import { useState, type MouseEvent, type ReactNode } from 'react';
 import { Link, Navigate, useParams } from 'react-router';
 import type { AdminUser } from './generated/contracts.js';
-import { ApiError } from './api.js';
+import { adminUserAccountDetails, ApiError } from './api.js';
 import { Edit } from './kit/components/admin/edit.js';
 import { CancelButton } from './kit/components/admin/cancel-button.js';
 import { SaveButton } from './kit/components/admin/form.js';
@@ -90,6 +91,13 @@ export function UsersEdit() {
     { id: id ?? '' },
     { enabled: validId, retry: false, staleTime: 0 },
   );
+  const accountDetails = useQuery({
+    queryKey: ['admin-user-account-details', id],
+    queryFn: ({ signal }) => adminUserAccountDetails(id ?? '', signal),
+    enabled: validId,
+    retry: false,
+    staleTime: 0,
+  });
 
   if (!validId) {
     return (
@@ -151,6 +159,55 @@ export function UsersEdit() {
     );
   }
 
+  if (accountDetails.isPending || accountDetails.isFetching) {
+    return (
+      <EditState>
+        <p role="status">Cargando datos de cuenta…</p>
+      </EditState>
+    );
+  }
+
+  if (accountDetails.error !== null) {
+    if (accountDetails.error instanceof ApiError && accountDetails.error.status === 401) {
+      return <Navigate to="/login" replace />;
+    }
+    if (accountDetails.error instanceof ApiError && accountDetails.error.status === 403) {
+      return (
+        <EditState>
+          <div role="alert">
+            <h2>Acceso denegado</h2>
+            <p>Tu cuenta no tiene permiso para editar los datos de cuenta.</p>
+          </div>
+        </EditState>
+      );
+    }
+    if (accountDetails.error instanceof ApiError && accountDetails.error.status === 404) {
+      return (
+        <EditState>
+          <div role="alert">
+            <h2>Usuario no encontrado</h2>
+            <p>No existe ningún usuario con este identificador.</p>
+          </div>
+        </EditState>
+      );
+    }
+    return (
+      <EditState>
+        <div role="alert">
+          <h2>No pudimos cargar los datos de cuenta</h2>
+          <p>Tu sesión se conserva. Inténtalo de nuevo en unos instantes.</p>
+          <Button
+            onClick={() => {
+              void accountDetails.refetch();
+            }}
+          >
+            Reintentar
+          </Button>
+        </div>
+      </EditState>
+    );
+  }
+
   if (saveOutcome === 'expired') {
     return <Navigate to="/login" replace />;
   }
@@ -173,8 +230,13 @@ export function UsersEdit() {
       actions={false}
       redirect={false}
       mutationMode="pessimistic"
-      queryOptions={{ enabled: false, initialData: query.data }}
+      queryOptions={{
+        enabled: false,
+        initialData: { ...query.data, ...accountDetails.data },
+        meta: { view: 'account-details' },
+      }}
       mutationOptions={{
+        meta: { view: 'account-details' },
         onSuccess: () => {
           setSaveOutcome(null);
           setSaveError(null);
