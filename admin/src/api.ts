@@ -1,8 +1,10 @@
 import {
   AccountDetailsSchema,
   AdminMeSchema,
+  AdminReaderEmailVerificationSchema,
   AdminReaderActivitySchema,
   AdminReaderDetailSchema,
+  AdminReaderMessageSchema,
   AdminUserDetailParamsSchema,
   AdminUserListQuerySchema,
   AdminUserListSchema,
@@ -12,6 +14,8 @@ import {
   type AdminMe,
   type AdminReaderActivity,
   type AdminReaderDetail,
+  type AdminReaderEmailVerification,
+  type AdminReaderMessage,
   type AdminUserDetailParams,
   type AdminUserList,
   type AdminUserListQuery,
@@ -23,6 +27,7 @@ import {
 export class ApiError extends Error {
   readonly logoutUser = false;
   readonly redirectTo: string;
+  retryAfterSeconds?: number;
 
   constructor(
     readonly status: number,
@@ -51,7 +56,8 @@ async function request(
   path: string,
   body?: unknown,
   signal?: AbortSignal,
-  method?: 'POST' | 'PATCH',
+  method?: 'POST' | 'PATCH' | 'PUT',
+  extraHeaders?: Record<string, string>,
 ): Promise<unknown> {
   let response: Response;
   try {
@@ -65,6 +71,7 @@ async function request(
       headers: {
         accept: 'application/json, application/problem+json',
         ...(body === undefined ? {} : { 'content-type': 'application/json' }),
+        ...extraHeaders,
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
@@ -74,9 +81,51 @@ async function request(
   const payload: unknown = await response.json().catch(() => null);
   if (!response.ok) {
     const problem = ProblemDetailsSchema.safeParse(payload);
-    throw new ApiError(response.status, problem.success ? problem.data.code : undefined);
+    const error = new ApiError(response.status, problem.success ? problem.data.code : undefined);
+    const retryAfter = Number(response.headers.get('retry-after'));
+    if (Number.isFinite(retryAfter) && retryAfter > 0) error.retryAfterSeconds = retryAfter;
+    throw error;
   }
   return payload;
+}
+
+export async function adminForceReaderEmailVerification(
+  id: AdminUserDetailParams['userId'],
+  revision: number,
+): Promise<AdminReaderEmailVerification> {
+  const params = AdminUserDetailParamsSchema.safeParse({ userId: id });
+  if (!params.success) throw new ApiError(400);
+  const parsed = AdminReaderEmailVerificationSchema.safeParse(
+    await request(
+      `/v1/admin/users/${encodeURIComponent(params.data.userId)}/email-verification`,
+      undefined,
+      undefined,
+      'PUT',
+      { 'if-match': `"${String(revision)}"` },
+    ),
+  );
+  if (!parsed.success) throw new ApiError(502);
+  return parsed.data;
+}
+
+export async function adminRequestReaderMessage(
+  id: AdminUserDetailParams['userId'],
+  kind: 'email-verification' | 'password-recovery',
+  idempotencyKey: string,
+): Promise<AdminReaderMessage> {
+  const params = AdminUserDetailParamsSchema.safeParse({ userId: id });
+  if (!params.success) throw new ApiError(400);
+  const parsed = AdminReaderMessageSchema.safeParse(
+    await request(
+      `/v1/admin/users/${encodeURIComponent(params.data.userId)}/${kind === 'email-verification' ? 'email-verification' : 'password-recovery'}/messages`,
+      {},
+      undefined,
+      'POST',
+      { 'idempotency-key': idempotencyKey },
+    ),
+  );
+  if (!parsed.success) throw new ApiError(502);
+  return parsed.data;
 }
 
 export async function login(params: unknown): Promise<void> {

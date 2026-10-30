@@ -356,6 +356,26 @@ export const adminIdempotencyRecord = sqliteTable(
   ],
 );
 
+export const readerMessageWorkflow = sqliteTable(
+  'reader_message_workflow',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    kind: text('kind').notNull(),
+    state: text('state').notNull(),
+    cooldownUntil: integer('cooldown_until').notNull(),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+    lastScheduledAt: integer('last_scheduled_at'),
+  },
+  (table) => [
+    uniqueIndex('reader_message_workflow_user_kind_idx').on(table.userId, table.kind),
+    index('reader_message_workflow_cooldown_idx').on(table.cooldownUntil),
+  ],
+);
+
 // Adapter-facing schema object for Better Auth's Drizzle adapter. Kept next
 // to the tables so the mapping cannot drift from the table definitions.
 export const identitySchema = {

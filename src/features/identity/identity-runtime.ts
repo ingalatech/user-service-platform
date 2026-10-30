@@ -35,7 +35,7 @@ import { identitySchema } from './schema.js';
 
 // A tagged mode describes the behavior the caller needs; mail transport
 // construction and execution-context scheduling remain implementation details.
-type MailResolution = 'eager' | 'deferred';
+type MailResolution = 'eager' | 'deferred' | 'synchronous';
 
 export interface IdentityRuntimeInput {
   readonly env: Env;
@@ -56,6 +56,7 @@ export interface IdentityRuntime {
   readonly authPolicy: AuthPolicy;
   authentication(): ReturnType<typeof createIdentityAuth>;
   administration(): ReturnType<typeof createAdministrationAuth>;
+  readerMessaging(): ReturnType<typeof createIdentityAuth>;
   bootstrapAdministrator(userId: string): ReturnType<typeof createBootstrapIdentityAuth>;
   readerState(): ReturnType<typeof createReaderStateAuth>;
   cookieMutationAllowed(headers: Headers): boolean;
@@ -204,6 +205,13 @@ export function createIdentityRuntime(input: IdentityRuntimeInput) {
       verifyEmailActionURL: effective.config.AUTH_VERIFY_EMAIL_ACTION_URL,
       resetPasswordActionURL: effective.config.AUTH_RESET_PASSWORD_ACTION_URL,
       background,
+      ...(mailResolution === 'synchronous'
+        ? {
+            schedule: async (task: Promise<unknown>): Promise<void> => {
+              background(task);
+            },
+          }
+        : {}),
       realm,
     };
     authInputs.set(key, authInput);
@@ -381,6 +389,7 @@ export function createIdentityRuntime(input: IdentityRuntimeInput) {
       return resolveSettings().policy;
     },
     authentication: () => readerAuth('eager'),
+    readerMessaging: () => readerAuth('synchronous'),
     administration: () => adminAuth('deferred'),
     bootstrapAdministrator: createBootstrapAuth,
     readerState: readerStateAuth,

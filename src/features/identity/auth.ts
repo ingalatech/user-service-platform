@@ -57,6 +57,10 @@ export interface IdentityAuthInput {
   // path (ADR-0010). Falls back to supervised fire-and-forget when the
   // request has no execution context (e.g. contract generation, unit calls).
   readonly background: (task: Promise<unknown>) => void;
+  // Synchronous application-owned message scheduling used after an atomic
+  // administrative command commit. It deliberately propagates mail-adapter
+  // failure so the command can return a retryable 503.
+  readonly schedule?: (task: Promise<unknown>) => Promise<void>;
   readonly realm?: 'reader' | 'administrator';
 }
 
@@ -197,6 +201,7 @@ function sharedOptions(
     verifyEmailActionURL,
     resetPasswordActionURL,
     background,
+    schedule,
   } = input;
   const realm = input.realm ?? 'reader';
   const database = drizzle(db, {
@@ -316,7 +321,9 @@ function sharedOptions(
             realm === 'reader' ? RESET_PASSWORD_ACTION_PATH : ADMIN_RESET_PASSWORD_ACTION_PATH,
           token,
         });
-        background(mailer.sendPasswordResetEmail({ to: user.email, url, token }));
+        const task = mailer.sendPasswordResetEmail({ to: user.email, url, token });
+        if (schedule === undefined) background(task);
+        else await schedule(task);
       },
     },
     emailVerification: {
@@ -382,7 +389,9 @@ function sharedOptions(
             throw new Error('The verification message was not accepted by the mail transport.');
           }
         } else {
-          background(mailer.sendVerificationEmail(message));
+          const task = mailer.sendVerificationEmail(message);
+          if (schedule === undefined) background(task);
+          else await schedule(task);
         }
       },
     },

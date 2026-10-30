@@ -61,8 +61,9 @@ async function postWithCookie(
   body: unknown,
   cookie: string | null,
   overrides: Partial<Env> = {},
+  requestHeaders: Record<string, string> = {},
 ): Promise<Response> {
-  const headers: Record<string, string> = { 'content-type': 'application/json' };
+  const headers: Record<string, string> = { 'content-type': 'application/json', ...requestHeaders };
   if (cookie !== null && cookie.length > 0) {
     headers.cookie = cookie;
   }
@@ -71,6 +72,14 @@ async function postWithCookie(
     { method: 'POST', headers, body: JSON.stringify(body) },
     testEnv(overrides),
   );
+}
+
+async function putWithCookie(
+  path: string,
+  cookie: string,
+  headers: Record<string, string> = {},
+): Promise<Response> {
+  return app.request(path, { method: 'PUT', headers: { cookie, ...headers } }, testEnv());
 }
 
 async function patchWithCookie(
@@ -425,6 +434,72 @@ describe('GET /v1/admin/users/{userId}', () => {
       });
       expect(response.headers.get('cache-control')).toBe('private, no-store');
     }
+  });
+});
+
+describe('Reader verification and recovery commands', () => {
+  it('forces canonical email verification with an ETag precondition', async () => {
+    const { cookie } = await bootstrapVerifiedAdmin('commands-admin@example.com');
+    const register = await post('/v1/auth/register', {
+      name: 'Unverified Reader',
+      email: 'unverified-reader@example.com',
+      password: 'Correct-horse-41',
+    });
+    expect(register.status).toBe(201);
+    const target = await get('/v1/admin/users?limit=25&offset=0', { cookie });
+    expect(target.status).toBe(200);
+    const users = (await target.json()) as { items: { id: string; email: string }[] };
+    const reader = users.items.find((item) => item.email === 'unverified-reader@example.com');
+    expect(reader).toBeDefined();
+    if (reader === undefined) throw new Error('Expected the unverified Reader.');
+    const detail = await get(`/v1/admin/users/${reader.id}`, { cookie });
+    expect(detail.status).toBe(200);
+    const detailBody = (await detail.json()) as { revision: number };
+
+    const forced = await putWithCookie(`/v1/admin/users/${reader.id}/email-verification`, cookie, {
+      'if-match': `"${String(detailBody.revision)}"`,
+    });
+    expect(forced.status).toBe(200);
+    expect(forced.headers.get('etag')).toBe('"2"');
+    expect(await forced.json()).toMatchObject({ emailVerified: true, changed: true, revision: 2 });
+
+    const stale = await putWithCookie(`/v1/admin/users/${reader.id}/email-verification`, cookie, {
+      'if-match': '"1"',
+    });
+    expect(stale.status).toBe(412);
+    expect(await stale.json()).toMatchObject({ code: 'stale-revision' });
+  });
+
+  it('accepts one verification message and applies the cooldown', async () => {
+    const { cookie } = await bootstrapVerifiedAdmin('message-admin@example.com');
+    const register = await post('/v1/auth/register', {
+      name: 'Message Reader',
+      email: 'message-reader@example.com',
+      password: 'Correct-horse-41',
+    });
+    expect(register.status).toBe(201);
+    const usersRes = await get('/v1/admin/users?limit=25&offset=0', { cookie });
+    const users = (await usersRes.json()) as { items: { id: string; email: string }[] };
+    const reader = users.items.find((item) => item.email === 'message-reader@example.com');
+    expect(reader).toBeDefined();
+    if (reader === undefined) throw new Error('Expected the message Reader.');
+    const path = `/v1/admin/users/${reader.id}/email-verification/messages`;
+    const first = await postWithCookie(path, {}, cookie, {}, { 'idempotency-key': 'message-1' });
+    expect(first.status).toBe(202);
+    expect(first.headers.get('cache-control')).toBe('private, no-store');
+    const replay = await postWithCookie(path, {}, cookie, {}, { 'idempotency-key': 'message-1' });
+    expect(replay.status).toBe(202);
+    const cooldown = await postWithCookie(path, {}, cookie, {}, { 'idempotency-key': 'message-2' });
+    expect(cooldown.status).toBe(429);
+    expect(cooldown.headers.get('retry-after')).not.toBeNull();
+    const recovery = await postWithCookie(
+      `/v1/admin/users/${reader.id}/password-recovery/messages`,
+      {},
+      cookie,
+      {},
+      { 'idempotency-key': 'recovery-1' },
+    );
+    expect(recovery.status).toBe(202);
   });
 });
 

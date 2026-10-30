@@ -34,6 +34,13 @@ export type ProblemCode =
   | 'forbidden'
   | 'reader-not-found'
   | 'administrator-disabled'
+  | 'invalid-transition'
+  | 'no-usable-login-method'
+  | 'idempotency-key-reused'
+  | 'stale-revision'
+  | 'precondition-required'
+  | 'cooldown-active'
+  | 'delivery-scheduling-failed'
   | 'admin-already-bootstrapped'
   | 'admin-bootstrap-in-progress'
   | 'admin-email-conflict';

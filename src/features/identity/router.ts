@@ -3,6 +3,12 @@ import type { Context } from 'hono';
 import type { Env } from '../../env.js';
 import { PROBLEM_JSON, createProblem, type ProblemCode } from '../../shared/problem.js';
 import { createAdminUserReader } from './admin-users.js';
+import {
+  forceReaderEmailVerification,
+  requestReaderMessage,
+  type ForceReaderEmailVerificationOutcome,
+  type RequestReaderMessageOutcome,
+} from './admin-reader-email.js';
 import { createAdminAccountDetailsOperations } from './admin-account-details.js';
 import { readAdminReaderActivity } from './admin-reader-activity.js';
 import { createAccountDetailsOperations } from './account-details-operations.js';
@@ -27,7 +33,7 @@ import {
 } from './consumer-cors.js';
 import { createReaderStateOperations } from './reader-state-operations.js';
 import type { AuthMailer } from './mailer.js';
-import type { AdminBootstrapRequest } from './contract.js';
+import type { AdminBootstrapRequest, AdminReaderMessageRequest } from './contract.js';
 import { createIdentityRuntime } from './identity-runtime.js';
 import type { IdentityRuntime } from './identity-runtime.js';
 import { createPasswordPolicyProblemDetails } from './problem.js';
@@ -47,6 +53,9 @@ import {
   adminSignOutRoute,
   adminUserDetailRoute,
   adminReaderActivityRoute,
+  adminReaderEmailVerificationRoute,
+  adminReaderVerificationMessageRoute,
+  adminReaderPasswordRecoveryMessageRoute,
   adminUserAccountDetailsRoute,
   adminUsersRoute,
   adminVerifyEmailRoute,
@@ -109,7 +118,9 @@ function requestIdentityRuntime(c: IdentityContext, authMailer?: AuthMailer): Id
   });
 }
 
-function problem<const TStatus extends 400 | 401 | 403 | 404 | 409 | 413 | 500 | 503>(
+function problem<
+  const TStatus extends 400 | 401 | 403 | 404 | 409 | 412 | 413 | 428 | 429 | 500 | 503,
+>(
   c: IdentityContext,
   status: TStatus,
   code: ProblemCode,
@@ -130,6 +141,42 @@ function problem<const TStatus extends 400 | 401 | 403 | 404 | 409 | 413 | 500 |
       ? { 'Content-Type': PROBLEM_JSON }
       : { 'Content-Type': PROBLEM_JSON, 'Cache-Control': cacheControl },
   );
+}
+
+function readerEmailProblem(
+  c: IdentityContext,
+  outcome: Exclude<
+    ForceReaderEmailVerificationOutcome | RequestReaderMessageOutcome,
+    { kind: 'success' } | { kind: 'accepted' }
+  >,
+) {
+  switch (outcome.kind) {
+    case 'forbidden':
+      return problem(c, 403, 'forbidden', 'Forbidden', 'Administrator access is required.');
+    case 'administrator-disabled':
+      return problem(c, 403, 'administrator-disabled', 'Administrator disabled');
+    case 'reader-not-found':
+      return problem(c, 404, 'reader-not-found', 'Reader not found');
+    case 'precondition-required':
+      return problem(c, 428, 'precondition-required', 'Precondition Required');
+    case 'stale-revision':
+      return problem(c, 412, 'stale-revision', 'Precondition Failed');
+    case 'invalid-transition':
+      return problem(c, 409, 'invalid-transition', 'Invalid transition');
+    case 'no-usable-login-method':
+      return problem(c, 409, 'no-usable-login-method', 'No usable login method');
+    case 'idempotency-key-reused':
+      return problem(c, 409, 'idempotency-key-reused', 'Idempotency key reused');
+    case 'cooldown-active': {
+      const response = problem(c, 429, 'cooldown-active', 'Cooldown active');
+      response.headers.set('Retry-After', String(outcome.retryAfterSeconds));
+      return response;
+    }
+    case 'delivery-scheduling-failed':
+      return problem(c, 503, 'delivery-scheduling-failed', 'Delivery scheduling failed');
+    case 'internal-error':
+      return problem(c, 500, 'internal-error', 'Internal Server Error');
+  }
 }
 
 // An Administrator endpoint never resolves a Reader cookie. It reports the
@@ -938,6 +985,72 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     }
     if (outcome.kind === 'bad-cursor') return problem(c, 400, 'bad-request', 'Bad Request');
     return c.json(outcome.value, 200);
+  });
+
+  router.openapi(adminReaderEmailVerificationRoute, async (c) => {
+    const runtime = requestIdentityRuntime(c, override);
+    c.header('Cache-Control', 'private, no-store');
+    const session = await runtime.resolveAdministratorSessionContext(
+      c.req.raw.headers,
+      c.get('requestId'),
+    );
+    if (session === null) return administratorSessionProblem(c) as never;
+    const outcome = await forceReaderEmailVerification({
+      db: c.env.DB,
+      runtime,
+      administratorId: session.administrator.id,
+      readerId: c.req.valid('param').userId,
+      headers: c.req.raw.headers,
+      ifMatch: c.req.header('if-match'),
+      requestId: c.get('requestId'),
+    });
+    if (outcome.kind !== 'success') return readerEmailProblem(c, outcome) as never;
+    c.header('ETag', `"${String(outcome.value.revision)}"`);
+    return c.json(outcome.value, 200);
+  });
+
+  async function handleReaderMessage(
+    c: IdentityContext,
+    kind: 'email-verification' | 'password-recovery',
+    readerId: string,
+    body: AdminReaderMessageRequest,
+  ) {
+    const runtime = requestIdentityRuntime(c, override);
+    c.header('Cache-Control', 'private, no-store');
+    const session = await runtime.resolveAdministratorSessionContext(
+      c.req.raw.headers,
+      c.get('requestId'),
+    );
+    if (session === null) return administratorSessionProblem(c);
+    const outcome = await requestReaderMessage({
+      db: c.env.DB,
+      runtime,
+      administratorId: session.administrator.id,
+      readerId,
+      kind,
+      headers: c.req.raw.headers,
+      idempotencyKey: c.req.header('idempotency-key'),
+      body,
+      path: new URL(c.req.url).pathname,
+      requestId: c.get('requestId'),
+    });
+    if (outcome.kind !== 'accepted') return readerEmailProblem(c, outcome) as never;
+    return c.json(outcome.value, 202);
+  }
+
+  router.openapi(adminReaderVerificationMessageRoute, (c) => {
+    const params = c.req.valid('param');
+    return handleReaderMessage(
+      c,
+      'email-verification',
+      params.userId,
+      c.req.valid('json'),
+    ) as never;
+  });
+
+  router.openapi(adminReaderPasswordRecoveryMessageRoute, (c) => {
+    const params = c.req.valid('param');
+    return handleReaderMessage(c, 'password-recovery', params.userId, c.req.valid('json')) as never;
   });
 
   router.openapi(adminUserAccountDetailsRoute, async (c) => {

@@ -1,9 +1,15 @@
 import { useInfiniteQuery } from '@tanstack/react-query';
+import { useState } from 'react';
 import { useGetOne } from 'ra-core';
 import type { ReactNode } from 'react';
 import { Link, Navigate, useLocation, useParams } from 'react-router';
 import type { AdminReaderDetail } from './generated/contracts.js';
-import { adminReaderActivity, ApiError } from './api.js';
+import {
+  adminForceReaderEmailVerification,
+  adminReaderActivity,
+  adminRequestReaderMessage,
+  ApiError,
+} from './api.js';
 import { RecordField } from './kit/components/admin/record-field.js';
 import { Show } from './kit/components/admin/show.js';
 import { Button } from './kit/components/ui/button.js';
@@ -72,6 +78,79 @@ function Activity({ userId }: { userId: string }) {
           {activity.isFetchingNextPage ? 'Cargando…' : 'Cargar más'}
         </Button>
       ) : null}
+    </div>
+  );
+}
+
+function AccessActions({ record, refresh }: { record: AdminReaderDetail; refresh: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+  const run = async (action: () => Promise<unknown>, success: string) => {
+    setBusy(true);
+    setStatus(null);
+    try {
+      await action();
+      setStatus(success);
+      refresh();
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 429) {
+        setStatus(
+          `Espera ${String(error.retryAfterSeconds ?? 60)} segundos antes de volver a intentarlo.`,
+        );
+      } else if (error instanceof ApiError && error.code === 'stale-revision') {
+        setStatus('El usuario cambió. Actualiza la página antes de reintentar.');
+      } else if (error instanceof ApiError && error.code === 'invalid-transition') {
+        setStatus('El correo ya está verificado.');
+      } else {
+        setStatus('No pudimos completar la acción. Inténtalo de nuevo.');
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <div className="space-y-3 rounded-md border p-4">
+      <h3 className="font-semibold">Acciones de correo</h3>
+      <div className="flex flex-wrap gap-2">
+        {!record.emailVerified ? (
+          <Button
+            disabled={busy}
+            onClick={() =>
+              void run(
+                () => adminForceReaderEmailVerification(record.id, record.revision),
+                'Correo marcado como verificado.',
+              )
+            }
+          >
+            Marcar correo como verificado
+          </Button>
+        ) : null}
+        <Button
+          variant="outline"
+          disabled={busy || record.emailVerified}
+          onClick={() =>
+            void run(
+              () => adminRequestReaderMessage(record.id, 'email-verification', crypto.randomUUID()),
+              'Correo de verificación programado.',
+            )
+          }
+        >
+          Reenviar verificación
+        </Button>
+        <Button
+          variant="outline"
+          disabled={busy}
+          onClick={() =>
+            void run(
+              () => adminRequestReaderMessage(record.id, 'password-recovery', crypto.randomUUID()),
+              'Correo de recuperación programado.',
+            )
+          }
+        >
+          Enviar recuperación
+        </Button>
+      </div>
+      {status !== null ? <p role="status">{status}</p> : null}
     </div>
   );
 }
@@ -188,6 +267,7 @@ export function UsersShow() {
             />
           </TabsContent>
           <TabsContent value="access" className="space-y-4 pt-4">
+            <AccessActions record={query.data} refresh={() => void query.refetch()} />
             <RecordField<AdminReaderDetail>
               label="Estado de acceso"
               render={(record) => (record.access.state === 'active' ? 'Activo' : 'Deshabilitado')}

@@ -356,6 +356,30 @@ export const AdminReaderActivitySchema = z
   })
   .openapi('AdminReaderActivity');
 
+export const AdminReaderMessageRequestSchema = z
+  .object({})
+  .strict()
+  .openapi('AdminReaderMessageRequest');
+
+export const AdminReaderEmailVerificationSchema = z
+  .object({
+    email: emailField,
+    emailVerified: z.boolean(),
+    changed: z.boolean(),
+    revision: z.number().int().min(1),
+  })
+  .openapi('AdminReaderEmailVerification');
+
+export const AdminReaderMessageSchema = z
+  .object({
+    workflowId: z.string(),
+    kind: z.enum(['email-verification', 'password-recovery']),
+    state: z.literal('scheduled'),
+    cooldownUntil: z.iso.datetime(),
+    revision: z.number().int().min(1),
+  })
+  .openapi('AdminReaderMessage');
+
 export const AdminUserListSchema = z
   .object({
     items: z.array(AdminUserSchema).openapi({ description: 'Ascending email order.' }),
@@ -468,6 +492,9 @@ export type AdminUser = z.infer<typeof AdminUserSchema>;
 export type AdminReaderDetail = z.infer<typeof AdminReaderDetailSchema>;
 export type AdminReaderActivity = z.infer<typeof AdminReaderActivitySchema>;
 export type AdminReaderActivityQuery = z.infer<typeof AdminReaderActivityQuerySchema>;
+export type AdminReaderEmailVerification = z.infer<typeof AdminReaderEmailVerificationSchema>;
+export type AdminReaderMessage = z.infer<typeof AdminReaderMessageSchema>;
+export type AdminReaderMessageRequest = z.infer<typeof AdminReaderMessageRequestSchema>;
 export type AdminUserList = z.infer<typeof AdminUserListSchema>;
 export type AdminUserListQuery = z.infer<typeof AdminUserListQuerySchema>;
 export type AdminUserDetailParams = z.infer<typeof AdminUserDetailParamsSchema>;
