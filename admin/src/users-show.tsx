@@ -1,6 +1,6 @@
 import { useGetOne } from 'ra-core';
 import type { ReactNode } from 'react';
-import { Link, Navigate, useParams } from 'react-router';
+import { Link, Navigate, useLocation, useParams } from 'react-router';
 import type { AdminUser } from './generated/contracts.js';
 import { ApiError } from './api.js';
 import { RecordField } from './kit/components/admin/record-field.js';
@@ -18,12 +18,21 @@ function DetailState({ children }: { children: ReactNode }) {
   );
 }
 
-function BackToUsers() {
-  return <Link to="/users">Volver a la lista</Link>;
+function listSearch(state: unknown): string {
+  if (state === null || typeof state !== 'object' || !('fromList' in state)) return '';
+  const value = state.fromList;
+  return typeof value === 'string' && value.startsWith('?') && value.length <= 2048 ? value : '';
+}
+
+function BackToUsers({ search }: { search: string }) {
+  return <Link to={{ pathname: '/users', search }}>Volver a la lista</Link>;
 }
 
 export function UsersShow() {
   const { id } = useParams();
+  const location = useLocation();
+  const search = listSearch(location.state);
+  const navigationState = search.length > 0 ? { fromList: search } : undefined;
   const validId = id !== undefined && id.length > 0 && id.length <= 128;
   const query = useGetOne<AdminUser>(
     'users',
@@ -38,7 +47,7 @@ export function UsersShow() {
           <h2>Solicitud inválida</h2>
           <p>Revisa el identificador del usuario.</p>
         </div>
-        <BackToUsers />
+        <BackToUsers search={search} />
       </DetailState>
     );
   }
@@ -62,7 +71,7 @@ export function UsersShow() {
             <h2>Acceso denegado</h2>
             <p>Tu cuenta no tiene permiso para ver este usuario.</p>
           </div>
-          <BackToUsers />
+          <BackToUsers search={search} />
         </DetailState>
       );
     }
@@ -73,7 +82,7 @@ export function UsersShow() {
             <h2>Usuario no encontrado</h2>
             <p>No existe ningún usuario con este identificador.</p>
           </div>
-          <BackToUsers />
+          <BackToUsers search={search} />
         </DetailState>
       );
     }
@@ -90,7 +99,7 @@ export function UsersShow() {
             Reintentar
           </Button>
         </div>
-        <BackToUsers />
+        <BackToUsers search={search} />
       </DetailState>
     );
   }
@@ -110,7 +119,12 @@ export function UsersShow() {
         />
         <RecordField source="role" label="Rol" />
         <p>
-          <Link to={`/users/${encodeURIComponent(id)}`}>Editar datos de cuenta</Link>
+          <Link to={`/users/${encodeURIComponent(id)}/edit`} state={navigationState}>
+            Editar datos de cuenta
+          </Link>
+        </p>
+        <p>
+          <BackToUsers search={search} />
         </p>
       </div>
     </Show>

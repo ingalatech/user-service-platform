@@ -5,6 +5,7 @@ import {
   HasDashboardContextProvider,
   memoryStore,
   Resource,
+  ResourceContextProvider,
   type CoreLayoutProps,
   useAuthState,
   useGetIdentity,
@@ -168,6 +169,17 @@ function ProtectedLayout({ children }: CoreLayoutProps) {
   return <ProtectedView>{children}</ProtectedView>;
 }
 
+function PlannedSection({ title }: { title: string }) {
+  return (
+    <section className="space-y-3 py-4" aria-labelledby="planned-section-title">
+      <h1 id="planned-section-title" className="text-2xl font-bold tracking-tight">
+        {title}
+      </h1>
+      <p>Esta sección se habilitará con sus contratos productivos.</p>
+    </section>
+  );
+}
+
 export function App() {
   return (
     <Admin
@@ -185,14 +197,38 @@ export function App() {
       authenticationError={ServiceFailure}
       accessDenied={Denied}
     >
+      <Resource name="users" list={UsersList} show={UsersShow} options={{ label: 'Usuarios' }} />
       <Resource
-        name="users"
-        list={UsersList}
-        show={UsersShow}
-        edit={UsersEdit}
-        options={{ label: 'Usuarios' }}
+        name="administrators"
+        list={() => <PlannedSection title="Administradores" />}
+        options={{ label: 'Administradores' }}
+      />
+      <Resource
+        name="audit"
+        list={() => <PlannedSection title="Auditoría administrativa" />}
+        options={{ label: 'Auditoría administrativa' }}
       />
       <CustomRoutes noLayout>
+        <Route
+          path="/users/:id"
+          element={
+            <ProtectedView>
+              <ResourceContextProvider value="users">
+                <UsersShow />
+              </ResourceContextProvider>
+            </ProtectedView>
+          }
+        />
+        <Route
+          path="/users/:id/edit"
+          element={
+            <ProtectedView>
+              <ResourceContextProvider value="users">
+                <UsersEdit />
+              </ResourceContextProvider>
+            </ProtectedView>
+          }
+        />
         <Route
           path="/"
           element={

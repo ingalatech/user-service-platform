@@ -297,6 +297,21 @@ export async function runAdminBrowserTest(): Promise<void> {
     const readerMe = await http('/v1/me', { headers: { cookie: cookieHeader } });
     assert(readerMe.status === 401, 'Administrator cookie is not a Reader session');
     await readerMe.arrayBuffer();
+    phase = 'canonical administration hierarchy';
+    await page.getByRole('link', { name: 'Administradores', exact: true }).click();
+    await visible(page, 'Administradores');
+    await page
+      .getByText('Esta sección se habilitará con sus contratos productivos.', {
+        exact: true,
+      })
+      .waitFor();
+    await page.getByRole('link', { name: 'Auditoría administrativa', exact: true }).click();
+    await visible(page, 'Auditoría administrativa');
+    await page
+      .getByText('Esta sección se habilitará con sus contratos productivos.', {
+        exact: true,
+      })
+      .waitFor();
     phase = 'user list, search and pagination';
     for (let i = 0; i < 12; i++) {
       const email = `qa-list-${String(i).padStart(2, '0')}@example.com`;
@@ -383,7 +398,7 @@ export async function runAdminBrowserTest(): Promise<void> {
       typeof deletedId === 'string' && deletedId.length > 0,
       'deleted User identifier resolved',
     );
-    await page.goto(`${base}/admin/users/${encodeURIComponent(deletedId)}`);
+    await page.goto(`${base}/admin/users/${encodeURIComponent(deletedId)}/edit`);
     await visible(page, 'Editar datos de cuenta');
     await sql(`DELETE FROM "user" WHERE id = '${deletedId}'`);
     await page.getByRole('textbox', { name: 'Nombre', exact: true }).fill('Deleted');
@@ -414,11 +429,22 @@ export async function runAdminBrowserTest(): Promise<void> {
     await page.getByText('Identificador', { exact: true }).waitFor();
     await page.getByText('Rol', { exact: true }).waitFor();
     assert(
-      page.url().endsWith(`/admin/users/${encodeURIComponent(regularDetailId)}/show`),
-      'show uses canonical resource route',
+      page.url().includes(`/admin/users/${encodeURIComponent(regularDetailId)}`) &&
+        !page.url().includes('/show'),
+      'list preserves the established User detail route',
     );
+    await page.getByRole('link', { name: 'Volver a la lista', exact: true }).click();
+    await visible(page, 'Usuarios');
+    assert((await searchBox.inputValue()).trim().toLowerCase() === regular, 'back restores search');
+    await page.getByText('1 usuario en total', { exact: true }).waitFor();
+    await page.getByRole('link', { name: 'Ver detalle', exact: true }).click();
+    await visible(page, 'Detalle de usuario');
     await page.getByRole('link', { name: 'Editar datos de cuenta', exact: true }).click();
     await visible(page, 'Editar datos de cuenta');
+    assert(
+      page.url().includes(`/admin/users/${encodeURIComponent(regularDetailId)}/edit`),
+      'account details use an explicit edit route',
+    );
     const firstNameInput = page.getByRole('textbox', { name: 'Nombre', exact: true });
     await firstNameInput.waitFor();
     assert((await firstNameInput.inputValue()) === '', 'missing Account Details render empty');
@@ -462,7 +488,7 @@ export async function runAdminBrowserTest(): Promise<void> {
       .map(({ name, value }) => `${name}=${value}`)
       .join('; ');
     token = (await context.cookies()).find((cookie) => cookie.name.endsWith('session_token'));
-    await page.goto(`${base}/admin/users/${encodeURIComponent(regularDetailId)}`);
+    await page.goto(`${base}/admin/users/${encodeURIComponent(regularDetailId)}/edit`);
     await visible(page, 'Editar datos de cuenta');
     const activeToken = token;
     assert(activeToken !== undefined, 'refreshed Admin cookie is available');
@@ -504,13 +530,13 @@ export async function runAdminBrowserTest(): Promise<void> {
     await searchBox.fill(regular);
     await page.getByText('1 usuario en total', { exact: true }).waitFor();
     await table.getByText(regular, { exact: true }).waitFor();
-    await page.goto(`${base}/admin/users/${encodeURIComponent(regularDetailId)}/show`);
+    await page.goto(`${base}/admin/users/${encodeURIComponent(regularDetailId)}`);
     await visible(page, 'Detalle de usuario');
     await page.getByText(regular, { exact: true }).waitFor();
     await page.reload();
     await visible(page, 'Detalle de usuario');
     await page.getByText(regular, { exact: true }).waitFor();
-    await page.goto(`${base}/admin/users/does-not-exist-41`);
+    await page.goto(`${base}/admin/users/does-not-exist-41/edit`);
     await visible(page, 'Editar datos de cuenta');
     await page.getByText('Usuario no encontrado', { exact: true }).waitFor();
     await page.goto(`${base}/admin/users/does-not-exist-41/show`);

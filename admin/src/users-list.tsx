@@ -1,13 +1,13 @@
 import { useListContext } from 'ra-core';
 import type { ComponentProps, ReactElement } from 'react';
+import { Link, useLocation } from 'react-router';
 import type { AdminUser } from './generated/contracts.js';
 import { ApiError } from './api.js';
 import { DataTable } from './kit/components/admin/data-table.js';
 import { List } from './kit/components/admin/list.js';
 import { ListPagination } from './kit/components/admin/list-pagination.js';
 import { SearchInput } from './kit/components/admin/search-input.js';
-import { ShowButton } from './kit/components/admin/show-button.js';
-import { Button } from './kit/components/ui/button.js';
+import { Button, buttonVariants } from './kit/components/ui/button.js';
 
 const perPage = 10;
 
@@ -32,6 +32,7 @@ const filters: ReactElement[] = [
 
 function UsersListContent() {
   const { data, total, error, isPending, isFetching, refetch } = useListContext<AdminUser>();
+  const location = useLocation();
 
   if (isPending || isFetching) {
     return <p role="status">Cargando usuarios…</p>;
@@ -78,9 +79,18 @@ function UsersListContent() {
           render={(record) => (record.emailVerified ? 'Correo verificado' : 'Correo sin verificar')}
         />
         <DataTable.Col source="role" label="Rol" />
-        <DataTable.Col label="Acciones">
-          <ShowButton label="Ver detalle" />
-        </DataTable.Col>
+        <DataTable.Col
+          label="Acciones"
+          render={(record) => (
+            <Link
+              className={buttonVariants({ variant: 'outline' })}
+              to={`/users/${encodeURIComponent(record.id)}`}
+              state={{ fromList: location.search }}
+            >
+              Ver detalle
+            </Link>
+          )}
+        />
       </DataTable>
     </>
   );
