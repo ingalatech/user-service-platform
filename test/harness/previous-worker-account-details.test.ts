@@ -26,8 +26,8 @@ function requireHarness(): TestHarness {
 
 // Spec #245/#246 compatibility seam: run the actual pre-#246 Worker source
 // from 638e599c19da0aa93960adf8efb1e48fb487cb4e, not the current source,
-// against an isolated D1 database migrated through 0009. The only file added
-// to that historical worktree is migration 0009; its code remains at the
+// against an isolated D1 database migrated through the current additive
+// foundation. Only later migrations are added to that historical worktree; its code remains at the
 // recorded commit. CI fetches full history so this test never fetches remotely.
 describe('pre-Account-Details Worker against the expanded D1 schema', () => {
   beforeAll(async () => {
@@ -68,10 +68,19 @@ describe('pre-Account-Details Worker against the expanded D1 schema', () => {
       join(repoRoot, 'admin', 'dist'),
       join(harnessState.previousWorkerRoot, 'admin', 'dist'),
     );
-    await copyFile(
-      join(repoRoot, 'drizzle', '0009_cute_zarek.sql'),
-      join(harnessState.previousWorkerRoot, 'drizzle', '0009_cute_zarek.sql'),
-    );
+    for (const migration of [
+      '0009_cute_zarek.sql',
+      '0010_real_sphinx.sql',
+      '0011_daffy_white_queen.sql',
+      '0012_goofy_outlaw_kid.sql',
+      '0013_strong_mockingbird.sql',
+      '0014_easy_morlun.sql',
+    ]) {
+      await copyFile(
+        join(repoRoot, 'drizzle', migration),
+        join(harnessState.previousWorkerRoot, 'drizzle', migration),
+      );
+    }
 
     harnessState.server = createTestHarness({
       root: harnessState.previousWorkerRoot,
@@ -95,6 +104,18 @@ describe('pre-Account-Details Worker against the expanded D1 schema', () => {
       name: string;
     }>();
     expect(migratedColumns.results.map((column) => column.name)).toContain('first_name');
+    const foundation = await DB.prepare(
+      `SELECT name FROM sqlite_master WHERE type = 'table' AND name IN
+       ('reader_access_state', 'administrator_access_state', 'identity_event',
+        'identity_reservation', 'admin_idempotency_record')`,
+    ).all<{ name: string }>();
+    expect(foundation.results.map((row) => row.name).sort()).toEqual([
+      'admin_idempotency_record',
+      'administrator_access_state',
+      'identity_event',
+      'identity_reservation',
+      'reader_access_state',
+    ]);
   }, 120_000);
 
   afterAll(async () => {

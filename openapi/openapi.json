@@ -820,6 +820,208 @@
           "role"
         ]
       },
+      "AdminReaderDetail": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/AdminUser"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "revision": {
+                "type": "integer",
+                "minimum": 1,
+                "example": 1
+              },
+              "summary": {
+                "$ref": "#/components/schemas/AdminReaderSummary"
+              },
+              "access": {
+                "$ref": "#/components/schemas/AdminReaderAccess"
+              },
+              "methods": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "password",
+                        "social"
+                      ]
+                    },
+                    "provider": {
+                      "type": "string",
+                      "enum": [
+                        "google",
+                        "facebook",
+                        "apple"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "type"
+                  ]
+                },
+                "description": "Safe locally usable login methods without provider identifiers."
+              },
+              "activeWorkflows": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "type": {
+                      "type": "string",
+                      "enum": [
+                        "email-change",
+                        "deletion-request"
+                      ]
+                    },
+                    "state": {
+                      "type": "string"
+                    },
+                    "createdAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "type",
+                    "state",
+                    "createdAt"
+                  ]
+                },
+                "description": "Only persisted active workflows; never inferred or fabricated."
+              }
+            },
+            "required": [
+              "revision",
+              "summary",
+              "access",
+              "methods",
+              "activeWorkflows"
+            ]
+          }
+        ]
+      },
+      "AdminReaderSummary": {
+        "type": "object",
+        "properties": {
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "createdAt",
+          "updatedAt"
+        ]
+      },
+      "AdminReaderAccess": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "active",
+              "disabled"
+            ]
+          },
+          "effectiveState": {
+            "type": "string",
+            "enum": [
+              "active",
+              "disabled",
+              "suspended"
+            ]
+          }
+        },
+        "required": [
+          "state",
+          "effectiveState"
+        ]
+      },
+      "AdminReaderActivity": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminReaderActivityEvent"
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "nextCursor"
+        ]
+      },
+      "AdminReaderActivityEvent": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "email-verified",
+              "email-changed",
+              "social-identity-unlinked",
+              "sessions-revoked",
+              "access-disabled",
+              "access-rehabilitated",
+              "deletion-requested",
+              "deletion-approved",
+              "deletion-rejected",
+              "deletion-cancelled"
+            ]
+          },
+          "occurredAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "actor": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "realm": {
+                "type": "string",
+                "enum": [
+                  "administrator"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "realm"
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "type",
+          "occurredAt",
+          "actor"
+        ]
+      },
       "AdminBootstrapResult": {
         "type": "object",
         "properties": {
@@ -1989,13 +2191,121 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/AdminUser"
+                  "$ref": "#/components/schemas/AdminReaderDetail"
                 }
               }
             }
           },
           "default": {
             "description": "Authorization failure as RFC 9457 Problem Details.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/users/{userId}/activity": {
+      "get": {
+        "operationId": "getAdminReaderActivity",
+        "summary": "Read Reader lifecycle activity",
+        "description": "Returns only allowlisted successful lifecycle events in newest-first order. Existing history is not backfilled, routine login/logout is excluded, and cursors are opaque.",
+        "tags": [
+          "admin"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "Opaque administrative User identifier.",
+              "example": "abc123"
+            },
+            "required": true,
+            "description": "Opaque administrative User identifier.",
+            "name": "userId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50,
+              "default": 25
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "required": false,
+            "name": "cursor",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The Reader lifecycle activity page.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminReaderActivity"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid parameters or cursor.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No authoritative Administrator session.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The actor lacks authority or is disabled.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Reader not found.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal failure.",
             "content": {
               "application/problem+json": {
                 "schema": {

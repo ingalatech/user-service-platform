@@ -288,6 +288,74 @@ export const AdminUserSchema = z
   })
   .openapi('AdminUser');
 
+export const AdminReaderDetailSchema = AdminUserSchema.extend({
+  revision: z.number().int().min(1).openapi({ example: 1 }),
+  summary: z
+    .object({
+      createdAt: z.iso.datetime(),
+      updatedAt: z.iso.datetime(),
+    })
+    .openapi('AdminReaderSummary'),
+  access: z
+    .object({
+      state: z.enum(['active', 'disabled']),
+      effectiveState: z.enum(['active', 'disabled', 'suspended']),
+    })
+    .openapi('AdminReaderAccess'),
+  methods: z
+    .array(
+      z.object({
+        type: z.enum(['password', 'social']),
+        provider: z.enum(['google', 'facebook', 'apple']).optional(),
+      }),
+    )
+    .openapi({ description: 'Safe locally usable login methods without provider identifiers.' }),
+  activeWorkflows: z
+    .array(
+      z.object({
+        id: z.string(),
+        type: z.enum(['email-change', 'deletion-request']),
+        state: z.string(),
+        createdAt: z.iso.datetime(),
+      }),
+    )
+    .openapi({ description: 'Only persisted active workflows; never inferred or fabricated.' }),
+}).openapi('AdminReaderDetail');
+
+export const AdminReaderActivityQuerySchema = z
+  .object({
+    limit: z.coerce.number().int().min(1).max(50).default(25),
+    cursor: z.string().min(1).max(512).optional(),
+  })
+  .openapi('AdminReaderActivityQuery');
+
+export const AdminReaderActivityEventSchema = z
+  .object({
+    id: z.string(),
+    type: z.enum([
+      'email-verified',
+      'email-changed',
+      'social-identity-unlinked',
+      'sessions-revoked',
+      'access-disabled',
+      'access-rehabilitated',
+      'deletion-requested',
+      'deletion-approved',
+      'deletion-rejected',
+      'deletion-cancelled',
+    ]),
+    occurredAt: z.iso.datetime(),
+    actor: z.object({ id: z.string(), realm: z.literal('administrator') }),
+  })
+  .openapi('AdminReaderActivityEvent');
+
+export const AdminReaderActivitySchema = z
+  .object({
+    items: z.array(AdminReaderActivityEventSchema),
+    nextCursor: z.string().nullable(),
+  })
+  .openapi('AdminReaderActivity');
+
 export const AdminUserListSchema = z
   .object({
     items: z.array(AdminUserSchema).openapi({ description: 'Ascending email order.' }),
@@ -397,6 +465,9 @@ export type AdminMe = z.infer<typeof AdminMeSchema>;
 export type AdminBootstrapRequest = z.infer<typeof AdminBootstrapRequestSchema>;
 export type AdminBootstrapResult = z.infer<typeof AdminBootstrapResultSchema>;
 export type AdminUser = z.infer<typeof AdminUserSchema>;
+export type AdminReaderDetail = z.infer<typeof AdminReaderDetailSchema>;
+export type AdminReaderActivity = z.infer<typeof AdminReaderActivitySchema>;
+export type AdminReaderActivityQuery = z.infer<typeof AdminReaderActivityQuerySchema>;
 export type AdminUserList = z.infer<typeof AdminUserListSchema>;
 export type AdminUserListQuery = z.infer<typeof AdminUserListQuerySchema>;
 export type AdminUserDetailParams = z.infer<typeof AdminUserDetailParamsSchema>;

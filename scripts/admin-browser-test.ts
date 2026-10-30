@@ -281,12 +281,21 @@ export async function runAdminBrowserTest(): Promise<void> {
       'UI storage contains no password or session token',
     );
     let cookieHeader = cookies.map(({ name, value }) => `${name}=${value}`).join('; ');
+    let administratorId = '';
     for (const [path, fields] of [
       ['/v1/admin/me', ['email', 'emailVerified', 'id', 'realm', 'role']],
     ] as const) {
       const response = await http(path, { headers: { cookie: cookieHeader } });
       assert(response.status === 200, 'authenticated HTTP identity');
       const payload: unknown = await response.json();
+      if (
+        typeof payload === 'object' &&
+        payload !== null &&
+        'id' in payload &&
+        typeof payload.id === 'string'
+      ) {
+        administratorId = payload.id;
+      }
       assert(
         typeof payload === 'object' &&
           payload !== null &&
@@ -294,6 +303,7 @@ export async function runAdminBrowserTest(): Promise<void> {
         'exact application-owned identity fields',
       );
     }
+    assert(administratorId.length > 0, 'Administrator opaque id resolved');
     const readerMe = await http('/v1/me', { headers: { cookie: cookieHeader } });
     assert(readerMe.status === 401, 'Administrator cookie is not a Reader session');
     await readerMe.arrayBuffer();
@@ -433,6 +443,78 @@ export async function runAdminBrowserTest(): Promise<void> {
     await page.getByText('Correo verificado', { exact: true }).waitFor();
     await page.getByText('Identificador', { exact: true }).waitFor();
     await page.getByText('Rol', { exact: true }).waitFor();
+    const tabs = page.getByRole('tab');
+    assert(
+      (await tabs.allTextContents()).join('|') ===
+        'Resumen|Acceso|Sesiones|Ciclo de vida|Actividad',
+      'Reader detail exposes the approved tab order',
+    );
+    await page.getByRole('tab', { name: 'Acceso', exact: true }).click();
+    await page.getByText('Permitido', { exact: true }).waitFor();
+    await page.getByText('Contraseña', { exact: true }).waitFor();
+    await page.getByRole('tab', { name: 'Sesiones', exact: true }).click();
+    await page
+      .getByText('La consulta y gestión de sesiones estará disponible en una próxima entrega.', {
+        exact: true,
+      })
+      .waitFor();
+    await page.getByRole('tab', { name: 'Ciclo de vida', exact: true }).click();
+    await page.getByText('No hay procesos de ciclo de vida activos.', { exact: true }).waitFor();
+    await page.getByRole('tab', { name: 'Actividad', exact: true }).click();
+    await page
+      .getByText('No hay actividad de ciclo de vida registrada.', { exact: true })
+      .waitFor();
+    const activityValues = Array.from({ length: 26 }, (_, index) => {
+      const number = index + 1;
+      const type = number === 26 ? 'email-verified' : 'access-disabled';
+      return `('browser-event-${String(number).padStart(2, '0')}', 1, '${type}', ${String(1_700_000_000_000 + number)}, 'administrator', '${administratorId}', 'reader', '${regularDetailId}', 'success', 'browser-request-${String(number)}', NULL, '{"token":"not-projected"}')`;
+    }).join(',');
+    await sql(
+      `INSERT INTO identity_event (id, version, type, occurred_at, actor_realm, actor_id, subject_realm, subject_id, result, request_id, problem_code, metadata) VALUES ${activityValues}`,
+    );
+    await page.reload();
+    await visible(page, 'Detalle de usuario');
+    let releaseActivity: (() => void) | undefined;
+    const activityGate = new Promise<void>((resolve) => {
+      releaseActivity = resolve;
+    });
+    await page.route('**/v1/admin/users/*/activity*', async (route) => {
+      await activityGate;
+      await route.continue();
+    });
+    await page.getByRole('tab', { name: 'Actividad', exact: true }).click();
+    await page.getByText('Cargando actividad…', { exact: true }).waitFor();
+    releaseActivity?.();
+    await page.getByText('access-disabled', { exact: true }).first().waitFor();
+    assert(
+      (await page.getByText('not-projected', { exact: false }).count()) === 0,
+      'activity never renders ledger metadata',
+    );
+    await page.unroute('**/v1/admin/users/*/activity*');
+    await page.getByRole('button', { name: 'Cargar más', exact: true }).click();
+    await page.getByText('email-verified', { exact: true }).waitFor();
+
+    await page.reload();
+    await visible(page, 'Detalle de usuario');
+    await page.route('**/v1/admin/users/*/activity*', async (route) => {
+      await route.fulfill({
+        status: 500,
+        contentType: 'application/problem+json',
+        body: JSON.stringify({
+          type: 'urn:problem:internal-error',
+          title: 'Internal Server Error',
+          status: 500,
+          code: 'internal-error',
+        }),
+      });
+    });
+    await page.getByRole('tab', { name: 'Actividad', exact: true }).click();
+    await page
+      .getByText('No pudimos cargar la actividad. Tu sesión se conserva.', { exact: true })
+      .waitFor();
+    await page.unroute('**/v1/admin/users/*/activity*');
+    await page.getByRole('button', { name: 'Reintentar', exact: true }).click();
+    await page.getByText('access-disabled', { exact: true }).first().waitFor();
     assert(
       page.url().includes(`/admin/users/${encodeURIComponent(regularDetailId)}`) &&
         !page.url().includes('/show'),
@@ -702,9 +784,24 @@ export async function runAdminBrowserTest(): Promise<void> {
     );
     await page.goto(`${base}/admin/users/${encodeURIComponent(regularDetailId)}/show`);
     await visible(page, 'Detalle de usuario');
+    await page.locator('[data-slot="tabs-trigger"]').first().waitFor();
     assert(
-      await page.evaluate<boolean>('document.documentElement.scrollWidth <= window.innerWidth'),
-      'narrow user detail fits viewport',
+      (await page.locator('[data-slot="tabs-trigger"]').count()) === 5,
+      'all Reader detail tabs remain available on mobile',
+    );
+    const detailOverflow = await page.evaluate<{
+      fits: boolean;
+      offenders: string[];
+    }>(`(() => ({
+      fits: document.documentElement.scrollWidth <= window.innerWidth,
+      offenders: [...document.querySelectorAll('*')]
+        .filter(node => node.getBoundingClientRect().right > window.innerWidth + 1)
+        .slice(0, 5)
+        .map(node => node.getAttribute('data-slot') || node.tagName)
+    }))()`);
+    assert(
+      detailOverflow.fits,
+      `narrow user detail fits viewport (${detailOverflow.offenders.join(',')})`,
     );
     await context.close();
     console.log(

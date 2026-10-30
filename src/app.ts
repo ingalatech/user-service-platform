@@ -123,7 +123,12 @@ export function createApp(identityOptions: IdentityRouterOptions = {}) {
             instance: new URL(c.req.url).pathname,
           }),
           400,
-          { 'Content-Type': PROBLEM_JSON, 'Cache-Control': 'no-store' },
+          {
+            'Content-Type': PROBLEM_JSON,
+            'Cache-Control': new URL(c.req.url).pathname.startsWith('/v1/admin/users')
+              ? 'private, no-store'
+              : 'no-store',
+          },
         );
       }
       return undefined;
@@ -182,7 +187,12 @@ export function createApp(identityOptions: IdentityRouterOptions = {}) {
         instance: new URL(c.req.url).pathname,
       }),
       404,
-      { 'Content-Type': PROBLEM_JSON },
+      {
+        'Content-Type': PROBLEM_JSON,
+        ...(new URL(c.req.url).pathname.startsWith('/v1/admin/')
+          ? { 'Cache-Control': 'private, no-store' }
+          : {}),
+      },
     ),
   );
 
@@ -209,7 +219,12 @@ export function createApp(identityOptions: IdentityRouterOptions = {}) {
         title: 'Internal Server Error',
       }),
       500,
-      { 'Content-Type': PROBLEM_JSON },
+      {
+        'Content-Type': PROBLEM_JSON,
+        ...(new URL(c.req.url).pathname.startsWith('/v1/admin/')
+          ? { 'Cache-Control': 'private, no-store' }
+          : {}),
+      },
     );
   });
 

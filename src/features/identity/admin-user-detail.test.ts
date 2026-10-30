@@ -218,7 +218,12 @@ beforeEach(async () => {
     db.prepare('DELETE FROM "admin_account"'),
     db.prepare('DELETE FROM "admin_verification"'),
     db.prepare('DELETE FROM "admin_email_verification_token"'),
+    db.prepare('DELETE FROM "identity_event"'),
+    db.prepare('DELETE FROM "admin_idempotency_record"'),
+    db.prepare('DELETE FROM "identity_reservation"'),
+    db.prepare('DELETE FROM "administrator_access_state"'),
     db.prepare('DELETE FROM "admin_user"'),
+    db.prepare('DELETE FROM "reader_access_state"'),
     db.prepare('DELETE FROM "session"'),
     db.prepare('DELETE FROM "account"'),
     db.prepare('DELETE FROM "verification"'),
@@ -248,17 +253,38 @@ describe('GET /v1/admin/users/{userId}', () => {
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toContain('application/json');
     const body = (await res.json()) as Record<string, unknown>;
-    expect(Object.keys(body).sort()).toEqual(['email', 'emailVerified', 'id', 'realm', 'role']);
+    expect(Object.keys(body).sort()).toEqual([
+      'access',
+      'activeWorkflows',
+      'email',
+      'emailVerified',
+      'id',
+      'methods',
+      'realm',
+      'revision',
+      'role',
+      'summary',
+    ]);
     expect(body.realm).toBe('reader');
-    expect(body).toEqual({
+    expect(body).toMatchObject({
       id: userId,
       email: 'ordinary@example.com',
       emailVerified: true,
       realm: 'reader',
       role: 'user',
+      revision: 1,
+      access: {
+        state: 'active',
+        effectiveState: 'active',
+      },
+      activeWorkflows: [],
     });
+    expect(body.methods).toEqual([{ type: 'password' }]);
+    expect(res.headers.get('etag')).toBe('"1"');
+    expect(res.headers.get('cache-control')).toBe('private, no-store');
     const serialized = JSON.stringify(body).toLowerCase();
-    expect(serialized).not.toContain('password');
+    expect(serialized).not.toContain('passwordhash');
+    expect(serialized).not.toContain('password_hash');
     expect(serialized).not.toContain('token');
     expect(serialized).not.toContain('session');
   });
@@ -270,7 +296,8 @@ describe('GET /v1/admin/users/{userId}', () => {
 
     expect(res.status).toBe(404);
     expect(res.headers.get('content-type')).toContain('application/problem+json');
-    expect(await res.json()).toMatchObject({ code: 'not-found', status: 404 });
+    expect(await res.json()).toMatchObject({ code: 'reader-not-found', status: 404 });
+    expect(res.headers.get('cache-control')).toBe('private, no-store');
   });
 
   it('rejects overlong identifiers through the public validation contract', async () => {
@@ -377,6 +404,206 @@ describe('GET /v1/admin/users/{userId}', () => {
     expect(joined).not.toContain(adminId);
     const paths = loggedPaths(logs);
     expect(paths).toContain('/v1/admin/users/:userId');
+  });
+
+  it('returns the same disabled-actor problem before existing or missing Reader lookup', async () => {
+    const { cookie, adminId } = await bootstrapVerifiedAdmin();
+    const { userId } = await verifiedRegularCookie('disabled-actor-target@example.com');
+    await workerEnv.DB.prepare(
+      'INSERT INTO administrator_access_state (user_id, state, revision, updated_at) VALUES (?, ?, ?, ?)',
+    )
+      .bind(adminId, 'disabled', 2, Date.now())
+      .run();
+
+    for (const target of [userId, 'does-not-exist-41']) {
+      const response = await get(`/v1/admin/users/${encodeURIComponent(target)}`, { cookie });
+      expect(response.status).toBe(403);
+      expect(await response.json()).toMatchObject({
+        code: 'administrator-disabled',
+        status: 403,
+      });
+      expect(response.headers.get('cache-control')).toBe('private, no-store');
+    }
+  });
+});
+
+describe('GET /v1/admin/users/{userId}/activity', () => {
+  it('returns allowlisted successful lifecycle events newest-first with an opaque cursor', async () => {
+    const { cookie, adminId } = await bootstrapVerifiedAdmin();
+    const { userId } = await verifiedRegularCookie('activity-target@example.com');
+    const insert = workerEnv.DB.prepare(
+      `INSERT INTO identity_event
+       (id, version, type, occurred_at, actor_realm, actor_id, subject_realm, subject_id,
+        result, request_id, problem_code, metadata)
+       VALUES (?, 1, ?, ?, 'administrator', ?, 'reader', ?, ?, ?, ?, ?)`,
+    );
+    await workerEnv.DB.batch([
+      insert.bind(
+        'event-1',
+        'email-verified',
+        1_700_000_001_000,
+        adminId,
+        userId,
+        'success',
+        'request-1',
+        null,
+        JSON.stringify({ token: 'never-project-me' }),
+      ),
+      insert.bind(
+        'event-2',
+        'access-disabled',
+        1_700_000_002_000,
+        adminId,
+        userId,
+        'success',
+        'request-2',
+        null,
+        JSON.stringify({ ip: '192.0.2.1' }),
+      ),
+      insert.bind(
+        'event-3',
+        'access-rehabilitated',
+        1_700_000_003_000,
+        adminId,
+        userId,
+        'success',
+        'request-3',
+        null,
+        JSON.stringify({ userAgent: 'secret' }),
+      ),
+      insert.bind(
+        'routine-login',
+        'login',
+        1_700_000_004_000,
+        adminId,
+        userId,
+        'success',
+        'request-4',
+        null,
+        null,
+      ),
+      insert.bind(
+        'failed-event',
+        'email-changed',
+        1_700_000_005_000,
+        adminId,
+        userId,
+        'failure',
+        'request-5',
+        'conflict',
+        null,
+      ),
+    ]);
+
+    const first = await get(`/v1/admin/users/${encodeURIComponent(userId)}/activity?limit=2`, {
+      cookie,
+    });
+    expect(first.status).toBe(200);
+    expect(first.headers.get('cache-control')).toBe('private, no-store');
+    const firstBody = (await first.json()) as {
+      items: Record<string, unknown>[];
+      nextCursor: string | null;
+    };
+    expect(firstBody.items.map((event) => event.id)).toEqual(['event-3', 'event-2']);
+    expect(firstBody.nextCursor).toEqual(expect.any(String));
+    expect(JSON.stringify(firstBody)).not.toMatch(/token|192\.0\.2\.1|userAgent|request-/i);
+
+    const second = await get(
+      `/v1/admin/users/${encodeURIComponent(userId)}/activity?limit=2&cursor=${encodeURIComponent(firstBody.nextCursor ?? '')}`,
+      { cookie },
+    );
+    expect(second.status).toBe(200);
+    const secondBody = (await second.json()) as {
+      items: Record<string, unknown>[];
+      nextCursor: string | null;
+    };
+    expect(secondBody.items.map((event) => event.id)).toEqual(['event-1']);
+    expect(secondBody.nextCursor).toBeNull();
+  });
+
+  it('is empty for existing history and validates cursor and maximum page size privately', async () => {
+    const { cookie } = await bootstrapVerifiedAdmin();
+    const { userId } = await verifiedRegularCookie('empty-activity@example.com');
+
+    const empty = await get(`/v1/admin/users/${encodeURIComponent(userId)}/activity`, { cookie });
+    expect(empty.status).toBe(200);
+    expect(await empty.json()).toEqual({ items: [], nextCursor: null });
+
+    for (const suffix of ['?limit=51', '?cursor=not-a-cursor']) {
+      const invalid = await get(`/v1/admin/users/${encodeURIComponent(userId)}/activity${suffix}`, {
+        cookie,
+      });
+      expect(invalid.status).toBe(400);
+      expect(await invalid.json()).toMatchObject({ code: 'bad-request' });
+      expect(invalid.headers.get('cache-control')).toBe('private, no-store');
+    }
+  });
+});
+
+describe('administrative lifecycle persistence foundation', () => {
+  it('provides revision defaults, scoped reservations and 24-hour idempotency expiry', async () => {
+    const { adminId } = await bootstrapVerifiedAdmin();
+    const { userId } = await verifiedRegularCookie('foundation@example.com');
+    const now = 1_700_000_000_000;
+    await workerEnv.DB.batch([
+      workerEnv.DB.prepare(
+        'INSERT INTO reader_access_state (user_id, updated_at) VALUES (?, ?)',
+      ).bind(userId, now),
+      workerEnv.DB.prepare(
+        'INSERT INTO administrator_access_state (user_id, updated_at) VALUES (?, ?)',
+      ).bind(adminId, now),
+      workerEnv.DB.prepare(
+        `INSERT INTO identity_reservation
+           (id, kind, realm, normalized_value, subject_id, workflow_id, created_at, expires_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(
+        'reservation-1',
+        'email',
+        'reader',
+        'future@example.com',
+        userId,
+        'workflow-1',
+        now,
+        now + 1,
+      ),
+      workerEnv.DB.prepare(
+        `INSERT INTO admin_idempotency_record
+           (id, actor_id, key, method, normalized_path, target_id, body_hash, response_status,
+            response_body, created_at, expires_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).bind(
+        'idempotency-1',
+        adminId,
+        'retry-key',
+        'POST',
+        '/v1/admin/users/:userId/email-changes',
+        userId,
+        'body-hash',
+        201,
+        '{}',
+        now,
+        now + 86_400_000,
+      ),
+    ]);
+
+    const readerState = await workerEnv.DB.prepare(
+      'SELECT state, revision FROM reader_access_state WHERE user_id = ?',
+    )
+      .bind(userId)
+      .first();
+    const administratorState = await workerEnv.DB.prepare(
+      'SELECT state, revision FROM administrator_access_state WHERE user_id = ?',
+    )
+      .bind(adminId)
+      .first();
+    expect(readerState).toEqual({ state: 'active', revision: 1 });
+    expect(administratorState).toEqual({ state: 'active', revision: 1 });
+    const idempotency = await workerEnv.DB.prepare(
+      'SELECT expires_at - created_at AS retention FROM admin_idempotency_record WHERE id = ?',
+    )
+      .bind('idempotency-1')
+      .first();
+    expect(idempotency).toEqual({ retention: 86_400_000 });
   });
 });
 

@@ -4,6 +4,8 @@
 export {
   AccountDetailsSchema,
   AdminMeSchema,
+  AdminReaderActivitySchema,
+  AdminReaderDetailSchema,
   AdminUserDetailParamsSchema,
   AdminUserListQuerySchema,
   AdminUserListSchema,

@@ -27,6 +27,23 @@ supports administrator sign-in, real identity, reload and sign-out; list/detail
 are subsequent slices. Server responses, rather than browser role claims,
 authorize access.
 
+### Event Ledger
+
+The application-owned, append-only record of versioned identity lifecycle and
+administrative events. Public Account Activity and Administrative Audit are
+allowlisted projections of this ledger, never raw persistence rows.
+
+### Identity Reservation
+
+A time-bounded claim on a normalized identity value, such as an email address,
+held by one active workflow in one identity realm to prevent conflicting work.
+
+### Idempotency Record
+
+A 24-hour administrative command record scoped by actor, method, normalized
+route, target, key and request-body hash. It permits a matching retry to replay
+the committed result without repeating the command.
+
 ### Auth Policy
 
 Deployment-level configuration that controls supported authentication behaviour without exposing Better Auth configuration directly to feature code. It includes capabilities such as registration enablement, email/password enablement, required email verification, password creation requirements, OAuth providers, and auth/session lifetimes. Password creation requirements apply to registration, reset and administrator bootstrap, not login. The initial deployment requires verified email before login succeeds.

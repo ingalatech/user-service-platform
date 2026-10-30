@@ -7,7 +7,9 @@ import {
   AdminUserDetailParamsSchema,
   AdminUserListQuerySchema,
   AdminUserListSchema,
-  AdminUserSchema,
+  AdminReaderDetailSchema,
+  AdminReaderActivityQuerySchema,
+  AdminReaderActivitySchema,
   AuthConfigSchema,
   CheckPasswordResetRequestSchema,
   CheckPasswordResetResultSchema,
@@ -491,10 +493,51 @@ export const adminUserDetailRoute = createRoute({
   },
   responses: {
     200: {
-      content: { 'application/json': { schema: AdminUserSchema } },
+      content: { 'application/json': { schema: AdminReaderDetailSchema } },
       description: 'The matching administrative User.',
     },
     ...problemResponses('Authorization failure as RFC 9457 Problem Details.'),
+  },
+});
+
+export const adminReaderActivityRoute = createRoute({
+  method: 'get',
+  path: '/admin/users/{userId}/activity',
+  operationId: 'getAdminReaderActivity',
+  summary: 'Read Reader lifecycle activity',
+  description:
+    'Returns only allowlisted successful lifecycle events in newest-first order. Existing ' +
+    'history is not backfilled, routine login/logout is excluded, and cursors are opaque.',
+  tags: ['admin'],
+  request: {
+    params: AdminUserDetailParamsSchema,
+    query: AdminReaderActivityQuerySchema,
+  },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: AdminReaderActivitySchema } },
+      description: 'The Reader lifecycle activity page.',
+    },
+    400: {
+      content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+      description: 'Invalid parameters or cursor.',
+    },
+    401: {
+      content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+      description: 'No authoritative Administrator session.',
+    },
+    403: {
+      content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+      description: 'The actor lacks authority or is disabled.',
+    },
+    404: {
+      content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+      description: 'Reader not found.',
+    },
+    500: {
+      content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+      description: 'Internal failure.',
+    },
   },
 });
 

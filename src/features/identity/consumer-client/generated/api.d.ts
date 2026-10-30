@@ -506,6 +506,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/admin/users/{userId}/activity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read Reader lifecycle activity
+         * @description Returns only allowlisted successful lifecycle events in newest-first order. Existing history is not backfilled, routine login/logout is excluded, and cursors are opaque.
+         */
+        get: operations["getAdminReaderActivity"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/admin/users/{userId}/account-details": {
         parameters: {
             query?: never;
@@ -910,6 +930,56 @@ export interface components {
             realm: "reader";
             /** @example user */
             role: string;
+        };
+        AdminReaderDetail: components["schemas"]["AdminUser"] & {
+            /** @example 1 */
+            revision: number;
+            summary: components["schemas"]["AdminReaderSummary"];
+            access: components["schemas"]["AdminReaderAccess"];
+            /** @description Safe locally usable login methods without provider identifiers. */
+            methods: {
+                /** @enum {string} */
+                type: "password" | "social";
+                /** @enum {string} */
+                provider?: "google" | "facebook" | "apple";
+            }[];
+            /** @description Only persisted active workflows; never inferred or fabricated. */
+            activeWorkflows: {
+                id: string;
+                /** @enum {string} */
+                type: "email-change" | "deletion-request";
+                state: string;
+                /** Format: date-time */
+                createdAt: string;
+            }[];
+        };
+        AdminReaderSummary: {
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        AdminReaderAccess: {
+            /** @enum {string} */
+            state: "active" | "disabled";
+            /** @enum {string} */
+            effectiveState: "active" | "disabled" | "suspended";
+        };
+        AdminReaderActivity: {
+            items: components["schemas"]["AdminReaderActivityEvent"][];
+            nextCursor: string | null;
+        };
+        AdminReaderActivityEvent: {
+            id: string;
+            /** @enum {string} */
+            type: "email-verified" | "email-changed" | "social-identity-unlinked" | "sessions-revoked" | "access-disabled" | "access-rehabilitated" | "deletion-requested" | "deletion-approved" | "deletion-rejected" | "deletion-cancelled";
+            /** Format: date-time */
+            occurredAt: string;
+            actor: {
+                id: string;
+                /** @enum {string} */
+                realm: "administrator";
+            };
         };
         AdminBootstrapResult: {
             /** @example abc123 */
@@ -1827,11 +1897,82 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AdminUser"];
+                    "application/json": components["schemas"]["AdminReaderDetail"];
                 };
             };
             /** @description Authorization failure as RFC 9457 Problem Details. */
             default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+        };
+    };
+    getAdminReaderActivity: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Opaque administrative User identifier. */
+                userId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The Reader lifecycle activity page. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminReaderActivity"];
+                };
+            };
+            /** @description Invalid parameters or cursor. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description No authoritative Administrator session. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The actor lacks authority or is disabled. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description Reader not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description Internal failure. */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };

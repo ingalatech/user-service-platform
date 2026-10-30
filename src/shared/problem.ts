@@ -32,6 +32,8 @@ export type ProblemCode =
   | 'reset-invalid'
   | 'unauthenticated'
   | 'forbidden'
+  | 'reader-not-found'
+  | 'administrator-disabled'
   | 'admin-already-bootstrapped'
   | 'admin-bootstrap-in-progress'
   | 'admin-email-conflict';
