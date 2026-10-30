@@ -28,6 +28,9 @@ are intentionally small and must be retained when updating the pinned source:
 - `user-menu.tsx`: accessible Spanish menu label and safe logout failure notification.
 - `refresh-button.tsx`: accessible Spanish label.
 - `data-table.tsx`: adds the typed `tableLabel` prop for an accessible rendered table name.
+- `ui/tabs.tsx`: prototype-only Shadcn Tabs composition over the already pinned
+  `@base-ui/react/tabs` dependency; no new dependency or shell adaptation is
+  introduced.
 
 Other kit files retain upstream content and formatting; the two indexed column
 lookups carry only the non-null assertions required by this repository's strict
@@ -83,6 +86,15 @@ Requests carry bounded limit/offset and an optional literal email substring.
 Changing search resets the page, cancels obsolete requests and hides previous
 results while the new query is pending. Search terms and result contents are
 never logged.
+
+## Account hierarchy prototype
+
+The throwaway account hierarchy prototype lives on branch
+`prototype/shadcn-account-hierarchy` and is development-gated from `app.tsx`.
+It uses static in-memory data and simulated actions only; it does not change
+contracts, persistence, or production resources. The canonical User show route
+loads its route-backed tabs only in development, while Administrators and
+Auditoría administrativa are prototype-only resources.
 
 ## Run locally
 

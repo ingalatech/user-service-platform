@@ -23,6 +23,27 @@ import { dataProvider } from './data-provider.js';
 import { UsersList } from './users-list.js';
 import { UsersShow } from './users-show.js';
 import { UsersEdit } from './users-edit.js';
+import {
+  AdministrativeAuditList,
+  AdministratorsList,
+  AdministratorsShow,
+} from './prototype/administrator-pages.js';
+
+const prototypeResources = import.meta.env.DEV ? (
+  <>
+    <Resource
+      name="administrators"
+      list={AdministratorsList}
+      show={AdministratorsShow}
+      options={{ label: 'Administradores' }}
+    />
+    <Resource
+      name="audit"
+      list={AdministrativeAuditList}
+      options={{ label: 'Auditoría administrativa' }}
+    />
+  </>
+) : null;
 
 const store = memoryStore();
 
@@ -192,6 +213,7 @@ export function App() {
         edit={UsersEdit}
         options={{ label: 'Usuarios' }}
       />
+      {prototypeResources}
       <CustomRoutes noLayout>
         <Route
           path="/"

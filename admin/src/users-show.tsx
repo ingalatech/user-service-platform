@@ -6,6 +6,7 @@ import { ApiError } from './api.js';
 import { RecordField } from './kit/components/admin/record-field.js';
 import { Show } from './kit/components/admin/show.js';
 import { Button } from './kit/components/ui/button.js';
+import { UserShowPrototype } from './prototype/user-show.js';
 
 function DetailState({ children }: { children: ReactNode }) {
   return (
@@ -101,18 +102,24 @@ export function UsersShow() {
       actions={false}
       queryOptions={{ enabled: false, initialData: query.data }}
     >
-      <div className="flex flex-col gap-4">
-        <RecordField source="id" label="Identificador" />
-        <RecordField source="email" label="Correo electrónico" />
-        <RecordField
-          label="Verificación"
-          render={(record) => (record.emailVerified ? 'Correo verificado' : 'Correo sin verificar')}
-        />
-        <RecordField source="role" label="Rol" />
-        <p>
-          <Link to={`/users/${encodeURIComponent(id)}`}>Editar datos de cuenta</Link>
-        </p>
-      </div>
+      {import.meta.env.DEV ? (
+        <UserShowPrototype />
+      ) : (
+        <div className="flex flex-col gap-4">
+          <RecordField source="id" label="Identificador" />
+          <RecordField source="email" label="Correo electrónico" />
+          <RecordField
+            label="Verificación"
+            render={(record) =>
+              record.emailVerified ? 'Correo verificado' : 'Correo sin verificar'
+            }
+          />
+          <RecordField source="role" label="Rol" />
+          <p>
+            <Link to={`/users/${encodeURIComponent(id)}`}>Editar datos de cuenta</Link>
+          </p>
+        </div>
+      )}
     </Show>
   );
 }
