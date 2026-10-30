@@ -208,7 +208,7 @@ export function createIdentityRuntime(input: IdentityRuntimeInput) {
       ...(mailResolution === 'synchronous'
         ? {
             schedule: async (task: Promise<unknown>): Promise<void> => {
-              background(task);
+              await task;
             },
           }
         : {}),

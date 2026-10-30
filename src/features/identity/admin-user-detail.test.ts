@@ -3,7 +3,11 @@ import type { D1Migration } from 'cloudflare:test';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../../app.js';
 import type { Env } from '../../env.js';
-import { InMemoryAuthMailer } from './mailer.js';
+import {
+  InMemoryAuthMailer,
+  type PasswordResetMessage,
+  type VerificationMessage,
+} from './mailer.js';
 
 // Seam under test (ticket #126, ADR-0011): the public HTTP boundary of the
 // built Worker, executed inside the Cloudflare Workers runtime with the
@@ -32,6 +36,22 @@ function testEnv(overrides: Partial<Env> = {}): Env {
 
 const mailer = new InMemoryAuthMailer();
 const app = createApp({ authMailer: mailer });
+
+class ToggleFailureMailer extends InMemoryAuthMailer {
+  fail = false;
+
+  override sendVerificationEmail(message: VerificationMessage): Promise<void> {
+    return this.fail
+      ? Promise.reject(new Error('delivery failed'))
+      : super.sendVerificationEmail(message);
+  }
+
+  override sendPasswordResetEmail(message: PasswordResetMessage): Promise<void> {
+    return this.fail
+      ? Promise.reject(new Error('delivery failed'))
+      : super.sendPasswordResetEmail(message);
+  }
+}
 
 async function post(path: string, body: unknown, overrides: Partial<Env> = {}): Promise<Response> {
   return app.request(
@@ -438,6 +458,39 @@ describe('GET /v1/admin/users/{userId}', () => {
 });
 
 describe('Reader verification and recovery commands', () => {
+  it('rejects cross-site mutations before resolving the Administrator session', async () => {
+    const cookie = 'rch-admin.session_token=not-a-real-session';
+    const originHeaders = {
+      origin: 'https://evil.example',
+      'sec-fetch-site': 'cross-site',
+    };
+    const verification = await putWithCookie(
+      '/v1/admin/users/opaque-reader/email-verification',
+      cookie,
+      originHeaders,
+    );
+    expect(verification.status).toBe(403);
+    expect(await verification.json()).toMatchObject({ code: 'forbidden' });
+
+    const messageHeaders = { ...originHeaders, 'idempotency-key': 'cross-site-1' };
+    const verificationMessage = await postWithCookie(
+      '/v1/admin/users/opaque-reader/email-verification/messages',
+      {},
+      cookie,
+      {},
+      messageHeaders,
+    );
+    expect(verificationMessage.status).toBe(403);
+    const recoveryMessage = await postWithCookie(
+      '/v1/admin/users/opaque-reader/password-recovery/messages',
+      {},
+      cookie,
+      {},
+      { ...messageHeaders, 'idempotency-key': 'cross-site-2' },
+    );
+    expect(recoveryMessage.status).toBe(403);
+  });
+
   it('forces canonical email verification with an ETag precondition', async () => {
     const { cookie } = await bootstrapVerifiedAdmin('commands-admin@example.com');
     const register = await post('/v1/auth/register', {
@@ -500,6 +553,131 @@ describe('Reader verification and recovery commands', () => {
       { 'idempotency-key': 'recovery-1' },
     );
     expect(recovery.status).toBe(202);
+  });
+
+  it('replays an accepted idempotent response after the Reader disappears', async () => {
+    const { cookie } = await bootstrapVerifiedAdmin('replay-admin@example.com');
+    const register = await post('/v1/auth/register', {
+      name: 'Replay Reader',
+      email: 'replay-reader@example.com',
+      password: 'Correct-horse-41',
+    });
+    expect(register.status).toBe(201);
+    const usersRes = await get('/v1/admin/users?limit=25&offset=0', { cookie });
+    const users = (await usersRes.json()) as { items: { id: string; email: string }[] };
+    const reader = users.items.find((item) => item.email === 'replay-reader@example.com');
+    expect(reader).toBeDefined();
+    if (reader === undefined) throw new Error('Expected the replay Reader.');
+    const path = `/v1/admin/users/${reader.id}/email-verification/messages`;
+    const first = await postWithCookie(path, {}, cookie, {}, { 'idempotency-key': 'replay-1' });
+    expect(first.status).toBe(202);
+    const firstBody = await first.json();
+    await workerEnv.DB.prepare('DELETE FROM "user" WHERE id = ?').bind(reader.id).run();
+    const replay = await postWithCookie(path, {}, cookie, {}, { 'idempotency-key': 'replay-1' });
+    expect(replay.status).toBe(202);
+    expect(await replay.json()).toEqual(firstBody);
+  });
+
+  it('records absent subjects as null for missing Readers and disabled Administrators', async () => {
+    const { cookie, adminId } = await bootstrapVerifiedAdmin('audit-admin@example.com');
+    const missing = await postWithCookie(
+      '/v1/admin/users/missing-reader/email-verification/messages',
+      {},
+      cookie,
+      {},
+      { 'idempotency-key': 'missing-reader-1' },
+    );
+    expect(missing.status).toBe(404);
+    const missingEvent = await workerEnv.DB.prepare(
+      `SELECT subject_realm, subject_id FROM identity_event
+       WHERE type = 'email-verification-attempt' ORDER BY occurred_at DESC LIMIT 1`,
+    ).first<{ subject_realm: string | null; subject_id: string | null }>();
+    expect(missingEvent).toEqual({ subject_realm: null, subject_id: null });
+
+    await workerEnv.DB.prepare(
+      `INSERT INTO administrator_access_state (user_id, state, revision, updated_at)
+       VALUES (?, 'disabled', 1, ?)`,
+    )
+      .bind(adminId, Date.now())
+      .run();
+    const disabledState = await workerEnv.DB.prepare(
+      'SELECT state FROM administrator_access_state WHERE user_id = ?',
+    )
+      .bind(adminId)
+      .first<{ state: string }>();
+    expect(disabledState).toEqual({ state: 'disabled' });
+    const disabled = await postWithCookie(
+      '/v1/admin/users/arbitrary-reader/email-verification/messages',
+      {},
+      cookie,
+      {},
+      { 'idempotency-key': 'disabled-admin-1' },
+    );
+    expect(disabled.status).toBe(403);
+    const disabledEvent = await workerEnv.DB.prepare(
+      `SELECT subject_realm, subject_id FROM identity_event
+       WHERE problem_code = 'administrator-disabled' ORDER BY occurred_at DESC LIMIT 1`,
+    ).first<{ subject_realm: string | null; subject_id: string | null }>();
+    expect(disabledEvent).toEqual({ subject_realm: null, subject_id: null });
+  });
+
+  it('returns 503 on direct delivery failure and retries the same idempotency key', async () => {
+    const failingMailer = new ToggleFailureMailer();
+    const failingApp = createApp({ authMailer: failingMailer });
+    const { cookie } = await bootstrapVerifiedAdmin('failure-admin@example.com');
+    const register = await post('/v1/auth/register', {
+      name: 'Failure Reader',
+      email: 'failure-reader@example.com',
+      password: 'Correct-horse-41',
+    });
+    expect(register.status).toBe(201);
+    const usersRes = await get('/v1/admin/users?limit=25&offset=0', { cookie });
+    const users = (await usersRes.json()) as { items: { id: string; email: string }[] };
+    const reader = users.items.find((item) => item.email === 'failure-reader@example.com');
+    expect(reader).toBeDefined();
+    if (reader === undefined) throw new Error('Expected the failure Reader.');
+    failingMailer.fail = true;
+    const path = `/v1/admin/users/${reader.id}/email-verification/messages`;
+    const first = await failingApp.request(
+      path,
+      {
+        method: 'POST',
+        headers: {
+          cookie,
+          'content-type': 'application/json',
+          'idempotency-key': 'failure-1',
+        },
+        body: '{}',
+      },
+      testEnv(),
+    );
+    expect(first.status).toBe(503);
+    failingMailer.fail = false;
+    const retry = await failingApp.request(
+      path,
+      {
+        method: 'POST',
+        headers: {
+          cookie,
+          'content-type': 'application/json',
+          'idempotency-key': 'failure-1',
+        },
+        body: '{}',
+      },
+      testEnv(),
+    );
+    expect(retry.status).toBe(202);
+  });
+
+  it('keeps Event Ledger subject columns nullable for absent subjects', async () => {
+    const columns = await workerEnv.DB.prepare('PRAGMA table_info(identity_event)').all<{
+      name: string;
+      notnull: number;
+    }>();
+    const subjectId = columns.results.find((column) => column.name === 'subject_id');
+    const subjectRealm = columns.results.find((column) => column.name === 'subject_realm');
+    expect(subjectId?.notnull).toBe(0);
+    expect(subjectRealm?.notnull).toBe(0);
   });
 });
 

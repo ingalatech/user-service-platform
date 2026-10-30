@@ -178,7 +178,7 @@ async function readIdempotency(input: {
 async function audit(input: {
   readonly db: D1Database;
   readonly actorId: string;
-  readonly subjectId: string;
+  readonly subjectId: string | null;
   readonly requestId: string;
   readonly type: string;
   readonly result: 'success' | 'failure';
@@ -188,15 +188,16 @@ async function audit(input: {
   await input.db
     .prepare(
       `INSERT INTO identity_event
-       (id, version, type, occurred_at, actor_realm, actor_id, subject_realm, subject_id,
-        result, request_id, problem_code, metadata)
-       VALUES (?, 1, ?, ?, 'administrator', ?, 'reader', ?, ?, ?, ?, ?)`,
+        (id, version, type, occurred_at, actor_realm, actor_id, subject_realm, subject_id,
+         result, request_id, problem_code, metadata)
+        VALUES (?, 1, ?, ?, 'administrator', ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       opaqueId(),
       input.type,
       Date.now(),
       input.actorId,
+      input.subjectId === null ? null : 'reader',
       input.subjectId,
       input.result,
       input.requestId,
@@ -209,7 +210,7 @@ async function audit(input: {
 async function auditedFailure<T extends CommonFailure | { readonly kind: string }>(input: {
   readonly db: D1Database;
   readonly actorId: string;
-  readonly subjectId: string;
+  readonly subjectId: string | null;
   readonly requestId: string;
   readonly type: string;
   readonly kind: T['kind'];
@@ -339,7 +340,7 @@ export async function forceReaderEmailVerification(input: {
       ? await auditedFailure({
           db: input.db,
           actorId: input.administratorId,
-          subjectId: input.readerId,
+          subjectId: null,
           requestId: input.requestId,
           type: 'email-verification-attempt',
           kind: 'administrator-disabled',
@@ -352,7 +353,7 @@ export async function forceReaderEmailVerification(input: {
     return auditedFailure({
       db: input.db,
       actorId: input.administratorId,
-      subjectId: input.readerId,
+      subjectId: null,
       requestId: input.requestId,
       type: 'email-verification-attempt',
       kind: 'reader-not-found',
@@ -476,7 +477,7 @@ export async function requestReaderMessage(input: {
       ? await auditedFailure({
           db: input.db,
           actorId: input.administratorId,
-          subjectId: input.readerId,
+          subjectId: null,
           requestId: input.requestId,
           type: `${input.kind}-attempt`,
           kind: 'administrator-disabled',
@@ -488,19 +489,60 @@ export async function requestReaderMessage(input: {
     return auditedFailure({
       db: input.db,
       actorId: input.administratorId,
-      subjectId: input.readerId,
+      subjectId: null,
       requestId: input.requestId,
       type: `${input.kind}-attempt`,
       kind: 'precondition-required',
       code: 'precondition-required',
     });
   }
+  const now = Date.now();
+  const bodyHash = await digestBody(input.body);
+  const existingIdempotency = await readIdempotency({
+    db: input.db,
+    actorId: input.administratorId,
+    method: 'POST',
+    path: input.path,
+    targetId: input.readerId,
+    key: input.idempotencyKey,
+    now,
+  });
+  if (existingIdempotency !== null) {
+    if (existingIdempotency.body_hash !== bodyHash) {
+      return auditedFailure({
+        db: input.db,
+        actorId: input.administratorId,
+        subjectId: null,
+        requestId: input.requestId,
+        type: `${input.kind}-attempt`,
+        kind: 'idempotency-key-reused',
+        code: 'idempotency-key-reused',
+      });
+    }
+    if (existingIdempotency.response_status === 202) {
+      return {
+        kind: 'accepted',
+        value: JSON.parse(existingIdempotency.response_body) as AdminReaderMessage,
+      };
+    }
+  }
   const target = await readTarget(input.db, input.readerId);
   if (target === null) {
+    if (existingIdempotency !== null && existingIdempotency.response_status === 503) {
+      return auditedFailure({
+        db: input.db,
+        actorId: input.administratorId,
+        subjectId: null,
+        requestId: input.requestId,
+        type: `${input.kind}-attempt`,
+        kind: 'delivery-scheduling-failed',
+        code: 'delivery-scheduling-failed',
+      });
+    }
     return auditedFailure({
       db: input.db,
       actorId: input.administratorId,
-      subjectId: input.readerId,
+      subjectId: null,
       requestId: input.requestId,
       type: `${input.kind}-attempt`,
       kind: 'reader-not-found',
@@ -530,35 +572,7 @@ export async function requestReaderMessage(input: {
     });
   }
 
-  const now = Date.now();
-  const bodyHash = await digestBody(input.body);
-  const existingIdempotency = await readIdempotency({
-    db: input.db,
-    actorId: input.administratorId,
-    method: 'POST',
-    path: input.path,
-    targetId: target.id,
-    key: input.idempotencyKey,
-    now,
-  });
   if (existingIdempotency !== null) {
-    if (existingIdempotency.body_hash !== bodyHash) {
-      return auditedFailure({
-        db: input.db,
-        actorId: input.administratorId,
-        subjectId: target.id,
-        requestId: input.requestId,
-        type: `${input.kind}-attempt`,
-        kind: 'idempotency-key-reused',
-        code: 'idempotency-key-reused',
-      });
-    }
-    if (existingIdempotency.response_status === 202) {
-      return {
-        kind: 'accepted',
-        value: JSON.parse(existingIdempotency.response_body) as AdminReaderMessage,
-      };
-    }
     const workflow = await readWorkflow(input.db, target.id, input.kind);
     if (workflow === null) return { kind: 'internal-error' };
     const scheduled = await scheduleMessage({

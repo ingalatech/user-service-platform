@@ -990,6 +990,8 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
   router.openapi(adminReaderEmailVerificationRoute, async (c) => {
     const runtime = requestIdentityRuntime(c, override);
     c.header('Cache-Control', 'private, no-store');
+    const rejected = guardCookieMutation(c, runtime, 'private, no-store');
+    if (rejected !== null) return rejected as never;
     const session = await runtime.resolveAdministratorSessionContext(
       c.req.raw.headers,
       c.get('requestId'),
@@ -1017,6 +1019,8 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
   ) {
     const runtime = requestIdentityRuntime(c, override);
     c.header('Cache-Control', 'private, no-store');
+    const rejected = guardCookieMutation(c, runtime, 'private, no-store');
+    if (rejected !== null) return rejected;
     const session = await runtime.resolveAdministratorSessionContext(
       c.req.raw.headers,
       c.get('requestId'),
