@@ -3,11 +3,9 @@ import type { D1Migration } from 'cloudflare:test';
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../../app.js';
 import type { Env } from '../../env.js';
-import {
-  InMemoryAuthMailer,
-  type PasswordResetMessage,
-  type VerificationMessage,
-} from './mailer.js';
+import { createIdentityRuntime } from './identity-runtime.js';
+import { requestReaderMessage } from './admin-reader-email.js';
+import { InMemoryAuthMailer } from './mailer.js';
 
 // Seam under test (ticket #126, ADR-0011): the public HTTP boundary of the
 // built Worker, executed inside the Cloudflare Workers runtime with the
@@ -36,22 +34,6 @@ function testEnv(overrides: Partial<Env> = {}): Env {
 
 const mailer = new InMemoryAuthMailer();
 const app = createApp({ authMailer: mailer });
-
-class ToggleFailureMailer extends InMemoryAuthMailer {
-  fail = false;
-
-  override sendVerificationEmail(message: VerificationMessage): Promise<void> {
-    return this.fail
-      ? Promise.reject(new Error('delivery failed'))
-      : super.sendVerificationEmail(message);
-  }
-
-  override sendPasswordResetEmail(message: PasswordResetMessage): Promise<void> {
-    return this.fail
-      ? Promise.reject(new Error('delivery failed'))
-      : super.sendPasswordResetEmail(message);
-  }
-}
 
 async function post(path: string, body: unknown, overrides: Partial<Env> = {}): Promise<Response> {
   return app.request(
@@ -508,6 +490,19 @@ describe('Reader verification and recovery commands', () => {
     const detail = await get(`/v1/admin/users/${reader.id}`, { cookie });
     expect(detail.status).toBe(200);
     const detailBody = (await detail.json()) as { revision: number };
+    await workerEnv.DB.prepare(
+      `INSERT INTO verification (id, identifier, value, expires_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    )
+      .bind(
+        'better-auth-verification-row',
+        reader.email,
+        'better-auth-token',
+        Date.now() + 60_000,
+        Date.now(),
+        Date.now(),
+      )
+      .run();
 
     const forced = await putWithCookie(`/v1/admin/users/${reader.id}/email-verification`, cookie, {
       'if-match': `"${String(detailBody.revision)}"`,
@@ -515,6 +510,14 @@ describe('Reader verification and recovery commands', () => {
     expect(forced.status).toBe(200);
     expect(forced.headers.get('etag')).toBe('"2"');
     expect(await forced.json()).toMatchObject({ emailVerified: true, changed: true, revision: 2 });
+    const invalidated = await workerEnv.DB.prepare(
+      `SELECT
+          (SELECT COUNT(*) FROM email_verification_token WHERE target_email = ?) AS app_tokens,
+          (SELECT COUNT(*) FROM verification WHERE identifier = ? AND value = ?) AS better_auth_tokens`,
+    )
+      .bind('unverified-reader@example.com', reader.email, 'better-auth-token')
+      .first<{ app_tokens: number; better_auth_tokens: number }>();
+    expect(invalidated).toEqual({ app_tokens: 0, better_auth_tokens: 0 });
 
     const stale = await putWithCookie(`/v1/admin/users/${reader.id}/email-verification`, cookie, {
       'if-match': '"1"',
@@ -553,6 +556,57 @@ describe('Reader verification and recovery commands', () => {
       { 'idempotency-key': 'recovery-1' },
     );
     expect(recovery.status).toBe(202);
+  });
+
+  it('allows only one concurrent force-verification CAS winner', async () => {
+    const { cookie } = await bootstrapVerifiedAdmin('cas-admin@example.com');
+    const register = await post('/v1/auth/register', {
+      name: 'CAS Reader',
+      email: 'cas-reader@example.com',
+      password: 'Correct-horse-41',
+    });
+    expect(register.status).toBe(201);
+    const usersRes = await get('/v1/admin/users?limit=25&offset=0', { cookie });
+    const users = (await usersRes.json()) as { items: { id: string; email: string }[] };
+    const reader = users.items.find((item) => item.email === 'cas-reader@example.com');
+    expect(reader).toBeDefined();
+    if (reader === undefined) throw new Error('Expected the CAS Reader.');
+    const detail = await get(`/v1/admin/users/${reader.id}`, { cookie });
+    const detailBody = (await detail.json()) as { revision: number };
+    const path = `/v1/admin/users/${reader.id}/email-verification`;
+    const results = await Promise.all([
+      putWithCookie(path, cookie, { 'if-match': `"${String(detailBody.revision)}"` }),
+      putWithCookie(path, cookie, { 'if-match': `"${String(detailBody.revision)}"` }),
+    ]);
+    expect(results.map((result) => result.status).sort()).toEqual([200, 412]);
+    const lifecycle = await workerEnv.DB.prepare(
+      `SELECT COUNT(*) AS count FROM identity_event
+       WHERE subject_id = ? AND type = 'email-verified'`,
+    )
+      .bind(reader.id)
+      .first<{ count: number }>();
+    expect(lifecycle?.count).toBe(1);
+  });
+
+  it('allows only one concurrent message cooldown claimant', async () => {
+    const { cookie } = await bootstrapVerifiedAdmin('cooldown-race-admin@example.com');
+    const register = await post('/v1/auth/register', {
+      name: 'Cooldown Race Reader',
+      email: 'cooldown-race-reader@example.com',
+      password: 'Correct-horse-41',
+    });
+    expect(register.status).toBe(201);
+    const usersRes = await get('/v1/admin/users?limit=25&offset=0', { cookie });
+    const users = (await usersRes.json()) as { items: { id: string; email: string }[] };
+    const reader = users.items.find((item) => item.email === 'cooldown-race-reader@example.com');
+    expect(reader).toBeDefined();
+    if (reader === undefined) throw new Error('Expected the cooldown race Reader.');
+    const path = `/v1/admin/users/${reader.id}/email-verification/messages`;
+    const results = await Promise.all([
+      postWithCookie(path, {}, cookie, {}, { 'idempotency-key': 'cooldown-race-1' }),
+      postWithCookie(path, {}, cookie, {}, { 'idempotency-key': 'cooldown-race-2' }),
+    ]);
+    expect(results.map((result) => result.status).sort()).toEqual([202, 429]);
   });
 
   it('replays an accepted idempotent response after the Reader disappears', async () => {
@@ -619,12 +673,47 @@ describe('Reader verification and recovery commands', () => {
        WHERE problem_code = 'administrator-disabled' ORDER BY occurred_at DESC LIMIT 1`,
     ).first<{ subject_realm: string | null; subject_id: string | null }>();
     expect(disabledEvent).toEqual({ subject_realm: null, subject_id: null });
+
+    await workerEnv.DB.prepare(
+      `UPDATE administrator_access_state SET state = 'active' WHERE user_id = ?`,
+    )
+      .bind(adminId)
+      .run();
+    const runtime = createIdentityRuntime({
+      env: testEnv(),
+      requestUrl:
+        'https://service.example/v1/admin/users/arbitrary-reader/email-verification/messages',
+      executionContext: { waitUntil: () => undefined },
+      authMailer: mailer,
+    });
+    const administration = runtime.administration();
+    vi.spyOn(administration.api, 'userHasPermission').mockResolvedValue({
+      success: false,
+      error: null,
+    });
+    vi.spyOn(runtime, 'administration').mockReturnValue(administration);
+    const forbidden = await requestReaderMessage({
+      db: workerEnv.DB,
+      runtime,
+      administratorId: adminId,
+      readerId: 'arbitrary-reader',
+      kind: 'email-verification',
+      headers: new Headers(),
+      idempotencyKey: 'forbidden-admin-1',
+      body: {},
+      path: '/v1/admin/users/arbitrary-reader/email-verification/messages',
+      requestId: 'forbidden-request',
+    });
+    expect(forbidden.kind).toBe('forbidden');
+    const forbiddenEvent = await workerEnv.DB.prepare(
+      `SELECT subject_realm, subject_id FROM identity_event
+       WHERE problem_code = 'forbidden' ORDER BY occurred_at DESC LIMIT 1`,
+    ).first<{ subject_realm: string | null; subject_id: string | null }>();
+    expect(forbiddenEvent).toEqual({ subject_realm: null, subject_id: null });
   });
 
-  it('returns 503 on direct delivery failure and retries the same idempotency key', async () => {
-    const failingMailer = new ToggleFailureMailer();
-    const failingApp = createApp({ authMailer: failingMailer });
-    const { cookie } = await bootstrapVerifiedAdmin('failure-admin@example.com');
+  it('returns a scheduling failure synchronously and retries the same idempotency key', async () => {
+    const { cookie, adminId } = await bootstrapVerifiedAdmin('failure-admin@example.com');
     const register = await post('/v1/auth/register', {
       name: 'Failure Reader',
       email: 'failure-reader@example.com',
@@ -636,37 +725,93 @@ describe('Reader verification and recovery commands', () => {
     const reader = users.items.find((item) => item.email === 'failure-reader@example.com');
     expect(reader).toBeDefined();
     if (reader === undefined) throw new Error('Expected the failure Reader.');
-    failingMailer.fail = true;
     const path = `/v1/admin/users/${reader.id}/email-verification/messages`;
-    const first = await failingApp.request(
+    const request = {
+      db: workerEnv.DB,
+      administratorId: adminId,
+      readerId: reader.id,
+      kind: 'email-verification' as const,
+      headers: new Headers({ cookie }),
+      idempotencyKey: 'failure-1',
+      body: {},
       path,
-      {
-        method: 'POST',
-        headers: {
-          cookie,
-          'content-type': 'application/json',
-          'idempotency-key': 'failure-1',
+      requestId: 'failure-request',
+    };
+    const failingRuntime = createIdentityRuntime({
+      env: testEnv(),
+      requestUrl: `https://service.example${path}`,
+      executionContext: {
+        waitUntil: () => {
+          throw new Error('scheduler failed');
         },
-        body: '{}',
       },
-      testEnv(),
-    );
-    expect(first.status).toBe(503);
-    failingMailer.fail = false;
-    const retry = await failingApp.request(
-      path,
-      {
-        method: 'POST',
-        headers: {
-          cookie,
-          'content-type': 'application/json',
-          'idempotency-key': 'failure-1',
-        },
-        body: '{}',
+      background: () => {
+        throw new Error('scheduler failed');
       },
-      testEnv(),
+      authMailer: mailer,
+    });
+    const failingAdministration = failingRuntime.administration();
+    vi.spyOn(failingAdministration.api, 'userHasPermission').mockResolvedValue({
+      success: true,
+      error: null,
+    });
+    vi.spyOn(failingRuntime, 'administration').mockReturnValue(failingAdministration);
+    const first = await requestReaderMessage({ ...request, runtime: failingRuntime });
+    expect(first.kind).toBe('delivery-scheduling-failed');
+    const stored = await workerEnv.DB.prepare(
+      `SELECT response_status FROM admin_idempotency_record WHERE actor_id = ? AND key = ?`,
+    )
+      .bind(adminId, 'failure-1')
+      .first<{ response_status: number }>();
+    expect(stored?.response_status).toBe(503);
+    const retryRuntime = createIdentityRuntime({
+      env: testEnv(),
+      requestUrl: `https://service.example${path}`,
+      executionContext: { waitUntil: () => undefined },
+      background: () => undefined,
+      authMailer: mailer,
+    });
+    const retryAdministration = retryRuntime.administration();
+    vi.spyOn(retryAdministration.api, 'userHasPermission').mockResolvedValue({
+      success: true,
+      error: null,
+    });
+    vi.spyOn(retryRuntime, 'administration').mockReturnValue(retryAdministration);
+    const retry = await requestReaderMessage({ ...request, runtime: retryRuntime });
+    expect(retry.kind).toBe('accepted');
+
+    const secondRegister = await post('/v1/auth/register', {
+      name: 'Disappearing Failure Reader',
+      email: 'disappearing-failure-reader@example.com',
+      password: 'Correct-horse-41',
+    });
+    expect(secondRegister.status).toBe(201);
+    const refreshedUsers = await get('/v1/admin/users?limit=25&offset=0', { cookie });
+    const refreshedBody = (await refreshedUsers.json()) as {
+      items: { id: string; email: string }[];
+    };
+    const disappearing = refreshedBody.items.find(
+      (item) => item.email === 'disappearing-failure-reader@example.com',
     );
-    expect(retry.status).toBe(202);
+    expect(disappearing).toBeDefined();
+    if (disappearing === undefined) throw new Error('Expected the disappearing Reader.');
+    const disappearingRequest = {
+      ...request,
+      readerId: disappearing.id,
+      idempotencyKey: 'failure-disappearing-1',
+      path: `/v1/admin/users/${disappearing.id}/email-verification/messages`,
+    };
+    const failedDisappearing = await requestReaderMessage({
+      ...disappearingRequest,
+      runtime: failingRuntime,
+    });
+    expect(failedDisappearing.kind).toBe('delivery-scheduling-failed');
+    await workerEnv.DB.prepare('DELETE FROM "user" WHERE id = ?').bind(disappearing.id).run();
+    const replayAfterDelete = await requestReaderMessage({
+      ...disappearingRequest,
+      runtime: retryRuntime,
+    });
+    expect(replayAfterDelete.kind).toBe('delivery-scheduling-failed');
   });
 
   it('keeps Event Ledger subject columns nullable for absent subjects', async () => {
@@ -694,7 +839,7 @@ describe('GET /v1/admin/users/{userId}/activity', () => {
     await workerEnv.DB.batch([
       insert.bind(
         'event-1',
-        'email-verified',
+        'email-verification-requested',
         1_700_000_001_000,
         adminId,
         userId,
@@ -705,7 +850,7 @@ describe('GET /v1/admin/users/{userId}/activity', () => {
       ),
       insert.bind(
         'event-2',
-        'access-disabled',
+        'password-recovery-requested',
         1_700_000_002_000,
         adminId,
         userId,

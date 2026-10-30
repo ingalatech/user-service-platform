@@ -334,6 +334,8 @@ export const AdminReaderActivityEventSchema = z
     id: z.string(),
     type: z.enum([
       'email-verified',
+      'email-verification-requested',
+      'password-recovery-requested',
       'email-changed',
       'social-identity-unlinked',
       'sessions-revoked',

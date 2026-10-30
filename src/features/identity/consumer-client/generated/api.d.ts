@@ -1032,7 +1032,7 @@ export interface components {
         AdminReaderActivityEvent: {
             id: string;
             /** @enum {string} */
-            type: "email-verified" | "email-changed" | "social-identity-unlinked" | "sessions-revoked" | "access-disabled" | "access-rehabilitated" | "deletion-requested" | "deletion-approved" | "deletion-rejected" | "deletion-cancelled";
+            type: "email-verified" | "email-verification-requested" | "password-recovery-requested" | "email-changed" | "social-identity-unlinked" | "sessions-revoked" | "access-disabled" | "access-rehabilitated" | "deletion-requested" | "deletion-approved" | "deletion-rejected" | "deletion-cancelled";
             /** Format: date-time */
             occurredAt: string;
             actor: {

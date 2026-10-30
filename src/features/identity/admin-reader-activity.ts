@@ -5,6 +5,8 @@ import { authorizeAdministrator } from './admin-authorization.js';
 
 const ACTIVITY_TYPES = [
   'email-verified',
+  'email-verification-requested',
+  'password-recovery-requested',
   'email-changed',
   'social-identity-unlinked',
   'sessions-revoked',

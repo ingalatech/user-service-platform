@@ -1,4 +1,5 @@
 import type { D1Database } from '@cloudflare/workers-types';
+import { normalizeVerificationTarget } from './verification-token.js';
 import { authorizeAdministrator } from './admin-authorization.js';
 import type {
   AdminReaderEmailVerification,
@@ -336,17 +337,15 @@ export async function forceReaderEmailVerification(input: {
     headers: input.headers,
   });
   if (authorization.kind !== 'allowed') {
-    return authorization.kind === 'administrator-disabled'
-      ? await auditedFailure({
-          db: input.db,
-          actorId: input.administratorId,
-          subjectId: null,
-          requestId: input.requestId,
-          type: 'email-verification-attempt',
-          kind: 'administrator-disabled',
-          code: 'administrator-disabled',
-        })
-      : { kind: authorization.kind };
+    return auditedFailure({
+      db: input.db,
+      actorId: input.administratorId,
+      subjectId: null,
+      requestId: input.requestId,
+      type: 'email-verification-attempt',
+      kind: authorization.kind,
+      code: authorization.kind,
+    });
   }
   const target = await readTarget(input.db, input.readerId);
   if (target === null) {
@@ -386,29 +385,59 @@ export async function forceReaderEmailVerification(input: {
   }
   const changed = target.email_verified !== 1;
   const nextRevision = changed ? revision + 1 : revision;
-  try {
-    if (changed) {
-      const now = Date.now();
-      await input.db.batch([
-        input.db
-          .prepare('UPDATE user SET email_verified = 1, updated_at = ? WHERE id = ?')
-          .bind(now, target.id),
+  if (changed) {
+    const now = Date.now();
+    try {
+      const results = await input.db.batch([
         input.db
           .prepare(
             `INSERT INTO reader_access_state (user_id, state, revision, updated_at)
              VALUES (?, ?, ?, ?)
-             ON CONFLICT(user_id) DO UPDATE SET revision = excluded.revision, updated_at = excluded.updated_at`,
+             ON CONFLICT(user_id) DO NOTHING`,
           )
-          .bind(target.id, target.access_state ?? 'active', nextRevision, now),
+          .bind(target.id, target.access_state ?? 'active', revision, now),
         input.db
-          .prepare('DELETE FROM email_verification_token WHERE target_email = ?')
-          .bind(target.email),
+          .prepare(
+            `UPDATE reader_access_state
+             SET revision = ?, updated_at = ?
+             WHERE user_id = ? AND revision = ?`,
+          )
+          .bind(nextRevision, now, target.id, revision),
+        input.db
+          .prepare(
+            `UPDATE user SET email_verified = 1, updated_at = ?
+             WHERE id = ? AND EXISTS (
+               SELECT 1 FROM reader_access_state WHERE user_id = ? AND revision = ?
+             )`,
+          )
+          .bind(now, target.id, target.id, nextRevision),
+        input.db
+          .prepare(
+            `DELETE FROM email_verification_token
+             WHERE target_email = ? AND EXISTS (
+               SELECT 1 FROM reader_access_state WHERE user_id = ? AND revision = ?
+             )`,
+          )
+          .bind(normalizeVerificationTarget(target.email), target.id, nextRevision),
+        input.db
+          .prepare(
+            `DELETE FROM verification
+             WHERE identifier = ? AND EXISTS (
+               SELECT 1 FROM reader_access_state WHERE user_id = ? AND revision = ?
+             )`,
+          )
+          .bind(target.email, target.id, nextRevision),
         input.db
           .prepare(
             `INSERT INTO identity_event
              (id, version, type, occurred_at, actor_realm, actor_id, subject_realm, subject_id,
               result, request_id, problem_code, metadata)
-             VALUES (?, 1, 'email-verified', ?, 'administrator', ?, 'reader', ?, 'success', ?, NULL, ?)`,
+             SELECT ?, 1, 'email-verified', ?, 'administrator', ?, 'reader', ?, 'success', ?, NULL, ?
+             WHERE EXISTS (
+               SELECT 1 FROM reader_access_state WHERE user_id = ? AND revision = ?
+             ) AND NOT EXISTS (
+               SELECT 1 FROM identity_event WHERE subject_id = ? AND type = 'email-verified'
+             )`,
           )
           .bind(
             opaqueId(),
@@ -417,13 +446,19 @@ export async function forceReaderEmailVerification(input: {
             target.id,
             input.requestId,
             JSON.stringify({ operation: 'force-email-verification' }),
+            target.id,
+            nextRevision,
+            target.id,
           ),
         input.db
           .prepare(
             `INSERT INTO identity_event
              (id, version, type, occurred_at, actor_realm, actor_id, subject_realm, subject_id,
               result, request_id, problem_code, metadata)
-             VALUES (?, 1, 'email-verification-attempt', ?, 'administrator', ?, 'reader', ?, 'success', ?, NULL, ?)`,
+             SELECT ?, 1, 'email-verification-attempt', ?, 'administrator', ?, 'reader', ?, 'success', ?, NULL, ?
+             WHERE EXISTS (
+               SELECT 1 FROM reader_access_state WHERE user_id = ? AND revision = ?
+             )`,
           )
           .bind(
             opaqueId(),
@@ -432,9 +467,26 @@ export async function forceReaderEmailVerification(input: {
             target.id,
             input.requestId,
             JSON.stringify({ changed: true }),
+            target.id,
+            nextRevision,
           ),
       ]);
-    } else {
+      if (results[1]?.meta.changes !== 1) {
+        return await auditedFailure({
+          db: input.db,
+          actorId: input.administratorId,
+          subjectId: target.id,
+          requestId: input.requestId,
+          type: 'email-verification-attempt',
+          kind: 'stale-revision',
+          code: 'stale-revision',
+        });
+      }
+    } catch {
+      return { kind: 'internal-error' };
+    }
+  } else {
+    try {
       await audit({
         db: input.db,
         actorId: input.administratorId,
@@ -444,9 +496,9 @@ export async function forceReaderEmailVerification(input: {
         result: 'success',
         metadata: { changed: false },
       });
+    } catch {
+      return { kind: 'internal-error' };
     }
-  } catch {
-    return { kind: 'internal-error' };
   }
   return {
     kind: 'success',
@@ -473,17 +525,15 @@ export async function requestReaderMessage(input: {
     headers: input.headers,
   });
   if (authorization.kind !== 'allowed') {
-    return authorization.kind === 'administrator-disabled'
-      ? await auditedFailure({
-          db: input.db,
-          actorId: input.administratorId,
-          subjectId: null,
-          requestId: input.requestId,
-          type: `${input.kind}-attempt`,
-          kind: 'administrator-disabled',
-          code: 'administrator-disabled',
-        })
-      : { kind: authorization.kind };
+    return auditedFailure({
+      db: input.db,
+      actorId: input.administratorId,
+      subjectId: null,
+      requestId: input.requestId,
+      type: `${input.kind}-attempt`,
+      kind: authorization.kind,
+      code: authorization.kind,
+    });
   }
   if (input.idempotencyKey === undefined || input.idempotencyKey.length === 0) {
     return auditedFailure({
@@ -549,32 +599,46 @@ export async function requestReaderMessage(input: {
       code: 'reader-not-found',
     });
   }
-  if (input.kind === 'email-verification' && target.email_verified === 1) {
-    return auditedFailure({
-      db: input.db,
-      actorId: input.administratorId,
-      subjectId: target.id,
-      requestId: input.requestId,
-      type: `${input.kind}-attempt`,
-      kind: 'invalid-transition',
-      code: 'invalid-transition',
-    });
-  }
-  if (input.kind === 'password-recovery' && !(await hasUsableCredential(input.db, target.id))) {
-    return auditedFailure({
-      db: input.db,
-      actorId: input.administratorId,
-      subjectId: target.id,
-      requestId: input.requestId,
-      type: `${input.kind}-attempt`,
-      kind: 'no-usable-login-method',
-      code: 'no-usable-login-method',
-    });
-  }
-
-  if (existingIdempotency !== null) {
+  if (existingIdempotency !== null && existingIdempotency.response_status === 503) {
     const workflow = await readWorkflow(input.db, target.id, input.kind);
     if (workflow === null) return { kind: 'internal-error' };
+    const retryClaim = await input.db
+      .prepare(
+        `UPDATE reader_message_workflow
+         SET state = 'pending', updated_at = ?
+         WHERE id = ? AND state = 'scheduling-failed'`,
+      )
+      .bind(now, workflow.id)
+      .run();
+    if (retryClaim.meta.changes !== 1) {
+      const committed = await readIdempotency({
+        db: input.db,
+        actorId: input.administratorId,
+        method: 'POST',
+        path: input.path,
+        targetId: input.readerId,
+        key: input.idempotencyKey,
+        now,
+      });
+      if (committed !== null && committed.body_hash !== bodyHash) {
+        return auditedFailure({
+          db: input.db,
+          actorId: input.administratorId,
+          subjectId: target.id,
+          requestId: input.requestId,
+          type: `${input.kind}-attempt`,
+          kind: 'idempotency-key-reused',
+          code: 'idempotency-key-reused',
+        });
+      }
+      if (committed?.response_status === 202) {
+        return {
+          kind: 'accepted',
+          value: JSON.parse(committed.response_body) as AdminReaderMessage,
+        };
+      }
+      return { kind: 'delivery-scheduling-failed' };
+    }
     const scheduled = await scheduleMessage({
       runtime: input.runtime,
       kind: input.kind,
@@ -606,6 +670,28 @@ export async function requestReaderMessage(input: {
     return scheduled
       ? { kind: 'accepted', value: response }
       : { kind: 'delivery-scheduling-failed' };
+  }
+  if (input.kind === 'email-verification' && target.email_verified === 1) {
+    return auditedFailure({
+      db: input.db,
+      actorId: input.administratorId,
+      subjectId: target.id,
+      requestId: input.requestId,
+      type: `${input.kind}-attempt`,
+      kind: 'invalid-transition',
+      code: 'invalid-transition',
+    });
+  }
+  if (input.kind === 'password-recovery' && !(await hasUsableCredential(input.db, target.id))) {
+    return auditedFailure({
+      db: input.db,
+      actorId: input.administratorId,
+      subjectId: target.id,
+      requestId: input.requestId,
+      type: `${input.kind}-attempt`,
+      kind: 'no-usable-login-method',
+      code: 'no-usable-login-method',
+    });
   }
 
   const workflow = await readWorkflow(input.db, target.id, input.kind);
@@ -641,15 +727,33 @@ export async function requestReaderMessage(input: {
     path: input.path,
   });
   try {
+    const claim = await input.db
+      .prepare(
+        `INSERT INTO reader_message_workflow
+         (id, user_id, kind, state, cooldown_until, created_at, updated_at, last_scheduled_at)
+         VALUES (?, ?, ?, 'pending', ?, ?, ?, NULL)
+         ON CONFLICT(user_id, kind) DO UPDATE SET
+           state = 'pending', cooldown_until = excluded.cooldown_until, updated_at = excluded.updated_at
+         WHERE reader_message_workflow.cooldown_until <= excluded.created_at`,
+      )
+      .bind(workflowId, target.id, input.kind, cooldownUntil, now, now)
+      .run();
+    if (claim.meta.changes !== 1) {
+      const current = await readWorkflow(input.db, target.id, input.kind);
+      if (current === null) return { kind: 'internal-error' };
+      const retryAfterSeconds = Math.max(1, Math.ceil((current.cooldown_until - now) / 1000));
+      await audit({
+        db: input.db,
+        actorId: input.administratorId,
+        subjectId: target.id,
+        requestId: input.requestId,
+        type: `${input.kind}-attempt`,
+        result: 'failure',
+        problemCode: 'cooldown-active',
+      });
+      return { kind: 'cooldown-active', retryAfterSeconds };
+    }
     await input.db.batch([
-      input.db
-        .prepare(
-          `INSERT INTO reader_message_workflow
-           (id, user_id, kind, state, cooldown_until, created_at, updated_at, last_scheduled_at)
-           VALUES (?, ?, ?, 'pending', ?, ?, ?, NULL)
-           ON CONFLICT(user_id, kind) DO UPDATE SET state = 'pending', cooldown_until = excluded.cooldown_until, updated_at = excluded.updated_at`,
-        )
-        .bind(workflowId, target.id, input.kind, cooldownUntil, now, now),
       input.db
         .prepare(
           `INSERT INTO identity_event

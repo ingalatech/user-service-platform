@@ -57,9 +57,9 @@ export interface IdentityAuthInput {
   // path (ADR-0010). Falls back to supervised fire-and-forget when the
   // request has no execution context (e.g. contract generation, unit calls).
   readonly background: (task: Promise<unknown>) => void;
-  // Synchronous application-owned message scheduling used after an atomic
-  // administrative command commit. It deliberately propagates mail-adapter
-  // failure so the command can return a retryable 503.
+  // Synchronous application-owned enqueue boundary used after an atomic
+  // administrative command commit. It propagates scheduler acceptance
+  // failure, but the provider task itself remains supervised in background.
   readonly schedule?: (task: Promise<unknown>) => Promise<void>;
   readonly realm?: 'reader' | 'administrator';
 }

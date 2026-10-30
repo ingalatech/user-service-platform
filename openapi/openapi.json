@@ -981,6 +981,8 @@
             "type": "string",
             "enum": [
               "email-verified",
+              "email-verification-requested",
+              "password-recovery-requested",
               "email-changed",
               "social-identity-unlinked",
               "sessions-revoked",
