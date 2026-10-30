@@ -266,7 +266,7 @@ export async function runAdminBrowserTest(): Promise<void> {
     await page.getByRole('link', { name: 'Volver al inicio', exact: true }).click();
     await visible(page, 'Sesión de administración');
     const cookies = await context.cookies();
-    const token = cookies.find((cookie) => cookie.name.endsWith('session_token'));
+    let token = cookies.find((cookie) => cookie.name.endsWith('session_token'));
     assert(
       token?.httpOnly && token.path === '/v1/admin',
       'Admin cookie is HttpOnly and path-scoped',
@@ -280,7 +280,7 @@ export async function runAdminBrowserTest(): Promise<void> {
     })()`),
       'UI storage contains no password or session token',
     );
-    const cookieHeader = cookies.map(({ name, value }) => `${name}=${value}`).join('; ');
+    let cookieHeader = cookies.map(({ name, value }) => `${name}=${value}`).join('; ');
     for (const [path, fields] of [
       ['/v1/admin/me', ['email', 'emailVerified', 'id', 'realm', 'role']],
     ] as const) {
@@ -297,6 +297,21 @@ export async function runAdminBrowserTest(): Promise<void> {
     const readerMe = await http('/v1/me', { headers: { cookie: cookieHeader } });
     assert(readerMe.status === 401, 'Administrator cookie is not a Reader session');
     await readerMe.arrayBuffer();
+    phase = 'canonical administration hierarchy';
+    await page.getByRole('link', { name: 'Administradores', exact: true }).click();
+    await visible(page, 'Administradores');
+    await page
+      .getByText('Esta sección se habilitará con sus contratos productivos.', {
+        exact: true,
+      })
+      .waitFor();
+    await page.getByRole('link', { name: 'Auditoría administrativa', exact: true }).click();
+    await visible(page, 'Auditoría administrativa');
+    await page
+      .getByText('Esta sección se habilitará con sus contratos productivos.', {
+        exact: true,
+      })
+      .waitFor();
     phase = 'user list, search and pagination';
     for (let i = 0; i < 12; i++) {
       const email = `qa-list-${String(i).padStart(2, '0')}@example.com`;
@@ -310,9 +325,10 @@ export async function runAdminBrowserTest(): Promise<void> {
     }
     await page.goto(`${base}/admin/users`);
     await visible(page, 'Usuarios');
-    const table = page.getByRole('table');
     await page.getByText('14 usuarios en total', { exact: true }).waitFor();
-    await page.getByText('Página 1 de 2', { exact: true }).waitFor();
+    await page.getByText('1-10 de 14', { exact: true }).waitFor();
+    const table = page.getByRole('table', { name: 'Listado de usuarios', exact: true });
+    await table.waitFor();
     assert(
       (await table.getByText(admin, { exact: true }).count()) === 0,
       'Admin identity is not a Reader row',
@@ -323,42 +339,74 @@ export async function runAdminBrowserTest(): Promise<void> {
       !/fecha de nacimiento|teléfono|referencia de imagen/i.test(listHeaders),
       'User list keeps Account Details private',
     );
-    const searchBox = page.getByRole('searchbox', {
+    const searchBox = page.getByRole('textbox', {
       name: 'Buscar por correo electrónico',
       exact: true,
     });
-    await searchBox.fill(regular.toUpperCase());
-    await page.getByRole('button', { name: 'Buscar', exact: true }).click();
+    await searchBox.fill(`  ${regular.toUpperCase()}  `);
     await page.getByText('1 usuario en total', { exact: true }).waitFor();
-    await page.getByText('Página 1 de 1', { exact: true }).waitFor();
+    await page.getByText('1-1 de 1', { exact: true }).waitFor();
     await table.getByText(regular, { exact: true }).waitFor();
     await table.getByText('Correo verificado', { exact: true }).waitFor();
     assert((await table.getByText(admin, { exact: true }).count()) === 0, 'search replaces rows');
     await searchBox.fill('no-such-user@example.com');
-    await page.getByRole('button', { name: 'Buscar', exact: true }).click();
     await visible(page, 'Sin resultados');
+    await searchBox.fill('   ');
+    await page.getByText('14 usuarios en total', { exact: true }).waitFor();
+    await page.getByText('1-10 de 14', { exact: true }).waitFor();
+    assert((await page.getByRole('alert').count()) === 0, 'whitespace-only search is empty');
     await page.getByRole('button', { name: 'Limpiar búsqueda', exact: true }).click();
     await page.getByText('14 usuarios en total', { exact: true }).waitFor();
-    await page.getByText('Página 1 de 2', { exact: true }).waitFor();
-    await page.getByRole('button', { name: 'Siguiente', exact: true }).click();
-    await page.getByText('Página 2 de 2', { exact: true }).waitFor();
+    await page
+      .getByRole('navigation', { name: 'pagination' })
+      .getByText('2', { exact: true })
+      .click();
+    await page.getByText('11-14 de 14', { exact: true }).waitFor();
     assert(
       (await table.getByText(admin, { exact: true }).count()) === 0,
       'next page has no stale rows',
     );
     await table.getByText('qa-list-11@example.com', { exact: true }).waitFor();
     await searchBox.fill(regular);
-    await page.getByRole('button', { name: 'Buscar', exact: true }).click();
     await page.getByText('1 usuario en total', { exact: true }).waitFor();
-    await page.getByText('Página 1 de 1', { exact: true }).waitFor();
+    await page.getByText('1-1 de 1', { exact: true }).waitFor();
     await table.getByText(regular, { exact: true }).waitFor();
     await page.getByRole('button', { name: 'Limpiar búsqueda', exact: true }).click();
-    await page.getByText('Página 1 de 2', { exact: true }).waitFor();
+    await page.getByText('1-10 de 14', { exact: true }).waitFor();
     assert(
       (await table.getByText(admin, { exact: true }).count()) === 0,
       'Admin identity stays outside Reader listing',
     );
+    const deletedEmail = 'qa-deleted-on-save@example.com';
+    const deletedRegistration = await http('/v1/auth/register', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'QA Deleted', email: deletedEmail, password }),
+    });
+    assert(deletedRegistration.status === 201, 'deleted User fixture created');
+    await deletedRegistration.arrayBuffer();
+    await sql(`UPDATE "user" SET email_verified = 1 WHERE email = '${deletedEmail}'`);
+    const deletedLookup = await http(`/v1/admin/users?email=${encodeURIComponent(deletedEmail)}`, {
+      headers: { cookie: cookieHeader },
+    });
+    assert(deletedLookup.status === 200, 'deleted User detail lookup');
+    const deletedPayload = (await deletedLookup.json()) as {
+      items?: { id?: unknown }[];
+    };
+    const deletedId = deletedPayload.items?.[0]?.id;
+    assert(
+      typeof deletedId === 'string' && deletedId.length > 0,
+      'deleted User identifier resolved',
+    );
+    await page.goto(`${base}/admin/users/${encodeURIComponent(deletedId)}/edit`);
+    await visible(page, 'Editar datos de cuenta');
+    await sql(`DELETE FROM "user" WHERE id = '${deletedId}'`);
+    await page.getByRole('textbox', { name: 'Nombre', exact: true }).fill('Deleted');
+    await page.getByRole('button', { name: 'Guardar cambios', exact: true }).click();
+    await page.getByText('Usuario no encontrado', { exact: true }).waitFor();
     phase = 'user detail, reload, back and direct navigation';
+    await page.goto(`${base}/admin/users`);
+    await visible(page, 'Usuarios');
     const detailLookup = await http(`/v1/admin/users?email=${encodeURIComponent(regular)}`, {
       headers: { cookie: cookieHeader },
     });
@@ -372,15 +420,38 @@ export async function runAdminBrowserTest(): Promise<void> {
       'regular detail identifier resolved',
     );
     await searchBox.fill(regular);
-    await page.getByRole('button', { name: 'Buscar', exact: true }).click();
     await page.getByText('1 usuario en total', { exact: true }).waitFor();
     await table.getByText(regular, { exact: true }).waitFor();
-    await page.getByRole('link', { name: `Ver detalle de ${regular}`, exact: true }).click();
+    let detailAccountDetailsReads = 0;
+    await page.route('**/v1/admin/users/*/account-details', async (route) => {
+      detailAccountDetailsReads++;
+      await route.continue();
+    });
+    await page.getByRole('link', { name: 'Ver detalle', exact: true }).click();
     await visible(page, 'Detalle de usuario');
     await page.getByText(regular, { exact: true }).waitFor();
     await page.getByText('Correo verificado', { exact: true }).waitFor();
     await page.getByText('Identificador', { exact: true }).waitFor();
     await page.getByText('Rol', { exact: true }).waitFor();
+    assert(
+      page.url().includes(`/admin/users/${encodeURIComponent(regularDetailId)}`) &&
+        !page.url().includes('/show'),
+      'list preserves the established User detail route',
+    );
+    assert(detailAccountDetailsReads === 0, 'safe User detail does not depend on Account Details');
+    await page.unroute('**/v1/admin/users/*/account-details');
+    await page.getByRole('link', { name: 'Volver a la lista', exact: true }).click();
+    await visible(page, 'Usuarios');
+    assert((await searchBox.inputValue()).trim().toLowerCase() === regular, 'back restores search');
+    await page.getByText('1 usuario en total', { exact: true }).waitFor();
+    await page.getByRole('link', { name: 'Ver detalle', exact: true }).click();
+    await visible(page, 'Detalle de usuario');
+    await page.getByRole('link', { name: 'Editar datos de cuenta', exact: true }).click();
+    await visible(page, 'Editar datos de cuenta');
+    assert(
+      page.url().includes(`/admin/users/${encodeURIComponent(regularDetailId)}/edit`),
+      'account details use an explicit edit route',
+    );
     const firstNameInput = page.getByRole('textbox', { name: 'Nombre', exact: true });
     await firstNameInput.waitFor();
     assert((await firstNameInput.inputValue()) === '', 'missing Account Details render empty');
@@ -413,6 +484,21 @@ export async function runAdminBrowserTest(): Promise<void> {
         accountDetails.image === 'https://images.example.test/ada.png',
       'Admin form persisted real Account Details through HTTP',
     );
+    phase = 'account edit authorization failures';
+    await firstNameInput.fill('Grace');
+    await sql('UPDATE "admin_session" SET expires_at = 0');
+    await page.getByRole('button', { name: 'Guardar cambios', exact: true }).click();
+    await visible(page, 'Administración');
+    await signIn(page, admin, password);
+    await visible(page, 'Sesión de administración');
+    cookieHeader = (await context.cookies())
+      .map(({ name, value }) => `${name}=${value}`)
+      .join('; ');
+    token = (await context.cookies()).find((cookie) => cookie.name.endsWith('session_token'));
+    await page.goto(`${base}/admin/users/${encodeURIComponent(regularDetailId)}/edit`);
+    await visible(page, 'Editar datos de cuenta');
+    const activeToken = token;
+    assert(activeToken !== undefined, 'refreshed Admin cookie is available');
     await page
       .getByRole('textbox', { name: 'Referencia de imagen HTTPS', exact: true })
       .fill('http://images.example.test/insecure.png');
@@ -435,7 +521,7 @@ export async function runAdminBrowserTest(): Promise<void> {
     });
     assert(adminSessionAfterEdit.status === 200, 'Admin session remains valid after target update');
     await page.reload();
-    await visible(page, 'Detalle de usuario');
+    await visible(page, 'Editar datos de cuenta');
     await page.getByText(regular, { exact: true }).waitFor();
     assert(
       (await page.getByRole('textbox', { name: 'Nombre', exact: true }).inputValue()) === 'Ada' &&
@@ -445,8 +531,10 @@ export async function runAdminBrowserTest(): Promise<void> {
           '1815-12-10',
       'Account Details reload from saved Worker values',
     );
-    await page.getByRole('link', { name: 'Volver a la lista', exact: true }).click();
+    await page.goto(`${base}/admin/users`);
     await visible(page, 'Usuarios');
+    await page.getByText('14 usuarios en total', { exact: true }).waitFor();
+    await searchBox.fill(regular);
     await page.getByText('1 usuario en total', { exact: true }).waitFor();
     await table.getByText(regular, { exact: true }).waitFor();
     await page.goto(`${base}/admin/users/${encodeURIComponent(regularDetailId)}`);
@@ -455,7 +543,10 @@ export async function runAdminBrowserTest(): Promise<void> {
     await page.reload();
     await visible(page, 'Detalle de usuario');
     await page.getByText(regular, { exact: true }).waitFor();
-    await page.goto(`${base}/admin/users/does-not-exist-41`);
+    await page.goto(`${base}/admin/users/does-not-exist-41/edit`);
+    await visible(page, 'Editar datos de cuenta');
+    await page.getByText('Usuario no encontrado', { exact: true }).waitFor();
+    await page.goto(`${base}/admin/users/does-not-exist-41/show`);
     await visible(page, 'Usuario no encontrado');
     await page.getByRole('link', { name: 'Volver a la lista', exact: true }).click();
     await visible(page, 'Usuarios');
@@ -463,7 +554,10 @@ export async function runAdminBrowserTest(): Promise<void> {
     phase = 'retryable User list failure';
     await sql('ALTER TABLE "admin_session" RENAME TO "admin_session_qa_list_unavailable"');
     try {
-      await page.getByRole('button', { name: 'Siguiente', exact: true }).click();
+      await page
+        .getByRole('navigation', { name: 'pagination' })
+        .getByText('2', { exact: true })
+        .click();
       await page
         .getByRole('alert')
         .getByText('No pudimos cargar los usuarios. Tu sesión se conserva.', { exact: true })
@@ -473,10 +567,17 @@ export async function runAdminBrowserTest(): Promise<void> {
       await sql('ALTER TABLE "admin_session_qa_list_unavailable" RENAME TO "admin_session"');
     }
     await page.getByRole('button', { name: 'Reintentar', exact: true }).click();
-    await page.getByText('Página 2 de 2', { exact: true }).waitFor();
+    await page
+      .getByRole('navigation', { name: 'pagination' })
+      .getByText('2', { exact: true })
+      .click();
+    await page.getByText('11-14 de 14', { exact: true }).waitFor();
     await table.getByText('qa-list-11@example.com', { exact: true }).waitFor();
-    await page.getByRole('button', { name: 'Anterior', exact: true }).click();
-    await page.getByText('Página 1 de 2', { exact: true }).waitFor();
+    await page
+      .getByRole('navigation', { name: 'pagination' })
+      .getByText('1', { exact: true })
+      .click();
+    await page.getByText('1-10 de 14', { exact: true }).waitFor();
     assert(
       (await table.getByText(admin, { exact: true }).count()) === 0,
       'Admin identity is not listed as a Reader',
@@ -490,7 +591,7 @@ export async function runAdminBrowserTest(): Promise<void> {
       await visible(page, 'El servicio no está disponible');
       assert(
         (await context.cookies()).some(
-          (cookie) => cookie.name === token.name && cookie.value === token.value,
+          (cookie) => cookie.name === activeToken.name && cookie.value === activeToken.value,
         ),
         'server failure preserves cookie',
       );
@@ -531,7 +632,7 @@ export async function runAdminBrowserTest(): Promise<void> {
     assert(deniedResponse.status() === 403, 'server remains permission authority');
     await page.goto(`${base}/admin/users`);
     await visible(page, 'Acceso denegado');
-    await page.goto(`${base}/admin/users/${encodeURIComponent(regularDetailId)}`);
+    await page.goto(`${base}/admin/users/${encodeURIComponent(regularDetailId)}/show`);
     await visible(page, 'Acceso denegado');
     await page.goto(`${base}/admin/denegado`);
     await visible(page, 'Acceso denegado');
@@ -588,12 +689,18 @@ export async function runAdminBrowserTest(): Promise<void> {
     await signIn(page, admin, password);
     await page.goto(`${base}/admin/users`);
     await visible(page, 'Usuarios');
+    await page.getByRole('button', { name: 'Alternar menú', exact: true }).click();
+    await page.getByRole('link', { name: 'Inicio', exact: true }).click();
+    await visible(page, 'Sesión de administración');
+    await page.getByRole('button', { name: 'Alternar menú', exact: true }).click();
+    await page.getByRole('link', { name: 'Usuarios', exact: true }).click();
+    await visible(page, 'Usuarios');
     await page.getByRole('table').waitFor();
     assert(
       await page.evaluate<boolean>('document.documentElement.scrollWidth <= window.innerWidth'),
       'narrow user list fits viewport',
     );
-    await page.goto(`${base}/admin/users/${encodeURIComponent(regularDetailId)}`);
+    await page.goto(`${base}/admin/users/${encodeURIComponent(regularDetailId)}/show`);
     await visible(page, 'Detalle de usuario');
     assert(
       await page.evaluate<boolean>('document.documentElement.scrollWidth <= window.innerWidth'),

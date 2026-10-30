@@ -5,8 +5,10 @@ import type {
   GetOneParams,
   GetOneResult,
   RaRecord,
+  UpdateParams,
+  UpdateResult,
 } from 'ra-core';
-import { adminUserDetail, adminUsers } from './api.js';
+import { adminUserDetail, adminUsers, updateAdminUserAccountDetails } from './api.js';
 
 const unsupported = (): Promise<never> =>
   Promise.reject(new Error('Esta operación no está disponible en el panel.'));
@@ -19,9 +21,10 @@ export const dataProvider: DataProvider = {
   ): Promise<GetListResult<RecordType>> => {
     if (resource !== 'users') return unsupported();
     const filter: unknown = params.filter;
-    const email =
+    const rawEmail =
       filter !== null && typeof filter === 'object' && 'email' in filter ? filter.email : undefined;
-    if (email !== undefined && typeof email !== 'string') return unsupported();
+    if (rawEmail !== undefined && typeof rawEmail !== 'string') return unsupported();
+    const email = rawEmail?.trim();
     const { page, perPage } = params.pagination ?? { page: 1, perPage: 25 };
     const result = await adminUsers(
       {
@@ -49,7 +52,14 @@ export const dataProvider: DataProvider = {
   getMany: unsupported,
   getManyReference: unsupported,
   create: unsupported,
-  update: unsupported,
+  update: async <RecordType extends RaRecord>(
+    resource: string,
+    params: UpdateParams<RecordType>,
+  ): Promise<UpdateResult<RecordType>> => {
+    if (resource !== 'users' || typeof params.id !== 'string') return unsupported();
+    const accountDetails = await updateAdminUserAccountDetails(params.id, params.data);
+    return { data: { id: params.id, ...accountDetails } as unknown as RecordType };
+  },
   updateMany: unsupported,
   delete: unsupported,
   deleteMany: unsupported,
