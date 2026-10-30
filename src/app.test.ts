@@ -24,6 +24,27 @@ describe('unhandled routes', () => {
       instance: '/v1/does-not-exist',
     });
   });
+
+  it('keeps unknown administration API routes private and uncacheable', async () => {
+    const res = await createApp().request('/v1/admin/does-not-exist');
+
+    expect(res.status).toBe(404);
+    expect(res.headers.get('cache-control')).toBe('private, no-store');
+  });
+
+  it('keeps validation failures private without changing Reader API caching', async () => {
+    const admin = await createApp().request('/v1/admin/users?limit=0');
+    const reader = await createApp().request('/v1/auth/register', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: '', email: 'invalid', password: '' }),
+    });
+
+    expect(admin.status).toBe(400);
+    expect(admin.headers.get('cache-control')).toBe('private, no-store');
+    expect(reader.status).toBe(400);
+    expect(reader.headers.get('cache-control')).toBe('no-store');
+  });
 });
 
 describe('compiled configuration boundary', () => {

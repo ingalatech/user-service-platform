@@ -278,13 +278,6 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
   const router = new OpenAPIHono<{ Bindings: Env; Variables: { requestId: string } }>();
   const override = options.authMailer;
 
-  const privateAdminReaderResponse = async (c: IdentityContext, next: () => Promise<void>) => {
-    await next();
-    c.res.headers.set('Cache-Control', 'private, no-store');
-  };
-  router.use('/admin/users', privateAdminReaderResponse);
-  router.use('/admin/users/*', privateAdminReaderResponse);
-
   // Direct-browser consumer transport (spec #164, ADR-0013): credentialed
   // CORS is applied to the public consumer identity operations only. It is a
   // browser permission boundary; mutation authorization stays with

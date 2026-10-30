@@ -52,6 +52,10 @@ function loggedPath(c: Context<AppBindings>): string {
   return new URL(c.req.url).pathname;
 }
 
+function isAdministrationApiPath(pathname: string): boolean {
+  return pathname === '/v1/admin' || pathname.startsWith('/v1/admin/');
+}
+
 // Application composition root. Feature slices register their OpenAPI-aware
 // routers here under the `/v1` namespace; cross-feature imports must stay on
 // public slice interfaces (AGENTS.md change rules).
@@ -125,7 +129,7 @@ export function createApp(identityOptions: IdentityRouterOptions = {}) {
           400,
           {
             'Content-Type': PROBLEM_JSON,
-            'Cache-Control': new URL(c.req.url).pathname.startsWith('/v1/admin/users')
+            'Cache-Control': isAdministrationApiPath(new URL(c.req.url).pathname)
               ? 'private, no-store'
               : 'no-store',
           },
@@ -155,6 +159,15 @@ export function createApp(identityOptions: IdentityRouterOptions = {}) {
       environment: readEnvironment(c, warningState),
     };
     console.log(JSON.stringify(record));
+  });
+
+  app.use('/v1/admin', async (c, next) => {
+    await next();
+    c.res.headers.set('Cache-Control', 'private, no-store');
+  });
+  app.use('/v1/admin/*', async (c, next) => {
+    await next();
+    c.res.headers.set('Cache-Control', 'private, no-store');
   });
 
   app.route('/v1', createHealthRouter());
@@ -189,7 +202,7 @@ export function createApp(identityOptions: IdentityRouterOptions = {}) {
       404,
       {
         'Content-Type': PROBLEM_JSON,
-        ...(new URL(c.req.url).pathname.startsWith('/v1/admin/')
+        ...(isAdministrationApiPath(new URL(c.req.url).pathname)
           ? { 'Cache-Control': 'private, no-store' }
           : {}),
       },
@@ -221,7 +234,7 @@ export function createApp(identityOptions: IdentityRouterOptions = {}) {
       500,
       {
         'Content-Type': PROBLEM_JSON,
-        ...(new URL(c.req.url).pathname.startsWith('/v1/admin/')
+        ...(isAdministrationApiPath(new URL(c.req.url).pathname)
           ? { 'Cache-Control': 'private, no-store' }
           : {}),
       },

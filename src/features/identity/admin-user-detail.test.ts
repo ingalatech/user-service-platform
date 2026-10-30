@@ -392,6 +392,7 @@ describe('GET /v1/admin/users/{userId}', () => {
     try {
       const res = await get(`/v1/admin/users/${encodeURIComponent(adminId)}`, { cookie });
       expect(res.status).toBe(500);
+      expect(res.headers.get('cache-control')).toBe('private, no-store');
       await res.arrayBuffer();
     } finally {
       restore();

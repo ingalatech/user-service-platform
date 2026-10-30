@@ -175,6 +175,7 @@ describe('GET /v1/admin/me', () => {
 
     expect(res.status).toBe(401);
     expect(res.headers.get('content-type')).toContain('application/problem+json');
+    expect(res.headers.get('cache-control')).toBe('private, no-store');
     expect(await res.json()).toEqual({
       type: 'urn:problem:unauthenticated',
       title: 'Unauthenticated',
@@ -191,6 +192,7 @@ describe('GET /v1/admin/me', () => {
 
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toContain('application/json');
+    expect(res.headers.get('cache-control')).toBe('private, no-store');
     const body = (await res.json()) as Record<string, unknown>;
     expect(Object.keys(body).sort()).toEqual(['email', 'emailVerified', 'id', 'realm', 'role']);
     expect(body.realm).toBe('administrator');
