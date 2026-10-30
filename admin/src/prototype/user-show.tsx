@@ -1,7 +1,7 @@
 /* Prototype question: does one route-backed tab set clarify the User account hierarchy? */
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import { useNotify, useRecordContext } from 'ra-core';
-import { Link, useSearchParams } from 'react-router';
+import { useSearchParams } from 'react-router';
 import type { AdminUser } from '../generated/contracts.js';
 import { RecordField } from '../kit/components/admin/record-field.js';
 import { Button } from '../kit/components/ui/button.js';
@@ -17,7 +17,6 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '../kit/components/ui/tabs.js';
 import { PrototypeConfirmAction } from './confirm-dialog.js';
 import {
-  prototypeAccountData,
   prototypeActivity,
   prototypeSessions,
   prototypeSocialProviders,
@@ -55,71 +54,6 @@ function Section({ title, children }: { title: string; children: React.ReactNode
       </h3>
       {children}
     </section>
-  );
-}
-
-function SummaryTab({ record }: { record: AdminUser }) {
-  return (
-    <div className="space-y-6">
-      <Section title="Identidad">
-        <div className="flex flex-col gap-3">
-          <RecordField record={record} source="id" label="Identificador" />
-          <RecordField record={record} source="email" label="Correo electrónico canónico" />
-          <RecordField
-            record={record}
-            source="emailVerified"
-            label="Estado del correo"
-            render={(value) => (value.emailVerified ? 'Verificado' : 'Pendiente')}
-          />
-          <RecordField record={record} source="role" label="Rol" />
-        </div>
-      </Section>
-      <Separator />
-      <Section title="Datos de cuenta">
-        <div className="flex flex-col gap-3">
-          <RecordField record={prototypeAccountData} source="firstName" label="Nombre" />
-          <RecordField record={prototypeAccountData} source="lastName" label="Apellidos" />
-          <RecordField record={prototypeAccountData} source="phone" label="Teléfono" />
-        </div>
-        <Link
-          to={`/users/${encodeURIComponent(record.id)}`}
-          className="inline-flex text-sm underline underline-offset-4"
-        >
-          Editar datos de cuenta
-        </Link>
-      </Section>
-      <Separator />
-      <Section title="Métodos disponibles">
-        <dl className="flex flex-col gap-3 text-sm">
-          <div>
-            <dt className="text-muted-foreground">Métodos disponibles</dt>
-            <dd>Contraseña, correo electrónico</dd>
-          </div>
-        </dl>
-      </Section>
-      <Separator />
-      <Section title="Estado de acceso">
-        <dl className="flex flex-col gap-3 text-sm">
-          <div>
-            <dt className="text-muted-foreground">Estado</dt>
-            <dd>Permitido</dd>
-          </div>
-        </dl>
-      </Section>
-      <Separator />
-      <Section title="Solicitud de eliminación">
-        <dl className="flex flex-col gap-3 text-sm">
-          <div>
-            <dt className="text-muted-foreground">Solicitud de eliminación</dt>
-            <dd>Ninguna</dd>
-          </div>
-        </dl>
-      </Section>
-      <Separator />
-      <Section title="Acceso efectivo">
-        <p className="text-sm">Permitido</p>
-      </Section>
-    </div>
   );
 }
 
@@ -231,14 +165,6 @@ function LifecycleTab({ email }: { email: string }) {
             <dt className="text-muted-foreground">Estado actual</dt>
             <dd>{state === 'active' ? 'Activa' : 'Deshabilitada'}</dd>
           </div>
-          <div>
-            <dt className="text-muted-foreground">Solicitud de eliminación</dt>
-            <dd>Ninguna</dd>
-          </div>
-          <div>
-            <dt className="text-muted-foreground">Resultado de revisión</dt>
-            <dd>No revisada</dd>
-          </div>
         </dl>
       </Section>
       <div className="flex flex-wrap gap-2">
@@ -251,13 +177,19 @@ function LifecycleTab({ email }: { email: string }) {
             setState((current) => (current === 'active' ? 'disabled' : 'active'));
           }}
         />
+      </div>
+      <Section title="Solicitud de eliminación">
+        <p className="text-sm">Ninguna</p>
         <PrototypeConfirmAction
           label={actions.requestDeletion}
           title={actions.requestDeletion}
           description="La solicitud es sólo una representación local y no elimina datos."
           confirmLabel="Registrar solicitud"
         />
-      </div>
+      </Section>
+      <Section title="Resultado de revisión">
+        <p className="text-sm">No revisada</p>
+      </Section>
     </div>
   );
 }
@@ -285,7 +217,7 @@ function ActivityTab() {
   );
 }
 
-export function UserShowPrototype() {
+export function UserShowPrototype({ children }: { children: ReactNode }) {
   const record = prototypeUser(useRecordContext<AdminUser>());
   const [searchParams, setSearchParams] = useSearchParams();
   const activeTab = tabFromSearch(searchParams.get('tab'));
@@ -308,7 +240,7 @@ export function UserShowPrototype() {
         ))}
       </TabsList>
       <TabsContent value="resumen" className="mt-5">
-        <SummaryTab record={record} />
+        {children}
       </TabsContent>
       <TabsContent value="acceso" className="mt-5">
         <AccessTab record={record} />

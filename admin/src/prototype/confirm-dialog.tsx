@@ -31,7 +31,9 @@ export function PrototypeConfirmAction({
   const notify = useNotify();
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger render={<Button variant="outline" size="sm" />}>{label}</DialogTrigger>
+      <DialogTrigger render={<Button variant="outline" size="sm" aria-label={label} />}>
+        {label}
+      </DialogTrigger>
       <DialogContent>
         <DialogHeader>
           <DialogTitle>{title}</DialogTitle>

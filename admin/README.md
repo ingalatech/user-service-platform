@@ -30,7 +30,8 @@ are intentionally small and must be retained when updating the pinned source:
 - `data-table.tsx`: adds the typed `tableLabel` prop for an accessible rendered table name.
 - `ui/tabs.tsx`: source-faithful Marmelab Tabs composition from the pinned
   `11983abe4afc60a3904991820526aafe4d0588d3` commit; no shell adaptation is
-  introduced.
+  introduced. `npm run admin:marmelab:check` verifies its exact SHA-256 against
+  that pinned source.
 
 Other kit files retain upstream content and formatting; the two indexed column
 lookups carry only the non-null assertions required by this repository's strict

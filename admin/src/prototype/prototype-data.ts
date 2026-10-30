@@ -40,14 +40,6 @@ export function prototypeUserActionLabels(email: string) {
   };
 }
 
-export const prototypeAccountData = {
-  firstName: 'Ada',
-  lastName: 'Lovelace',
-  birthDate: '1815-12-10',
-  phone: '+44 20 7946 0958',
-  image: 'https://images.example.test/ada.png',
-};
-
 export const prototypeSessions: PrototypeSession[] = [
   { id: 'session-current', device: 'Chrome en macOS', lastSeen: 'Ahora', location: 'Londres' },
   {

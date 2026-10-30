@@ -96,6 +96,21 @@ export function UsersShow() {
     );
   }
 
+  const canonicalDetail = (
+    <div className="flex flex-col gap-4">
+      <RecordField source="id" label="Identificador" />
+      <RecordField source="email" label="Correo electrónico" />
+      <RecordField
+        label="Verificación"
+        render={(record) => (record.emailVerified ? 'Correo verificado' : 'Correo sin verificar')}
+      />
+      <RecordField source="role" label="Rol" />
+      <p>
+        <Link to={`/users/${encodeURIComponent(id)}`}>Editar datos de cuenta</Link>
+      </p>
+    </div>
+  );
+
   return (
     <Show
       title="Detalle de usuario"
@@ -103,22 +118,9 @@ export function UsersShow() {
       queryOptions={{ enabled: false, initialData: query.data }}
     >
       {import.meta.env.DEV ? (
-        <UserShowPrototype />
+        <UserShowPrototype>{canonicalDetail}</UserShowPrototype>
       ) : (
-        <div className="flex flex-col gap-4">
-          <RecordField source="id" label="Identificador" />
-          <RecordField source="email" label="Correo electrónico" />
-          <RecordField
-            label="Verificación"
-            render={(record) =>
-              record.emailVerified ? 'Correo verificado' : 'Correo sin verificar'
-            }
-          />
-          <RecordField source="role" label="Rol" />
-          <p>
-            <Link to={`/users/${encodeURIComponent(id)}`}>Editar datos de cuenta</Link>
-          </p>
-        </div>
+        canonicalDetail
       )}
     </Show>
   );

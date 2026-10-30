@@ -25,6 +25,12 @@ import {
   findPrototypeAdministrator,
 } from './prototype-data.js';
 
+function prototypeTargetEmail(record: unknown): string {
+  if (typeof record !== 'object' || record === null || !('email' in record)) return 'destinatario';
+  const email = record.email;
+  return typeof email === 'string' ? email : 'destinatario';
+}
+
 function AdministratorTabs({ children }: { children: React.ReactNode }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const active = searchParams.get('section') === 'invitations' ? 'invitations' : 'accounts';
@@ -67,7 +73,10 @@ export function AdministratorsList() {
             <DataTable.Col
               label="Acciones"
               render={(record) => (
-                <Link to={`/administrators/${encodeURIComponent(record.id)}/show`}>
+                <Link
+                  to={`/administrators/${encodeURIComponent(record.id)}/show`}
+                  aria-label={`Ver detalle de ${prototypeTargetEmail(record)}`}
+                >
                   Ver detalle
                 </Link>
               )}
@@ -89,17 +98,21 @@ export function AdministratorsList() {
             <DataTable.Col source="email" label="Correo electrónico" />
             <DataTable.Col source="role" label="Rol" />
             <DataTable.Col source="status" label="Estado" />
-            <DataTable.Col label="Acciones">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => {
-                  notify('Reenvío simulado en este prototipo.', { type: 'success' });
-                }}
-              >
-                Reenviar
-              </Button>
-            </DataTable.Col>
+            <DataTable.Col
+              label="Acciones"
+              render={(record) => (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  aria-label={`Reenviar invitación para ${prototypeTargetEmail(record)}`}
+                  onClick={() => {
+                    notify('Reenvío simulado en este prototipo.', { type: 'success' });
+                  }}
+                >
+                  Reenviar
+                </Button>
+              )}
+            />
           </DataTable>
         </PrototypeList>
       </TabsContent>
@@ -141,7 +154,7 @@ function AdministratorSummary({ record }: { record: PrototypeAdministrator }) {
   );
 }
 
-function AdministratorAccess() {
+function AdministratorAccess({ email }: { email: string }) {
   const notify = useNotify();
   return (
     <div className="space-y-3">
@@ -149,6 +162,7 @@ function AdministratorAccess() {
       <Button
         variant="outline"
         size="sm"
+        aria-label={`Reenviar verificación para ${email}`}
         onClick={() => {
           notify('Reenvío simulado en este prototipo.', { type: 'success' });
         }}
@@ -225,7 +239,7 @@ export function AdministratorsShow() {
           <AdministratorSummary record={record} />
         </TabsContent>
         <TabsContent value="acceso" className="mt-5">
-          <AdministratorAccess />
+          <AdministratorAccess email={record.email} />
         </TabsContent>
         <TabsContent value="actividad" className="mt-5">
           <AdministratorActivity />

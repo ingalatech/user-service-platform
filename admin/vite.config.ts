@@ -45,5 +45,11 @@ export default defineConfig({
       'query-string': fileURLToPath(new URL('./src/query-string-compat.ts', import.meta.url)),
     },
   },
-  server: { proxy: { '/v1': 'http://127.0.0.1:8787', '/auth-actions': 'http://127.0.0.1:8787' } },
+  server: {
+    hmr: process.env.ADMIN_PROTOTYPE_BROWSER === '1' ? false : undefined,
+    proxy: {
+      '/v1': process.env.ADMIN_API_PROXY ?? 'http://127.0.0.1:8787',
+      '/auth-actions': process.env.ADMIN_API_PROXY ?? 'http://127.0.0.1:8787',
+    },
+  },
 });
