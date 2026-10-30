@@ -28,8 +28,8 @@ are intentionally small and must be retained when updating the pinned source:
 - `user-menu.tsx`: accessible Spanish menu label and safe logout failure notification.
 - `refresh-button.tsx`: accessible Spanish label.
 - `data-table.tsx`: adds the typed `tableLabel` prop for an accessible rendered table name.
-- `ui/tabs.tsx`: prototype-only Shadcn Tabs composition over the already pinned
-  `@base-ui/react/tabs` dependency; no new dependency or shell adaptation is
+- `ui/tabs.tsx`: source-faithful Marmelab Tabs composition from the pinned
+  `11983abe4afc60a3904991820526aafe4d0588d3` commit; no shell adaptation is
   introduced.
 
 Other kit files retain upstream content and formatting; the two indexed column

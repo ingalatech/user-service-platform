@@ -20,14 +20,16 @@ import {
   prototypeAccountData,
   prototypeActivity,
   prototypeSessions,
+  prototypeSocialProviders,
+  prototypeUserActionLabels,
+  prototypeUserTabs,
   prototypeUser,
 } from './prototype-data.js';
 
-const userTabs = ['resumen', 'acceso', 'sesiones', 'ciclo-de-vida', 'actividad'] as const;
-type UserTab = (typeof userTabs)[number];
+type UserTab = (typeof prototypeUserTabs)[number]['value'];
 
 function tabFromSearch(value: string | null): UserTab {
-  return userTabs.includes(value as UserTab) ? (value as UserTab) : 'resumen';
+  return prototypeUserTabs.some((tab) => tab.value === value) ? (value as UserTab) : 'resumen';
 }
 
 function SimulatedAction({ children }: { children: string }) {
@@ -61,6 +63,7 @@ function SummaryTab({ record }: { record: AdminUser }) {
     <div className="space-y-6">
       <Section title="Identidad">
         <div className="flex flex-col gap-3">
+          <RecordField record={record} source="id" label="Identificador" />
           <RecordField record={record} source="email" label="Correo electrónico canónico" />
           <RecordField
             record={record}
@@ -86,27 +89,42 @@ function SummaryTab({ record }: { record: AdminUser }) {
         </Link>
       </Section>
       <Separator />
-      <Section title="Estado de acceso">
-        <dl className="grid gap-3 text-sm sm:grid-cols-2">
+      <Section title="Métodos disponibles">
+        <dl className="flex flex-col gap-3 text-sm">
           <div>
             <dt className="text-muted-foreground">Métodos disponibles</dt>
             <dd>Contraseña, correo electrónico</dd>
           </div>
+        </dl>
+      </Section>
+      <Separator />
+      <Section title="Estado de acceso">
+        <dl className="flex flex-col gap-3 text-sm">
           <div>
-            <dt className="text-muted-foreground">Acceso efectivo</dt>
+            <dt className="text-muted-foreground">Estado</dt>
             <dd>Permitido</dd>
           </div>
+        </dl>
+      </Section>
+      <Separator />
+      <Section title="Solicitud de eliminación">
+        <dl className="flex flex-col gap-3 text-sm">
           <div>
             <dt className="text-muted-foreground">Solicitud de eliminación</dt>
             <dd>Ninguna</dd>
           </div>
         </dl>
       </Section>
+      <Separator />
+      <Section title="Acceso efectivo">
+        <p className="text-sm">Permitido</p>
+      </Section>
     </div>
   );
 }
 
 function AccessTab({ record }: { record: AdminUser }) {
+  const actions = prototypeUserActionLabels(record.email);
   return (
     <div className="space-y-6">
       <Section title="Correo y verificación">
@@ -114,7 +132,7 @@ function AccessTab({ record }: { record: AdminUser }) {
           <RecordField record={record} source="email" label="Correo electrónico" />
           <div className="flex flex-wrap items-center gap-2 text-sm">
             <span>Correo verificado</span>
-            <SimulatedAction>Reenviar verificación</SimulatedAction>
+            <SimulatedAction>{actions.resendVerification}</SimulatedAction>
           </div>
         </div>
       </Section>
@@ -126,35 +144,34 @@ function AccessTab({ record }: { record: AdminUser }) {
           </p>
           <div className="flex flex-wrap items-center gap-2">
             <span>Recuperación de contraseña</span>
-            <SimulatedAction>Enviar enlace de recuperación</SimulatedAction>
+            <SimulatedAction>{actions.sendRecovery}</SimulatedAction>
           </div>
         </div>
       </Section>
       <Separator />
       <Section title="Proveedores sociales">
         <div className="flex flex-wrap items-center gap-2 text-sm">
-          <span>Ningún proveedor vinculado</span>
-          <PrototypeConfirmAction
-            label="Desvincular proveedor"
-            title="Desvincular proveedor social"
-            description="Esta acción simulada requiere confirmación crítica."
-            confirmLabel="Desvincular"
-          />
+          {prototypeSocialProviders.length === 0 ? (
+            <span>No hay proveedores sociales vinculados.</span>
+          ) : (
+            <span>{prototypeSocialProviders.join(', ')}</span>
+          )}
         </div>
       </Section>
     </div>
   );
 }
 
-function SessionsTab() {
+function SessionsTab({ email }: { email: string }) {
   const [sessions, setSessions] = useState(prototypeSessions);
+  const actions = prototypeUserActionLabels(email);
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <p className="text-sm text-muted-foreground">Sesiones activas de este usuario.</p>
         <PrototypeConfirmAction
-          label="Revocar todas"
-          title="Revocar todas las sesiones"
+          label={actions.revokeAllSessions}
+          title={actions.revokeAllSessions}
           description="Se cerrarán las sesiones activas. Esta acción es simulada."
           confirmLabel="Revocar todas"
           onConfirm={() => {
@@ -181,8 +198,8 @@ function SessionsTab() {
               <TableCell>{session.location}</TableCell>
               <TableCell>
                 <PrototypeConfirmAction
-                  label="Revocar"
-                  title="Revocar sesión"
+                  label={actions.revokeSession}
+                  title={actions.revokeSession}
                   description="La sesión se revocará sólo en esta vista de prototipo."
                   confirmLabel="Revocar"
                   onConfirm={() => {
@@ -203,8 +220,9 @@ function SessionsTab() {
   );
 }
 
-function LifecycleTab() {
+function LifecycleTab({ email }: { email: string }) {
   const [state, setState] = useState<'active' | 'disabled'>('active');
+  const actions = prototypeUserActionLabels(email);
   return (
     <div className="space-y-6">
       <Section title="Estado de la cuenta">
@@ -225,8 +243,8 @@ function LifecycleTab() {
       </Section>
       <div className="flex flex-wrap gap-2">
         <PrototypeConfirmAction
-          label={state === 'active' ? 'Deshabilitar cuenta' : 'Rehabilitar cuenta'}
-          title={state === 'active' ? 'Deshabilitar cuenta' : 'Rehabilitar cuenta'}
+          label={state === 'active' ? actions.disableAccount : actions.enableAccount}
+          title={state === 'active' ? actions.disableAccount : actions.enableAccount}
           description="El cambio es simulado y no modifica datos reales."
           confirmLabel="Confirmar"
           onConfirm={() => {
@@ -234,8 +252,8 @@ function LifecycleTab() {
           }}
         />
         <PrototypeConfirmAction
-          label="Registrar solicitud de eliminación"
-          title="Registrar solicitud de eliminación"
+          label={actions.requestDeletion}
+          title={actions.requestDeletion}
           description="La solicitud es sólo una representación local y no elimina datos."
           confirmLabel="Registrar solicitud"
         />
@@ -283,11 +301,11 @@ export function UserShowPrototype() {
         aria-label="Secciones de usuario"
         className="w-full justify-start overflow-x-auto sm:w-fit"
       >
-        <TabsTrigger value="resumen">Resumen</TabsTrigger>
-        <TabsTrigger value="acceso">Acceso</TabsTrigger>
-        <TabsTrigger value="sesiones">Sesiones</TabsTrigger>
-        <TabsTrigger value="ciclo-de-vida">Ciclo de vida</TabsTrigger>
-        <TabsTrigger value="actividad">Actividad</TabsTrigger>
+        {prototypeUserTabs.map((tab) => (
+          <TabsTrigger key={tab.value} value={tab.value}>
+            {tab.label}
+          </TabsTrigger>
+        ))}
       </TabsList>
       <TabsContent value="resumen" className="mt-5">
         <SummaryTab record={record} />
@@ -296,10 +314,10 @@ export function UserShowPrototype() {
         <AccessTab record={record} />
       </TabsContent>
       <TabsContent value="sesiones" className="mt-5">
-        <SessionsTab />
+        <SessionsTab email={record.email} />
       </TabsContent>
       <TabsContent value="ciclo-de-vida" className="mt-5">
-        <LifecycleTab />
+        <LifecycleTab email={record.email} />
       </TabsContent>
       <TabsContent value="actividad" className="mt-5">
         <ActivityTab />

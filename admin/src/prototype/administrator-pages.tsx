@@ -22,6 +22,7 @@ import {
   prototypeAdministrators,
   prototypeAuditEvents,
   prototypeInvitations,
+  findPrototypeAdministrator,
 } from './prototype-data.js';
 
 function AdministratorTabs({ children }: { children: React.ReactNode }) {
@@ -184,9 +185,21 @@ function AdministratorActivity() {
 export function AdministratorsShow() {
   const { id } = useParams();
   const [searchParams, setSearchParams] = useSearchParams();
-  const record =
-    prototypeAdministrators.find((item) => item.id === id) ?? prototypeAdministrators[0];
-  if (!record) return <p role="alert">Administrador no encontrado.</p>;
+  const record = findPrototypeAdministrator(id);
+  if (!record) {
+    return (
+      <section className="space-y-4 py-4" aria-labelledby="administrator-detail-title">
+        <h1 id="administrator-detail-title" className="text-2xl font-bold tracking-tight">
+          Detalle de administrador
+        </h1>
+        <div role="alert">
+          <h2>Administrador no encontrado</h2>
+          <p>No existe ningún administrador con este identificador.</p>
+        </div>
+        <Link to="/administrators">Volver a la lista</Link>
+      </section>
+    );
+  }
   const active =
     searchParams.get('tab') === 'acceso' || searchParams.get('tab') === 'actividad'
       ? searchParams.get('tab')

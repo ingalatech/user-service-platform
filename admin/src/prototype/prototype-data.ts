@@ -14,6 +14,32 @@ export interface PrototypeSession {
   location: string;
 }
 
+export const prototypeUserTabs = [
+  { value: 'resumen', label: 'Resumen' },
+  { value: 'acceso', label: 'Acceso' },
+  { value: 'sesiones', label: 'Sesiones' },
+  { value: 'ciclo-de-vida', label: 'Ciclo de vida' },
+  { value: 'actividad', label: 'Actividad' },
+] as const;
+
+export function findPrototypeAdministrator(
+  id: string | undefined,
+): PrototypeAdministrator | undefined {
+  return prototypeAdministrators.find((item) => item.id === id);
+}
+
+export function prototypeUserActionLabels(email: string) {
+  return {
+    resendVerification: `Reenviar verificación para ${email}`,
+    sendRecovery: `Enviar recuperación a ${email}`,
+    revokeSession: `Revocar sesión de ${email}`,
+    revokeAllSessions: `Revocar todas las sesiones de ${email}`,
+    disableAccount: `Deshabilitar cuenta de ${email}`,
+    enableAccount: `Rehabilitar cuenta de ${email}`,
+    requestDeletion: `Registrar solicitud de eliminación de ${email}`,
+  };
+}
+
 export const prototypeAccountData = {
   firstName: 'Ada',
   lastName: 'Lovelace',
@@ -60,6 +86,8 @@ export const prototypeAdministrators: PrototypeAdministrator[] = [
     role: 'admin',
   },
 ];
+
+export const prototypeSocialProviders: string[] = [];
 
 export const prototypeInvitations = [
   { id: 'invitation-1', email: 'reviewer@example.com', role: 'admin', status: 'Pendiente' },
