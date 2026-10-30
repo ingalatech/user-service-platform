@@ -51,6 +51,35 @@ function dereference(root: unknown, schema: unknown): unknown {
   return schema;
 }
 
+function flattenSchema(root: unknown, schema: unknown): unknown {
+  const resolved = dereference(root, schema);
+  const record = asRecord(resolved);
+  if (record === null || !Array.isArray(record.allOf)) return resolved;
+
+  const flattened: Record<string, unknown> = {};
+  for (const part of record.allOf) {
+    const partRecord = asRecord(flattenSchema(root, part));
+    if (partRecord === null) continue;
+    for (const [key, value] of Object.entries(partRecord)) {
+      if (key === 'properties') {
+        flattened.properties = {
+          ...(asRecord(flattened.properties) ?? {}),
+          ...(asRecord(value) ?? {}),
+        };
+      } else if (key === 'required') {
+        const existingRequired = Array.isArray(flattened.required)
+          ? (flattened.required as unknown[])
+          : [];
+        const nextRequired = Array.isArray(value) ? (value as unknown[]) : [];
+        flattened.required = [...existingRequired, ...nextRequired];
+      } else {
+        flattened[key] = value;
+      }
+    }
+  }
+  return flattened;
+}
+
 function mediaSchema(root: unknown, operation: unknown, location: 'request' | 'response'): unknown {
   const record = asRecord(operation);
   if (record === null) {
@@ -123,8 +152,8 @@ function compareSchemas(
   findings: CompatFinding[],
   direction: 'request' | 'response' | 'conservative' = 'conservative',
 ): void {
-  const base = asRecord(dereference(baselineRoot, baseline));
-  const next = asRecord(dereference(currentRoot, current));
+  const base = asRecord(flattenSchema(baselineRoot, baseline));
+  const next = asRecord(flattenSchema(currentRoot, current));
   if (base === null || next === null) {
     if (base !== null && next === null)
       findings.push({

@@ -1,16 +1,18 @@
 import {
   AccountDetailsSchema,
   AdminMeSchema,
+  AdminReaderActivitySchema,
+  AdminReaderDetailSchema,
   AdminUserDetailParamsSchema,
   AdminUserListQuerySchema,
   AdminUserListSchema,
-  AdminUserSchema,
   LoginRequestSchema,
   ProblemDetailsSchema,
   UpdateAccountDetailsSchema,
   type AdminMe,
+  type AdminReaderActivity,
+  type AdminReaderDetail,
   type AdminUserDetailParams,
-  type AdminUser,
   type AdminUserList,
   type AdminUserListQuery,
   type AccountDetails,
@@ -118,11 +120,31 @@ export async function adminUsers(
 export async function adminUserDetail(
   id: AdminUserDetailParams['userId'],
   signal?: AbortSignal,
-): Promise<AdminUser> {
+): Promise<AdminReaderDetail> {
   const params = AdminUserDetailParamsSchema.safeParse({ userId: id });
   if (!params.success) throw new ApiError(400);
-  const parsed = AdminUserSchema.safeParse(
+  const parsed = AdminReaderDetailSchema.safeParse(
     await request(`/v1/admin/users/${encodeURIComponent(params.data.userId)}`, undefined, signal),
+  );
+  if (!parsed.success) throw new ApiError(502);
+  return parsed.data;
+}
+
+export async function adminReaderActivity(
+  id: AdminUserDetailParams['userId'],
+  cursor?: string,
+  signal?: AbortSignal,
+): Promise<AdminReaderActivity> {
+  const params = AdminUserDetailParamsSchema.safeParse({ userId: id });
+  if (!params.success) throw new ApiError(400);
+  const search = new URLSearchParams({ limit: '25' });
+  if (cursor !== undefined) search.set('cursor', cursor);
+  const parsed = AdminReaderActivitySchema.safeParse(
+    await request(
+      `/v1/admin/users/${encodeURIComponent(params.data.userId)}/activity?${search.toString()}`,
+      undefined,
+      signal,
+    ),
   );
   if (!parsed.success) throw new ApiError(502);
   return parsed.data;

@@ -2,8 +2,9 @@ import type { D1Database } from '@cloudflare/workers-types';
 import { and, asc, count, eq, isNull, or, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/d1';
 import type { createAdministrationAuth } from './auth.js';
-import type { AdminMe, AdminUser, AdminUserList } from './contract.js';
-import { adminIdentitySchema, identitySchema, user } from './schema.js';
+import type { AdminMe, AdminReaderDetail, AdminUser, AdminUserList } from './contract.js';
+import { authorizeAdministrator } from './admin-authorization.js';
+import { account, identitySchema, readerAccessState, user } from './schema.js';
 
 // Application-owned protected User listing (ticket #125, spec #123). This
 // module owns the read query inside Identity's infrastructure boundary: it
@@ -62,48 +63,31 @@ export interface AdminUserReaderInput {
 export type AdminReadOutcome<T> =
   { readonly kind: 'allowed'; readonly value: T } | { readonly kind: 'forbidden' };
 
-export type AdminUserDetailOutcome = AdminReadOutcome<AdminUser> | { readonly kind: 'not-found' };
+export type AdminUserDetailOutcome =
+  | AdminReadOutcome<AdminReaderDetail>
+  | { readonly kind: 'administrator-disabled' }
+  | { readonly kind: 'not-found' };
 
 export interface AdminUserReader {
-  current(): Promise<AdminReadOutcome<AdminMe>>;
+  current(): Promise<AdminReadOutcome<AdminMe> | { readonly kind: 'administrator-disabled' }>;
   list(
     query: Pick<ListAdminUsersInput, 'limit' | 'offset' | 'email'>,
-  ): Promise<AdminReadOutcome<AdminUserList>>;
+  ): Promise<AdminReadOutcome<AdminUserList> | { readonly kind: 'administrator-disabled' }>;
   get(userId: string): Promise<AdminUserDetailOutcome>;
 }
 
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (typeof value !== 'object' || value === null) return null;
-  return value as Record<string, unknown>;
-}
-
-async function authorizedAdministrator(input: AdminUserReaderInput): Promise<AdminMe | null> {
-  const outcome: unknown = await input.auth.api.userHasPermission({
+async function authorizedAdministrator(
+  input: AdminUserReaderInput,
+): Promise<AdminReadOutcome<AdminMe> | { readonly kind: 'administrator-disabled' }> {
+  const outcome = await authorizeAdministrator({
+    auth: input.auth,
+    db: input.db,
+    administratorId: input.userId,
     headers: input.headers,
-    body: { userId: input.userId, permissions: { user: ['list'] } },
   });
-  if (asRecord(outcome)?.success !== true) return null;
-
-  const database = drizzle(input.db, { schema: adminIdentitySchema });
-  const rows = await database
-    .select({
-      id: adminIdentitySchema.user.id,
-      email: adminIdentitySchema.user.email,
-      emailVerified: adminIdentitySchema.user.emailVerified,
-      role: adminIdentitySchema.user.role,
-    })
-    .from(adminIdentitySchema.user)
-    .where(eq(adminIdentitySchema.user.id, input.userId))
-    .limit(1);
-  const row = rows[0];
-  if (row === undefined) return null;
-  return {
-    id: row.id,
-    email: row.email,
-    emailVerified: row.emailVerified,
-    realm: 'administrator',
-    role: 'admin',
-  };
+  return outcome.kind === 'allowed'
+    ? { kind: 'allowed', value: outcome.administrator }
+    : { kind: outcome.kind };
 }
 
 // Application-owned administration read family. One caller first resolves the
@@ -112,20 +96,19 @@ async function authorizedAdministrator(input: AdminUserReaderInput): Promise<Adm
 export function createAdminUserReader(input: AdminUserReaderInput): AdminUserReader {
   return {
     async current() {
-      const administrator = await authorizedAdministrator(input);
-      return administrator === null
-        ? { kind: 'forbidden' }
-        : { kind: 'allowed', value: administrator };
+      return authorizedAdministrator(input);
     },
     async list(query) {
-      if ((await authorizedAdministrator(input)) === null) return { kind: 'forbidden' };
+      const authorization = await authorizedAdministrator(input);
+      if (authorization.kind !== 'allowed') return authorization;
       return {
         kind: 'allowed',
         value: await listAdminUsers({ db: input.db, ...query }),
       };
     },
     async get(userId) {
-      if ((await authorizedAdministrator(input)) === null) return { kind: 'forbidden' };
+      const authorization = await authorizedAdministrator(input);
+      if (authorization.kind !== 'allowed') return authorization;
       const detail = await getAdminUserById({ db: input.db, userId });
       return detail === null ? { kind: 'not-found' } : { kind: 'allowed', value: detail };
     },
@@ -137,7 +120,9 @@ export function createAdminUserReader(input: AdminUserReaderInput): AdminUserRea
 // not perform a permission check; callers should use `AdminUserReader` or
 // establish authorization before calling it. Identifiers and result contents
 // are never logged here.
-export async function getAdminUserById(input: GetAdminUserInput): Promise<AdminUser | null> {
+export async function getAdminUserById(
+  input: GetAdminUserInput,
+): Promise<AdminReaderDetail | null> {
   const database = drizzle(input.db, { schema: identitySchema });
   const rows = await database
     .select({
@@ -145,15 +130,52 @@ export async function getAdminUserById(input: GetAdminUserInput): Promise<AdminU
       email: user.email,
       emailVerified: user.emailVerified,
       role: user.role,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
+      accessState: readerAccessState.state,
+      revision: readerAccessState.revision,
     })
     .from(user)
+    .leftJoin(readerAccessState, eq(readerAccessState.userId, user.id))
     .where(and(eq(user.id, input.userId), or(isNull(user.role), sql`${user.role} <> 'admin'`)))
     .limit(1);
   const row = rows[0];
   if (row === undefined) {
     return null;
   }
-  return toAdminUser(row);
+  const methodRows = await database
+    .select({ providerId: account.providerId })
+    .from(account)
+    .where(eq(account.userId, row.id));
+  const methods: AdminReaderDetail['methods'] = [];
+  const seen = new Set<string>();
+  for (const method of methodRows) {
+    if (method.providerId === 'credential' && !seen.has('password')) {
+      methods.push({ type: 'password' });
+      seen.add('password');
+    } else if (
+      (method.providerId === 'google' ||
+        method.providerId === 'facebook' ||
+        method.providerId === 'apple') &&
+      !seen.has(method.providerId)
+    ) {
+      methods.push({ type: 'social', provider: method.providerId });
+      seen.add(method.providerId);
+    }
+  }
+  const legacy = toAdminUser(row);
+  const state = row.accessState === 'disabled' ? 'disabled' : 'active';
+  return {
+    ...legacy,
+    revision: row.revision ?? 1,
+    summary: {
+      createdAt: row.createdAt.toISOString(),
+      updatedAt: row.updatedAt.toISOString(),
+    },
+    access: { state, effectiveState: state },
+    methods,
+    activeWorkflows: [],
+  };
 }
 // Lists administrative Users with deterministic ascending-email pagination.
 // `total` counts every literal match before limit/offset apply, so clients

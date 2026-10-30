@@ -5,11 +5,13 @@ import type { AccountDetails, UpdateAccountDetails } from './contract.js';
 import type { IdentityRuntime } from './identity-runtime.js';
 import { identitySchema, user } from './schema.js';
 import { projectAccountDetails } from './account-details-operations.js';
+import { authorizeAdministrator } from './admin-authorization.js';
 
 export type AdminAccountDetailsOutcome =
   | { readonly kind: 'success'; readonly value: AccountDetails }
   | { readonly kind: 'unauthenticated' }
   | { readonly kind: 'forbidden' }
+  | { readonly kind: 'administrator-disabled' }
   | { readonly kind: 'not-found' }
   | { readonly kind: 'bad-request' }
   | { readonly kind: 'internal-error' };
@@ -22,14 +24,18 @@ export function createAdminAccountDetailsOperations(input: {
   readonly runtime: IdentityRuntime;
   readonly db: D1Database;
 }) {
-  async function authorize(headers: Headers): Promise<'unauthenticated' | 'forbidden' | 'allowed'> {
+  async function authorize(
+    headers: Headers,
+  ): Promise<'unauthenticated' | 'forbidden' | 'administrator-disabled' | 'allowed'> {
     const session = await input.runtime.resolveAdministratorSessionContext(headers);
     if (session === null) return 'unauthenticated';
-    const permission: unknown = await input.runtime.administration().api.userHasPermission({
+    const authorization = await authorizeAdministrator({
+      auth: input.runtime.administration(),
+      db: input.db,
+      administratorId: session.administrator.id,
       headers,
-      body: { userId: session.administrator.id, permissions: { user: ['list'] } },
     });
-    return isRecord(permission) && permission.success === true ? 'allowed' : 'forbidden';
+    return authorization.kind;
   }
 
   async function readReaderAccount(userId: string): Promise<AccountDetails | null> {
@@ -115,8 +121,4 @@ export function createAdminAccountDetailsOperations(input: {
       }
     },
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

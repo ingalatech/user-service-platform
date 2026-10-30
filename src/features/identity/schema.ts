@@ -1,4 +1,4 @@
-import { index, integer, sqliteTable, text } from 'drizzle-orm/sqlite-core';
+import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 // Identity persistence owned by the identity feature slice (ADR-0002,
 // ADR-0004). These tables back Better Auth through its Drizzle adapter; they
@@ -252,6 +252,107 @@ export const userPhotoCleanup = sqliteTable(
       table.nextAttemptAt,
       table.createdAt,
     ),
+  ],
+);
+
+export const readerAccessState = sqliteTable('reader_access_state', {
+  userId: text('user_id')
+    .primaryKey()
+    .references(() => user.id, { onDelete: 'cascade' }),
+  state: text('state').notNull().default('active'),
+  revision: integer('revision').notNull().default(1),
+  updatedAt: integer('updated_at').notNull(),
+});
+
+export const administratorAccessState = sqliteTable('administrator_access_state', {
+  userId: text('user_id')
+    .primaryKey()
+    .references(() => adminUser.id, { onDelete: 'cascade' }),
+  state: text('state').notNull().default('active'),
+  revision: integer('revision').notNull().default(1),
+  updatedAt: integer('updated_at').notNull(),
+});
+
+// Application-owned append-only ledger. Feature code only projects explicitly
+// allowlisted event types and metadata; raw rows are never an HTTP contract.
+export const identityEvent = sqliteTable(
+  'identity_event',
+  {
+    id: text('id').primaryKey(),
+    version: integer('version').notNull().default(1),
+    type: text('type').notNull(),
+    occurredAt: integer('occurred_at').notNull(),
+    actorRealm: text('actor_realm').notNull(),
+    actorId: text('actor_id').notNull(),
+    subjectRealm: text('subject_realm').notNull(),
+    subjectId: text('subject_id').notNull(),
+    result: text('result').notNull(),
+    requestId: text('request_id').notNull(),
+    problemCode: text('problem_code'),
+    metadata: text('metadata'),
+  },
+  (table) => [
+    index('identity_event_subject_time_idx').on(
+      table.subjectRealm,
+      table.subjectId,
+      table.occurredAt,
+      table.id,
+    ),
+    index('identity_event_actor_time_idx').on(
+      table.actorRealm,
+      table.actorId,
+      table.occurredAt,
+      table.id,
+    ),
+  ],
+);
+
+export const identityReservation = sqliteTable(
+  'identity_reservation',
+  {
+    id: text('id').primaryKey(),
+    kind: text('kind').notNull(),
+    realm: text('realm').notNull(),
+    normalizedValue: text('normalized_value').notNull(),
+    subjectId: text('subject_id').notNull(),
+    workflowId: text('workflow_id').notNull(),
+    createdAt: integer('created_at').notNull(),
+    expiresAt: integer('expires_at').notNull(),
+  },
+  (table) => [
+    uniqueIndex('identity_reservation_scope_value_idx').on(
+      table.kind,
+      table.realm,
+      table.normalizedValue,
+    ),
+    index('identity_reservation_expiry_idx').on(table.expiresAt),
+  ],
+);
+
+export const adminIdempotencyRecord = sqliteTable(
+  'admin_idempotency_record',
+  {
+    id: text('id').primaryKey(),
+    actorId: text('actor_id').notNull(),
+    key: text('key').notNull(),
+    method: text('method').notNull(),
+    normalizedPath: text('normalized_path').notNull(),
+    targetId: text('target_id').notNull(),
+    bodyHash: text('body_hash').notNull(),
+    responseStatus: integer('response_status').notNull(),
+    responseBody: text('response_body').notNull(),
+    createdAt: integer('created_at').notNull(),
+    expiresAt: integer('expires_at').notNull(),
+  },
+  (table) => [
+    uniqueIndex('admin_idempotency_scope_key_idx').on(
+      table.actorId,
+      table.method,
+      table.normalizedPath,
+      table.targetId,
+      table.key,
+    ),
+    index('admin_idempotency_expiry_idx').on(table.expiresAt),
   ],
 );
 

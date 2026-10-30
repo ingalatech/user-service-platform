@@ -3,6 +3,8 @@ import type { components, operations } from './api.js';
 
 export type AdminMe = components['schemas']['AdminMe'];
 export type AdminUser = components['schemas']['AdminUser'];
+export type AdminReaderDetail = components['schemas']['AdminReaderDetail'];
+export type AdminReaderActivity = components['schemas']['AdminReaderActivity'];
 export type AdminUserList = components['schemas']['AdminUserList'];
 export type AccountDetails = components['schemas']['AccountDetails'];
 export type UpdateAccountDetails = components['schemas']['UpdateAccountDetails'];
@@ -23,6 +25,8 @@ export type AdminUserListQuery = {
 };
 
 export declare const AdminMeSchema: ZodType<AdminMe>;
+export declare const AdminReaderActivitySchema: ZodType<AdminReaderActivity>;
+export declare const AdminReaderDetailSchema: ZodType<AdminReaderDetail>;
 export declare const AccountDetailsSchema: ZodType<AccountDetails>;
 export declare const AdminUserDetailParamsSchema: ZodType<AdminUserDetailParams>;
 export declare const AdminUserSchema: ZodType<AdminUser>;

@@ -318,6 +318,7 @@ describe('GET /v1/admin/users', () => {
     ]) {
       const res = await get(path, { cookie });
       expect(res.status).toBe(400);
+      expect(res.headers.get('cache-control')).toBe('private, no-store');
       expect(await res.json()).toMatchObject({ code: 'bad-request', status: 400 });
     }
   });

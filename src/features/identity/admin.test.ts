@@ -875,7 +875,7 @@ describe('POST /v1/admin/auth/bootstrap', () => {
       );
 
       expect(res.status).toBe(400);
-      expect(res.headers.get('cache-control')).toBe('no-store');
+      expect(res.headers.get('cache-control')).toBe('private, no-store');
       expect(await res.json()).toMatchObject({
         code: 'password-policy-violation',
         failedRules: [violation.rule],

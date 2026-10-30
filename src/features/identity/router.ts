@@ -4,6 +4,7 @@ import type { Env } from '../../env.js';
 import { PROBLEM_JSON, createProblem, type ProblemCode } from '../../shared/problem.js';
 import { createAdminUserReader } from './admin-users.js';
 import { createAdminAccountDetailsOperations } from './admin-account-details.js';
+import { readAdminReaderActivity } from './admin-reader-activity.js';
 import { createAccountDetailsOperations } from './account-details-operations.js';
 import type { AccountDetailsUpdateOutcome } from './account-details-operations.js';
 import { createAccountPhotoOperations } from './account-photo-operations.js';
@@ -45,6 +46,7 @@ import {
   adminResetPasswordRoute,
   adminSignOutRoute,
   adminUserDetailRoute,
+  adminReaderActivityRoute,
   adminUserAccountDetailsRoute,
   adminUsersRoute,
   adminVerifyEmailRoute,
@@ -107,9 +109,9 @@ function requestIdentityRuntime(c: IdentityContext, authMailer?: AuthMailer): Id
   });
 }
 
-function problem(
+function problem<const TStatus extends 400 | 401 | 403 | 404 | 409 | 413 | 500 | 503>(
   c: IdentityContext,
-  status: 400 | 401 | 403 | 404 | 409 | 413 | 500 | 503,
+  status: TStatus,
   code: ProblemCode,
   title: string,
   detail?: string,
@@ -757,6 +759,9 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     if (outcome.kind === 'forbidden') {
       return problem(c, 403, 'forbidden', 'Forbidden', 'Administrator access is required.');
     }
+    if (outcome.kind === 'administrator-disabled') {
+      return problem(c, 403, 'administrator-disabled', 'Administrator disabled');
+    }
     return c.json(outcome.value, 200);
   });
 
@@ -868,6 +873,9 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     if (outcome.kind === 'forbidden') {
       return problem(c, 403, 'forbidden', 'Forbidden', 'Administrator access is required.');
     }
+    if (outcome.kind === 'administrator-disabled') {
+      return problem(c, 403, 'administrator-disabled', 'Administrator disabled');
+    }
     return c.json(outcome.value, 200);
   });
 
@@ -891,9 +899,44 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     if (outcome.kind === 'forbidden') {
       return problem(c, 403, 'forbidden', 'Forbidden', 'Administrator access is required.');
     }
-    if (outcome.kind === 'not-found') {
-      return problem(c, 404, 'not-found', 'Not Found', 'No such User.');
+    if (outcome.kind === 'administrator-disabled') {
+      return problem(c, 403, 'administrator-disabled', 'Administrator disabled');
     }
+    if (outcome.kind === 'not-found') {
+      return problem(c, 404, 'reader-not-found', 'Reader not found');
+    }
+    c.header('ETag', `"${String(outcome.value.revision)}"`);
+    return c.json(outcome.value, 200);
+  });
+
+  router.openapi(adminReaderActivityRoute, async (c) => {
+    const runtime = requestIdentityRuntime(c, override);
+    const session = await runtime.resolveAdministratorSessionContext(
+      c.req.raw.headers,
+      c.get('requestId'),
+    );
+    if (session === null) return administratorSessionProblem(c);
+    const params = c.req.valid('param');
+    const query = c.req.valid('query');
+    const outcome = await readAdminReaderActivity({
+      auth: runtime.administration(),
+      db: c.env.DB,
+      administratorId: session.administrator.id,
+      headers: c.req.raw.headers,
+      readerId: params.userId,
+      limit: query.limit,
+      cursor: query.cursor,
+    });
+    if (outcome.kind === 'forbidden') {
+      return problem(c, 403, 'forbidden', 'Forbidden', 'Administrator access is required.');
+    }
+    if (outcome.kind === 'administrator-disabled') {
+      return problem(c, 403, 'administrator-disabled', 'Administrator disabled');
+    }
+    if (outcome.kind === 'reader-not-found') {
+      return problem(c, 404, 'reader-not-found', 'Reader not found');
+    }
+    if (outcome.kind === 'bad-cursor') return problem(c, 400, 'bad-request', 'Bad Request');
     return c.json(outcome.value, 200);
   });
 
@@ -910,6 +953,9 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     }
     if (outcome.kind === 'forbidden') {
       return problem(c, 403, 'forbidden', 'Forbidden', 'Administrator access is required.');
+    }
+    if (outcome.kind === 'administrator-disabled') {
+      return problem(c, 403, 'administrator-disabled', 'Administrator disabled');
     }
     if (outcome.kind === 'not-found') {
       return problem(c, 404, 'not-found', 'Not Found', 'No such User.');
@@ -938,6 +984,9 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     }
     if (outcome.kind === 'forbidden') {
       return problem(c, 403, 'forbidden', 'Forbidden', 'Administrator access is required.');
+    }
+    if (outcome.kind === 'administrator-disabled') {
+      return problem(c, 403, 'administrator-disabled', 'Administrator disabled');
     }
     if (outcome.kind === 'not-found') {
       return problem(c, 404, 'not-found', 'Not Found', 'No such User.');
