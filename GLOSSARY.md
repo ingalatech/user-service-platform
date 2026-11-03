@@ -42,7 +42,15 @@ held by one active workflow in one identity realm to prevent conflicting work.
 
 A 24-hour administrative command record scoped by actor, method, normalized
 route, target, key and request-body hash. It permits a matching retry to replay
-the committed result without repeating the command.
+the committed result without repeating the command. A message-producing record
+may temporarily hold an encrypted scheduling envelope while its result is
+pending or retryable.
+
+### Reader Message Workflow
+
+The persisted scheduling state for one Reader verification or password-recovery
+message kind. It owns the cooldown and retry claim while never exposing a token,
+action URL, email body or provider-delivery assertion.
 
 ### Auth Policy
 

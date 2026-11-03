@@ -15,7 +15,7 @@ import {
   buildAuthActionUrl,
 } from './action-urls.js';
 import { capReaderStateExpirySeconds } from './reader-state.js';
-import type { AuthMailer } from './mailer.js';
+import type { AuthMailer, AuthMailTask } from './mailer.js';
 import type { AuthPolicy } from './policy.js';
 import { adminIdentitySchema, identitySchema } from './schema.js';
 import {
@@ -57,6 +57,10 @@ export interface IdentityAuthInput {
   // path (ADR-0010). Falls back to supervised fire-and-forget when the
   // request has no execution context (e.g. contract generation, unit calls).
   readonly background: (task: Promise<unknown>) => void;
+  // Synchronous application-owned enqueue boundary used after an atomic
+  // administrative command commit. It propagates scheduler acceptance
+  // failure, but the provider task itself remains supervised in background.
+  readonly schedule?: (task: AuthMailTask) => Promise<void>;
   readonly realm?: 'reader' | 'administrator';
 }
 
@@ -197,6 +201,7 @@ function sharedOptions(
     verifyEmailActionURL,
     resetPasswordActionURL,
     background,
+    schedule,
   } = input;
   const realm = input.realm ?? 'reader';
   const database = drizzle(db, {
@@ -316,7 +321,9 @@ function sharedOptions(
             realm === 'reader' ? RESET_PASSWORD_ACTION_PATH : ADMIN_RESET_PASSWORD_ACTION_PATH,
           token,
         });
-        background(mailer.sendPasswordResetEmail({ to: user.email, url, token }));
+        const message = { to: user.email, url, token };
+        if (schedule === undefined) background(mailer.sendPasswordResetEmail(message));
+        else await schedule({ kind: 'password-recovery', message });
       },
     },
     emailVerification: {
@@ -382,7 +389,8 @@ function sharedOptions(
             throw new Error('The verification message was not accepted by the mail transport.');
           }
         } else {
-          background(mailer.sendVerificationEmail(message));
+          if (schedule === undefined) background(mailer.sendVerificationEmail(message));
+          else await schedule({ kind: 'email-verification', message });
         }
       },
     },

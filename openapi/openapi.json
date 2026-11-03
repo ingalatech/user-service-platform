@@ -878,13 +878,19 @@
                       "type": "string",
                       "enum": [
                         "email-change",
-                        "deletion-request"
+                        "deletion-request",
+                        "email-verification-message",
+                        "password-recovery-message"
                       ]
                     },
                     "state": {
                       "type": "string"
                     },
                     "createdAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "cooldownUntil": {
                       "type": "string",
                       "format": "date-time"
                     }
@@ -981,6 +987,8 @@
             "type": "string",
             "enum": [
               "email-verified",
+              "email-verification-requested",
+              "password-recovery-requested",
               "email-changed",
               "social-identity-unlinked",
               "sessions-revoked",
@@ -1021,6 +1029,74 @@
           "occurredAt",
           "actor"
         ]
+      },
+      "AdminReaderEmailVerification": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "maxLength": 254,
+            "format": "email",
+            "example": "ada@example.com"
+          },
+          "emailVerified": {
+            "type": "boolean"
+          },
+          "changed": {
+            "type": "boolean"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "email",
+          "emailVerified",
+          "changed",
+          "revision"
+        ]
+      },
+      "AdminReaderMessage": {
+        "type": "object",
+        "properties": {
+          "workflowId": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "email-verification",
+              "password-recovery"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "scheduled"
+            ]
+          },
+          "cooldownUntil": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "workflowId",
+          "kind",
+          "state",
+          "cooldownUntil",
+          "revision"
+        ]
+      },
+      "AdminReaderMessageRequest": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
       },
       "AdminBootstrapResult": {
         "type": "object",
@@ -2306,6 +2382,465 @@
           },
           "500": {
             "description": "Internal failure.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/users/{userId}/email-verification": {
+      "put": {
+        "operationId": "forceAdminReaderEmailVerification",
+        "summary": "Force the canonical Reader email verified",
+        "description": "Marks only the current canonical Reader email verified and invalidates pending verification actions. It never sends mail or revokes Reader sessions.",
+        "tags": [
+          "admin"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "Opaque administrative User identifier.",
+              "example": "abc123"
+            },
+            "required": true,
+            "description": "Opaque administrative User identifier.",
+            "name": "userId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "required": false,
+            "name": "if-match",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The current canonical email verification state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminReaderEmailVerification"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid command input.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No authoritative Administrator session.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The actor is not allowed to perform the command.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Reader not found.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The command conflicts with current Reader state.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource revision is stale.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "A required precondition is missing.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The message cooldown is active.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The command could not be audited or completed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Message scheduling failed after the command was committed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/users/{userId}/email-verification/messages": {
+      "post": {
+        "operationId": "requestAdminReaderEmailVerificationMessage",
+        "summary": "Schedule a Reader verification message",
+        "description": "Schedules a new verification message for an unverified Reader email without exposing a token, action URL or delivery result.",
+        "tags": [
+          "admin"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "Opaque administrative User identifier.",
+              "example": "abc123"
+            },
+            "required": true,
+            "description": "Opaque administrative User identifier.",
+            "name": "userId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "required": false,
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminReaderMessageRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "The verification message was accepted for scheduling.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminReaderMessage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid command input.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No authoritative Administrator session.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The actor is not allowed to perform the command.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Reader not found.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The command conflicts with current Reader state.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource revision is stale.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "A required precondition is missing.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The message cooldown is active.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The command could not be audited or completed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Message scheduling failed after the command was committed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/users/{userId}/password-recovery/messages": {
+      "post": {
+        "operationId": "requestAdminReaderPasswordRecoveryMessage",
+        "summary": "Schedule a Reader password recovery message",
+        "description": "Schedules normal password recovery only for a Reader with a usable credential method. The Administrator never receives or sets the password.",
+        "tags": [
+          "admin"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "Opaque administrative User identifier.",
+              "example": "abc123"
+            },
+            "required": true,
+            "description": "Opaque administrative User identifier.",
+            "name": "userId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "required": false,
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminReaderMessageRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "The recovery message was accepted for scheduling.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminReaderMessage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid command input.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No authoritative Administrator session.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The actor is not allowed to perform the command.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Reader not found.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The command conflicts with current Reader state.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource revision is stale.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "A required precondition is missing.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The message cooldown is active.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The command could not be audited or completed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Message scheduling failed after the command was committed.",
             "content": {
               "application/problem+json": {
                 "schema": {

@@ -4,7 +4,13 @@ import { drizzle } from 'drizzle-orm/d1';
 import type { createAdministrationAuth } from './auth.js';
 import type { AdminMe, AdminReaderDetail, AdminUser, AdminUserList } from './contract.js';
 import { authorizeAdministrator } from './admin-authorization.js';
-import { account, identitySchema, readerAccessState, user } from './schema.js';
+import {
+  account,
+  identitySchema,
+  readerAccessState,
+  readerMessageWorkflow,
+  user,
+} from './schema.js';
 
 // Application-owned protected User listing (ticket #125, spec #123). This
 // module owns the read query inside Identity's infrastructure boundary: it
@@ -144,13 +150,24 @@ export async function getAdminUserById(
     return null;
   }
   const methodRows = await database
-    .select({ providerId: account.providerId })
+    .select({ providerId: account.providerId, password: account.password })
     .from(account)
     .where(eq(account.userId, row.id));
+  const messageRows = await database
+    .select({
+      id: readerMessageWorkflow.id,
+      kind: readerMessageWorkflow.kind,
+      state: readerMessageWorkflow.state,
+      cooldownUntil: readerMessageWorkflow.cooldownUntil,
+      createdAt: readerMessageWorkflow.createdAt,
+    })
+    .from(readerMessageWorkflow)
+    .where(eq(readerMessageWorkflow.userId, row.id))
+    .orderBy(asc(readerMessageWorkflow.createdAt));
   const methods: AdminReaderDetail['methods'] = [];
   const seen = new Set<string>();
   for (const method of methodRows) {
-    if (method.providerId === 'credential' && !seen.has('password')) {
+    if (method.providerId === 'credential' && method.password !== null && !seen.has('password')) {
       methods.push({ type: 'password' });
       seen.add('password');
     } else if (
@@ -165,6 +182,19 @@ export async function getAdminUserById(
   }
   const legacy = toAdminUser(row);
   const state = row.accessState === 'disabled' ? 'disabled' : 'active';
+  const now = Date.now();
+  const messageWorkflows: AdminReaderDetail['activeWorkflows'] = messageRows
+    .filter((message) => message.state !== 'scheduled' || message.cooldownUntil > now)
+    .map((message) => ({
+      id: message.id,
+      type:
+        message.kind === 'email-verification'
+          ? ('email-verification-message' as const)
+          : ('password-recovery-message' as const),
+      state: message.state,
+      createdAt: new Date(message.createdAt).toISOString(),
+      cooldownUntil: new Date(message.cooldownUntil).toISOString(),
+    }));
   return {
     ...legacy,
     revision: row.revision ?? 1,
@@ -174,7 +204,7 @@ export async function getAdminUserById(
     },
     access: { state, effectiveState: state },
     methods,
-    activeWorkflows: [],
+    activeWorkflows: messageWorkflows,
   };
 }
 // Lists administrative Users with deterministic ascending-email pagination.

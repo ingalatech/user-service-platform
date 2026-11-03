@@ -14,7 +14,12 @@ Better Auth email callbacks adapt into a purpose-specific application `AuthMaile
 
 Template selection and branding belong to the application/deployment configuration. A lower-level transport adapter owns the concrete provider or Cloudflare binding. Provider SDK types do not cross that adapter boundary.
 
-Transactional sends are scheduled from Workers using the execution context (`waitUntil`) rather than awaited on the authentication request path. This follows Better Auth's guidance and avoids coupling response timing to account existence or provider latency.
+Transactional sends are scheduled from Workers using the execution context (`waitUntil`) rather than awaited on the authentication request path. This follows Better Auth's guidance and avoids coupling response timing to account existence or provider latency. An explicit exception applies to an application-owned command whose contract reports whether durable message scheduling was accepted: that command may synchronously await the narrow enqueue/scheduling boundary so an enqueue failure can return a retryable `503`. The boundary must resolve when the work is accepted by the scheduler, not when an external provider has delivered the message; provider work remains supervised by `waitUntil`.
+
+Before that scheduler boundary runs, the idempotency record may retain an
+AES-GCM-encrypted retry envelope so the same key schedules the exact same token
+after rejection or an interrupted attempt. Plaintext tokens and action URLs
+remain transient and the envelope is cleared when scheduling is accepted.
 
 The initial architecture does not introduce Cloudflare Queues solely for auth email. Delivery failures are recorded as structured operational events and verification/reset flows support explicit resend. Introduce a durable queue only if measured reliability, throttling, or retry requirements justify it.
 

@@ -166,6 +166,7 @@ export async function runAdminBrowserTest(): Promise<void> {
     const admin = 'qa-admin@example.com';
     const regular = 'qa-user@example.com';
     const unverified = 'qa-unverified@example.com';
+    const lifecycleReader = 'qa-lifecycle-reader@example.com';
     for (const [path, name, email] of [
       ['/v1/admin/auth/bootstrap', 'QA Administrator', admin],
       ['/v1/auth/register', 'QA User', regular],
@@ -414,6 +415,103 @@ export async function runAdminBrowserTest(): Promise<void> {
     await page.getByRole('textbox', { name: 'Nombre', exact: true }).fill('Deleted');
     await page.getByRole('button', { name: 'Guardar cambios', exact: true }).click();
     await page.getByText('Usuario no encontrado', { exact: true }).waitFor();
+    phase = 'Reader verification and recovery lifecycle actions';
+    const lifecycleRegistration = await http('/v1/auth/register', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'QA Lifecycle Reader', email: lifecycleReader, password }),
+    });
+    assert(lifecycleRegistration.status === 201, 'lifecycle Reader fixture created');
+    await lifecycleRegistration.arrayBuffer();
+    const unverifiedLookup = await http(
+      `/v1/admin/users?email=${encodeURIComponent(lifecycleReader)}`,
+      {
+        headers: { cookie: cookieHeader },
+      },
+    );
+    assert(unverifiedLookup.status === 200, 'unverified Reader detail lookup');
+    const unverifiedPayload = (await unverifiedLookup.json()) as {
+      items?: { id?: unknown }[];
+    };
+    const unverifiedId = unverifiedPayload.items?.[0]?.id;
+    assert(
+      typeof unverifiedId === 'string' && unverifiedId.length > 0,
+      'unverified Reader identifier resolved',
+    );
+    await page.goto(`${base}/admin/users/${encodeURIComponent(unverifiedId)}`);
+    await visible(page, 'Detalle de usuario');
+    await page.getByRole('tab', { name: 'Acceso', exact: true }).click();
+    const verificationKeys: string[] = [];
+    let rejectVerificationScheduling = true;
+    await page.route('**/v1/admin/users/*/email-verification/messages', async (route) => {
+      verificationKeys.push(route.request().headers()['idempotency-key'] ?? '');
+      if (rejectVerificationScheduling) {
+        rejectVerificationScheduling = false;
+        await route.fulfill({
+          status: 503,
+          contentType: 'application/problem+json',
+          body: JSON.stringify({
+            type: 'about:blank',
+            title: 'Delivery scheduling failed',
+            status: 503,
+            code: 'delivery-scheduling-failed',
+          }),
+        });
+        return;
+      }
+      await route.continue();
+    });
+    await page.getByRole('button', { name: 'Reenviar verificación', exact: true }).click();
+    await page
+      .getByText(
+        'No pudimos programar el envío. Reintenta con el mismo intento para evitar un duplicado.',
+        { exact: true },
+      )
+      .waitFor();
+    const verificationRetryResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'POST' &&
+        response.url().endsWith(`/v1/admin/users/${unverifiedId}/email-verification/messages`),
+    );
+    await page.getByRole('button', { name: 'Reenviar verificación', exact: true }).click();
+    assert((await verificationRetryResponse).status() === 202, 'verification retry accepted');
+    const refreshedUnverified = await http(`/v1/admin/users/${encodeURIComponent(unverifiedId)}`, {
+      headers: { cookie: cookieHeader },
+    });
+    assert(refreshedUnverified.status === 200, 'scheduled workflow detail remains readable');
+    await refreshedUnverified.arrayBuffer();
+    await page.getByRole('tab', { name: 'Acceso', exact: true }).click();
+    await page
+      .getByText(/^Correo programado\./)
+      .first()
+      .waitFor();
+    assert(
+      verificationKeys.length === 2 && verificationKeys[0] === verificationKeys[1],
+      'verification scheduling retry preserves the idempotency key',
+    );
+    await page.unroute('**/v1/admin/users/*/email-verification/messages');
+    const recoveryResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'POST' &&
+        response.url().endsWith(`/v1/admin/users/${unverifiedId}/password-recovery/messages`),
+    );
+    await page.getByRole('tab', { name: 'Acceso', exact: true }).click();
+    await page.getByRole('button', { name: 'Enviar recuperación', exact: true }).click();
+    assert((await recoveryResponse).status() === 202, 'password recovery accepted');
+    const forceVerificationResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'PUT' &&
+        response.url().endsWith(`/v1/admin/users/${unverifiedId}/email-verification`),
+    );
+    await page.getByRole('tab', { name: 'Acceso', exact: true }).click();
+    await page.getByRole('button', { name: 'Marcar correo como verificado', exact: true }).click();
+    assert((await forceVerificationResponse).status() === 200, 'force verification accepted');
+    const verifiedDetail = await http(`/v1/admin/users/${encodeURIComponent(unverifiedId)}`, {
+      headers: { cookie: cookieHeader },
+    });
+    assert(verifiedDetail.status === 200, 'verified Reader detail remains readable');
+    await verifiedDetail.arrayBuffer();
+    await sql(`DELETE FROM "user" WHERE id = '${unverifiedId}'`);
     phase = 'user detail, reload, back and direct navigation';
     await page.goto(`${base}/admin/users`);
     await visible(page, 'Usuarios');

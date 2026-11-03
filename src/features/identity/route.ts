@@ -10,6 +10,9 @@ import {
   AdminReaderDetailSchema,
   AdminReaderActivityQuerySchema,
   AdminReaderActivitySchema,
+  AdminReaderEmailVerificationSchema,
+  AdminReaderMessageRequestSchema,
+  AdminReaderMessageSchema,
   AuthConfigSchema,
   CheckPasswordResetRequestSchema,
   CheckPasswordResetResultSchema,
@@ -34,6 +37,57 @@ import {
   VerifyEmailRequestSchema,
   VerifyEmailResultSchema,
 } from './contract.js';
+
+const adminReaderIfMatchHeaders = z
+  .object({ 'if-match': z.string().min(1).max(128).optional() })
+  .openapi('AdminReaderIfMatchHeaders');
+
+const adminReaderMessageHeaders = z
+  .object({ 'idempotency-key': z.string().min(1).max(128).optional() })
+  .openapi('AdminReaderMessageHeaders');
+
+const adminReaderCommandResponses = {
+  400: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'Invalid command input.',
+  },
+  401: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'No authoritative Administrator session.',
+  },
+  403: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'The actor is not allowed to perform the command.',
+  },
+  404: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'Reader not found.',
+  },
+  409: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'The command conflicts with current Reader state.',
+  },
+  412: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'The resource revision is stale.',
+  },
+  428: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'A required precondition is missing.',
+  },
+  429: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'The message cooldown is active.',
+  },
+  500: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'The command could not be audited or completed.',
+  },
+  503: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'Message scheduling failed after the command was committed.',
+  },
+} as const;
 
 // Public operation definitions for the identity slice (ticket #10). The
 // feature owns paths relative to `/v1/auth`; the application mounts the
@@ -538,6 +592,74 @@ export const adminReaderActivityRoute = createRoute({
       content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
       description: 'Internal failure.',
     },
+  },
+});
+
+export const adminReaderEmailVerificationRoute = createRoute({
+  method: 'put',
+  path: '/admin/users/{userId}/email-verification',
+  operationId: 'forceAdminReaderEmailVerification',
+  summary: 'Force the canonical Reader email verified',
+  description:
+    'Marks only the current canonical Reader email verified and invalidates pending ' +
+    'verification actions. It never sends mail or revokes Reader sessions.',
+  tags: ['admin'],
+  request: {
+    params: AdminUserDetailParamsSchema,
+    headers: adminReaderIfMatchHeaders,
+  },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: AdminReaderEmailVerificationSchema } },
+      description: 'The current canonical email verification state.',
+    },
+    ...adminReaderCommandResponses,
+  },
+});
+
+export const adminReaderVerificationMessageRoute = createRoute({
+  method: 'post',
+  path: '/admin/users/{userId}/email-verification/messages',
+  operationId: 'requestAdminReaderEmailVerificationMessage',
+  summary: 'Schedule a Reader verification message',
+  description:
+    'Schedules a new verification message for an unverified Reader email without ' +
+    'exposing a token, action URL or delivery result.',
+  tags: ['admin'],
+  request: {
+    params: AdminUserDetailParamsSchema,
+    headers: adminReaderMessageHeaders,
+    body: { content: { 'application/json': { schema: AdminReaderMessageRequestSchema } } },
+  },
+  responses: {
+    202: {
+      content: { 'application/json': { schema: AdminReaderMessageSchema } },
+      description: 'The verification message was accepted for scheduling.',
+    },
+    ...adminReaderCommandResponses,
+  },
+});
+
+export const adminReaderPasswordRecoveryMessageRoute = createRoute({
+  method: 'post',
+  path: '/admin/users/{userId}/password-recovery/messages',
+  operationId: 'requestAdminReaderPasswordRecoveryMessage',
+  summary: 'Schedule a Reader password recovery message',
+  description:
+    'Schedules normal password recovery only for a Reader with a usable credential ' +
+    'method. The Administrator never receives or sets the password.',
+  tags: ['admin'],
+  request: {
+    params: AdminUserDetailParamsSchema,
+    headers: adminReaderMessageHeaders,
+    body: { content: { 'application/json': { schema: AdminReaderMessageRequestSchema } } },
+  },
+  responses: {
+    202: {
+      content: { 'application/json': { schema: AdminReaderMessageSchema } },
+      description: 'The recovery message was accepted for scheduling.',
+    },
+    ...adminReaderCommandResponses,
   },
 });
 

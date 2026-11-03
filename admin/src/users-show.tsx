@@ -1,9 +1,15 @@
 import { useInfiniteQuery } from '@tanstack/react-query';
+import { useEffect, useState } from 'react';
 import { useGetOne } from 'ra-core';
 import type { ReactNode } from 'react';
 import { Link, Navigate, useLocation, useParams } from 'react-router';
 import type { AdminReaderDetail } from './generated/contracts.js';
-import { adminReaderActivity, ApiError } from './api.js';
+import {
+  adminForceReaderEmailVerification,
+  adminReaderActivity,
+  adminRequestReaderMessage,
+  ApiError,
+} from './api.js';
 import { RecordField } from './kit/components/admin/record-field.js';
 import { Show } from './kit/components/admin/show.js';
 import { Button } from './kit/components/ui/button.js';
@@ -72,6 +78,201 @@ function Activity({ userId }: { userId: string }) {
           {activity.isFetchingNextPage ? 'Cargando…' : 'Cargar más'}
         </Button>
       ) : null}
+    </div>
+  );
+}
+
+type ReaderMessageKind = 'email-verification' | 'password-recovery';
+
+function messageWorkflow(record: AdminReaderDetail, kind: ReaderMessageKind) {
+  const type =
+    kind === 'email-verification' ? 'email-verification-message' : 'password-recovery-message';
+  return record.activeWorkflows.find((workflow) => workflow.type === type);
+}
+
+function cooldownSeconds(
+  record: AdminReaderDetail,
+  kind: ReaderMessageKind,
+  now = Date.now(),
+): number | null {
+  const workflow = messageWorkflow(record, kind);
+  if (workflow?.cooldownUntil === undefined) return null;
+  const remaining = Date.parse(workflow.cooldownUntil) - now;
+  if (!Number.isFinite(remaining) || remaining <= 0) return null;
+  return Math.ceil(remaining / 1000);
+}
+
+function messageWorkflowState(
+  record: AdminReaderDetail,
+  kind: ReaderMessageKind,
+  now: number,
+): string | null {
+  const workflow = messageWorkflow(record, kind);
+  if (workflow === undefined) return null;
+  const remaining = cooldownSeconds(record, kind, now);
+  if (workflow.state === 'scheduling-failed') {
+    return 'El último envío no se pudo programar. Reintenta con el mismo intento.';
+  }
+  if (workflow.state === 'pending') {
+    return remaining === null
+      ? 'La programación está pendiente. Reintenta si persiste.'
+      : `La programación está pendiente. Podrás reintentar en ${String(remaining)} s.`;
+  }
+  return remaining === null
+    ? 'Correo programado.'
+    : `Correo programado. Podrás reenviar en ${String(remaining)} s.`;
+}
+
+function AccessActions({ record, refresh }: { record: AdminReaderDetail; refresh: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<string | null>(null);
+  const [messageKeys, setMessageKeys] = useState<Partial<Record<ReaderMessageKind, string>>>({});
+  const [now, setNow] = useState(Date.now);
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      setNow(Date.now());
+    }, 1000);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, []);
+  const run = async (
+    action: () => Promise<unknown>,
+    success: string,
+    handleError?: (error: unknown) => boolean,
+  ) => {
+    setBusy(true);
+    setStatus(null);
+    try {
+      await action();
+      setStatus(success);
+      refresh();
+      return true;
+    } catch (error) {
+      if (handleError?.(error) === true) return false;
+      if (error instanceof ApiError && error.status === 429 && error.code === 'cooldown-active') {
+        setStatus(
+          `Espera ${String(error.retryAfterSeconds ?? 60)} segundos antes de volver a intentarlo.`,
+        );
+      } else if (
+        error instanceof ApiError &&
+        error.status === 412 &&
+        error.code === 'stale-revision'
+      ) {
+        setStatus('El usuario cambió. Actualiza la página antes de reintentar.');
+      } else if (
+        error instanceof ApiError &&
+        error.status === 409 &&
+        error.code === 'invalid-transition'
+      ) {
+        setStatus('El correo ya está verificado.');
+      } else if (
+        error instanceof ApiError &&
+        error.status === 409 &&
+        error.code === 'no-usable-login-method'
+      ) {
+        setStatus('El usuario no tiene un método de acceso con contraseña.');
+      } else {
+        setStatus('No pudimos completar la acción. Inténtalo de nuevo.');
+      }
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+  const clearMessageKey = (kind: ReaderMessageKind, key: string) => {
+    setMessageKeys((current) => {
+      if (current[kind] !== key) return current;
+      return { ...current, [kind]: undefined };
+    });
+  };
+  const requestMessage = (kind: ReaderMessageKind, success: string) => {
+    const key = messageKeys[kind] ?? crypto.randomUUID();
+    setMessageKeys((current) => ({ ...current, [kind]: key }));
+    void run(
+      () => adminRequestReaderMessage(record.id, kind, key),
+      success,
+      (error) => {
+        if (
+          error instanceof ApiError &&
+          error.status === 503 &&
+          error.code === 'delivery-scheduling-failed'
+        ) {
+          setStatus(
+            'No pudimos programar el envío. Reintenta con el mismo intento para evitar un duplicado.',
+          );
+          return true;
+        }
+        if (error instanceof ApiError && (error.status === 0 || error.status >= 500)) {
+          setStatus(
+            'No recibimos respuesta. Reintenta con el mismo intento para comprobar el resultado.',
+          );
+          return true;
+        }
+        clearMessageKey(kind, key);
+        return false;
+      },
+    ).then((succeeded) => {
+      if (succeeded) clearMessageKey(kind, key);
+    });
+  };
+  const hasPassword = record.methods.some((method) => method.type === 'password');
+  const verificationWorkflow = messageWorkflow(record, 'email-verification');
+  const recoveryWorkflow = messageWorkflow(record, 'password-recovery');
+  const verificationCooldown = cooldownSeconds(record, 'email-verification', now);
+  const recoveryCooldown = cooldownSeconds(record, 'password-recovery', now);
+  const verificationLocked =
+    verificationWorkflow?.state !== 'scheduling-failed' && verificationCooldown !== null;
+  const recoveryLocked =
+    recoveryWorkflow?.state !== 'scheduling-failed' && recoveryCooldown !== null;
+  return (
+    <div className="space-y-3 rounded-md border p-4">
+      <h3 className="font-semibold">Acciones de correo</h3>
+      <div className="flex flex-wrap gap-2">
+        {!record.emailVerified ? (
+          <Button
+            disabled={busy}
+            onClick={() =>
+              void run(
+                () => adminForceReaderEmailVerification(record.id, record.revision),
+                'Correo marcado como verificado.',
+              )
+            }
+          >
+            Marcar correo como verificado
+          </Button>
+        ) : null}
+        <Button
+          variant="outline"
+          disabled={busy || record.emailVerified || verificationLocked}
+          onClick={() => {
+            requestMessage('email-verification', 'Correo de verificación programado.');
+          }}
+        >
+          Reenviar verificación
+        </Button>
+        <Button
+          variant="outline"
+          disabled={busy || !hasPassword || recoveryLocked}
+          onClick={() => {
+            requestMessage('password-recovery', 'Correo de recuperación programado.');
+          }}
+        >
+          Enviar recuperación
+        </Button>
+      </div>
+      {!hasPassword ? (
+        <p className="text-muted-foreground">
+          La recuperación requiere un método de acceso con contraseña.
+        </p>
+      ) : null}
+      {verificationWorkflow !== undefined ? (
+        <p role="status">{messageWorkflowState(record, 'email-verification', now)}</p>
+      ) : null}
+      {recoveryWorkflow !== undefined ? (
+        <p role="status">{messageWorkflowState(record, 'password-recovery', now)}</p>
+      ) : null}
+      {status !== null ? <p role="status">{status}</p> : null}
     </div>
   );
 }
@@ -188,6 +389,7 @@ export function UsersShow() {
             />
           </TabsContent>
           <TabsContent value="access" className="space-y-4 pt-4">
+            <AccessActions record={query.data} refresh={() => void query.refetch()} />
             <RecordField<AdminReaderDetail>
               label="Estado de acceso"
               render={(record) => (record.access.state === 'active' ? 'Activo' : 'Deshabilitado')}
