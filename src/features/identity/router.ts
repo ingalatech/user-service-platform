@@ -5,6 +5,8 @@ import { PROBLEM_JSON, createProblem, type ProblemCode } from '../../shared/prob
 import { createAdminUserReader } from './admin-users.js';
 import {
   forceReaderEmailVerification,
+  READER_EMAIL_VERIFICATION_MESSAGE_PATH,
+  READER_PASSWORD_RECOVERY_MESSAGE_PATH,
   requestReaderMessage,
   type ForceReaderEmailVerificationOutcome,
   type RequestReaderMessageOutcome,
@@ -1035,7 +1037,11 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
       headers: c.req.raw.headers,
       idempotencyKey: c.req.header('idempotency-key'),
       body,
-      path: new URL(c.req.url).pathname,
+      normalizedPath:
+        kind === 'email-verification'
+          ? READER_EMAIL_VERIFICATION_MESSAGE_PATH
+          : READER_PASSWORD_RECOVERY_MESSAGE_PATH,
+      instancePath: new URL(c.req.url).pathname,
       requestId: c.get('requestId'),
     });
     if (outcome.kind !== 'accepted') return readerEmailProblem(c, outcome) as never;

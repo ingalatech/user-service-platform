@@ -261,6 +261,10 @@ export const readerAccessState = sqliteTable('reader_access_state', {
     .references(() => user.id, { onDelete: 'cascade' }),
   state: text('state').notNull().default('active'),
   revision: integer('revision').notNull().default(1),
+  // Per-mutation fence for revision CAS. Dependent token/event statements in
+  // the same D1 batch must match this opaque token, so an ABA CAS loser cannot
+  // act on a revision that a concurrent winner already advanced.
+  mutationToken: text('mutation_token'),
   updatedAt: integer('updated_at').notNull(),
 });
 
@@ -369,6 +373,11 @@ export const readerMessageWorkflow = sqliteTable(
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
     lastScheduledAt: integer('last_scheduled_at'),
+    // Durable claim lease. The controller that commits the workflow claim
+    // owns the same opaque token used to fence its post-commit scheduling
+    // result; a crashed claimant becomes reclaimable after the lease expires.
+    claimToken: text('claim_token'),
+    claimedAt: integer('claimed_at'),
   },
   (table) => [
     uniqueIndex('reader_message_workflow_user_kind_idx').on(table.userId, table.kind),

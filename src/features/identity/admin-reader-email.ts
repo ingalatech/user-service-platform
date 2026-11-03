@@ -10,6 +10,16 @@ import type { IdentityRuntime } from './identity-runtime.js';
 import { createProblem, type ProblemCode } from '../../shared/problem.js';
 
 const COOLDOWN_MS = 60_000;
+const CLAIM_LEASE_MS = 30_000;
+const IDEMPOTENCY_RETENTION_MS = 86_400_000;
+
+// Stable route templates are the idempotency fingerprint's path component.
+// The selected target is stored separately, so the fingerprint never depends
+// on a raw, percent-encoded request pathname.
+export const READER_EMAIL_VERIFICATION_MESSAGE_PATH =
+  '/v1/admin/users/:userId/email-verification/messages';
+export const READER_PASSWORD_RECOVERY_MESSAGE_PATH =
+  '/v1/admin/users/:userId/password-recovery/messages';
 
 type MessageKind = 'email-verification' | 'password-recovery';
 
@@ -25,6 +35,9 @@ interface MessageWorkflow {
   readonly id: string;
   readonly state: string;
   readonly cooldown_until: number;
+  readonly claim_token: string | null;
+  readonly claimed_at: number | null;
+  readonly updated_at: number;
 }
 
 interface IdempotencyRow {
@@ -144,7 +157,7 @@ async function readWorkflow(
 ): Promise<MessageWorkflow | null> {
   const row = await db
     .prepare(
-      `SELECT id, state, cooldown_until
+      `SELECT id, state, cooldown_until, claim_token, claimed_at, updated_at
        FROM reader_message_workflow
        WHERE user_id = ? AND kind = ?
        LIMIT 1`,
@@ -264,23 +277,26 @@ async function finishScheduling(input: {
   readonly targetId: string;
   readonly kind: MessageKind;
   readonly workflowId: string;
+  readonly claimToken: string;
   readonly idempotencyKey: string;
-  readonly path: string;
+  readonly bodyHash: string;
+  readonly normalizedPath: string;
+  readonly instancePath: string;
   readonly requestId: string;
   readonly response: AdminReaderMessage;
   readonly scheduled: boolean;
   readonly now: number;
-}): Promise<void> {
+}): Promise<boolean> {
   const status = input.scheduled ? 202 : 503;
   const responseBody = input.scheduled
     ? JSON.stringify(input.response)
-    : problemBody({ status: 503, code: 'delivery-scheduling-failed', path: input.path });
+    : problemBody({ status: 503, code: 'delivery-scheduling-failed', path: input.instancePath });
   const statements = [
     input.db
       .prepare(
         `UPDATE reader_message_workflow
          SET state = ?, updated_at = ?, last_scheduled_at = CASE WHEN ? = 1 THEN ? ELSE last_scheduled_at END
-         WHERE id = ?`,
+         WHERE id = ? AND claim_token = ?`,
       )
       .bind(
         input.scheduled ? 'scheduled' : 'scheduling-failed',
@@ -288,14 +304,29 @@ async function finishScheduling(input: {
         input.scheduled ? 1 : 0,
         input.now,
         input.workflowId,
+        input.claimToken,
       ),
     input.db
       .prepare(
         `UPDATE admin_idempotency_record
          SET response_status = ?, response_body = ?
-         WHERE actor_id = ? AND method = 'POST' AND normalized_path = ? AND target_id = ? AND key = ?`,
+         WHERE actor_id = ? AND method = 'POST' AND normalized_path = ? AND target_id = ? AND key = ?
+           AND body_hash = ?
+           AND EXISTS (
+             SELECT 1 FROM reader_message_workflow WHERE id = ? AND claim_token = ?
+           )`,
       )
-      .bind(status, responseBody, input.actorId, input.path, input.targetId, input.idempotencyKey),
+      .bind(
+        status,
+        responseBody,
+        input.actorId,
+        input.normalizedPath,
+        input.targetId,
+        input.idempotencyKey,
+        input.bodyHash,
+        input.workflowId,
+        input.claimToken,
+      ),
   ];
   if (!input.scheduled) {
     statements.push(
@@ -304,7 +335,10 @@ async function finishScheduling(input: {
           `INSERT INTO identity_event
            (id, version, type, occurred_at, actor_realm, actor_id, subject_realm, subject_id,
             result, request_id, problem_code, metadata)
-           VALUES (?, 1, ?, ?, 'administrator', ?, 'reader', ?, 'failure', ?, ?, ?)`,
+           SELECT ?, 1, ?, ?, 'administrator', ?, 'reader', ?, 'failure', ?, ?, ?
+           WHERE EXISTS (
+             SELECT 1 FROM reader_message_workflow WHERE id = ? AND claim_token = ?
+           )`,
         )
         .bind(
           opaqueId(),
@@ -315,10 +349,13 @@ async function finishScheduling(input: {
           input.requestId,
           'delivery-scheduling-failed',
           JSON.stringify({ state: 'scheduling-failed' }),
+          input.workflowId,
+          input.claimToken,
         ),
     );
   }
-  await input.db.batch(statements);
+  const results = await input.db.batch(statements);
+  return results[0]?.meta.changes === 1;
 }
 
 export async function forceReaderEmailVerification(input: {
@@ -387,56 +424,56 @@ export async function forceReaderEmailVerification(input: {
   const nextRevision = changed ? revision + 1 : revision;
   if (changed) {
     const now = Date.now();
+    const mutationToken = opaqueId();
+    const fenced = (): string =>
+      `EXISTS (
+         SELECT 1 FROM reader_access_state
+         WHERE user_id = ? AND revision = ? AND mutation_token = ?
+       )`;
     try {
       const results = await input.db.batch([
         input.db
           .prepare(
-            `INSERT INTO reader_access_state (user_id, state, revision, updated_at)
-             VALUES (?, ?, ?, ?)
+            `INSERT INTO reader_access_state (user_id, state, revision, mutation_token, updated_at)
+             VALUES (?, ?, ?, ?, ?)
              ON CONFLICT(user_id) DO NOTHING`,
           )
-          .bind(target.id, target.access_state ?? 'active', revision, now),
+          .bind(target.id, target.access_state ?? 'active', revision, mutationToken, now),
         input.db
           .prepare(
             `UPDATE reader_access_state
-             SET revision = ?, updated_at = ?
+             SET revision = ?, mutation_token = ?, updated_at = ?
              WHERE user_id = ? AND revision = ?`,
           )
-          .bind(nextRevision, now, target.id, revision),
+          .bind(nextRevision, mutationToken, now, target.id, revision),
         input.db
           .prepare(
             `UPDATE user SET email_verified = 1, updated_at = ?
-             WHERE id = ? AND EXISTS (
-               SELECT 1 FROM reader_access_state WHERE user_id = ? AND revision = ?
-             )`,
+             WHERE id = ? AND ${fenced()}`,
           )
-          .bind(now, target.id, target.id, nextRevision),
+          .bind(now, target.id, target.id, nextRevision, mutationToken),
         input.db
           .prepare(
             `DELETE FROM email_verification_token
-             WHERE target_email = ? AND EXISTS (
-               SELECT 1 FROM reader_access_state WHERE user_id = ? AND revision = ?
-             )`,
+             WHERE target_email = ? AND ${fenced()}`,
           )
-          .bind(normalizeVerificationTarget(target.email), target.id, nextRevision),
+          .bind(normalizeVerificationTarget(target.email), target.id, nextRevision, mutationToken),
         input.db
           .prepare(
             `DELETE FROM verification
-             WHERE identifier = ? AND EXISTS (
-               SELECT 1 FROM reader_access_state WHERE user_id = ? AND revision = ?
-             )`,
+             WHERE identifier = ? AND ${fenced()}`,
           )
-          .bind(target.email, target.id, nextRevision),
+          .bind(target.email, target.id, nextRevision, mutationToken),
         input.db
           .prepare(
             `INSERT INTO identity_event
              (id, version, type, occurred_at, actor_realm, actor_id, subject_realm, subject_id,
               result, request_id, problem_code, metadata)
              SELECT ?, 1, 'email-verified', ?, 'administrator', ?, 'reader', ?, 'success', ?, NULL, ?
-             WHERE EXISTS (
-               SELECT 1 FROM reader_access_state WHERE user_id = ? AND revision = ?
-             ) AND NOT EXISTS (
-               SELECT 1 FROM identity_event WHERE subject_id = ? AND type = 'email-verified'
+             WHERE ${fenced()} AND NOT EXISTS (
+               SELECT 1 FROM identity_event
+               WHERE subject_id = ? AND type = 'email-verified'
+                 AND json_extract(metadata, '$.revision') = ?
              )`,
           )
           .bind(
@@ -445,10 +482,12 @@ export async function forceReaderEmailVerification(input: {
             input.administratorId,
             target.id,
             input.requestId,
-            JSON.stringify({ operation: 'force-email-verification' }),
+            JSON.stringify({ operation: 'force-email-verification', revision: nextRevision }),
             target.id,
             nextRevision,
+            mutationToken,
             target.id,
+            nextRevision,
           ),
         input.db
           .prepare(
@@ -456,9 +495,7 @@ export async function forceReaderEmailVerification(input: {
              (id, version, type, occurred_at, actor_realm, actor_id, subject_realm, subject_id,
               result, request_id, problem_code, metadata)
              SELECT ?, 1, 'email-verification-attempt', ?, 'administrator', ?, 'reader', ?, 'success', ?, NULL, ?
-             WHERE EXISTS (
-               SELECT 1 FROM reader_access_state WHERE user_id = ? AND revision = ?
-             )`,
+             WHERE ${fenced()}`,
           )
           .bind(
             opaqueId(),
@@ -469,6 +506,7 @@ export async function forceReaderEmailVerification(input: {
             JSON.stringify({ changed: true }),
             target.id,
             nextRevision,
+            mutationToken,
           ),
       ]);
       if (results[1]?.meta.changes !== 1) {
@@ -515,7 +553,8 @@ export async function requestReaderMessage(input: {
   readonly headers: Headers;
   readonly idempotencyKey?: string;
   readonly body: AdminReaderMessageRequest;
-  readonly path: string;
+  readonly normalizedPath: string;
+  readonly instancePath: string;
   readonly requestId: string;
 }): Promise<RequestReaderMessageOutcome> {
   const authorization = await authorizeAdministrator({
@@ -546,39 +585,40 @@ export async function requestReaderMessage(input: {
       code: 'precondition-required',
     });
   }
+  const idempotencyKey = input.idempotencyKey;
   const now = Date.now();
   const bodyHash = await digestBody(input.body);
-  const existingIdempotency = await readIdempotency({
-    db: input.db,
-    actorId: input.administratorId,
-    method: 'POST',
-    path: input.path,
-    targetId: input.readerId,
-    key: input.idempotencyKey,
-    now,
-  });
-  if (existingIdempotency !== null) {
-    if (existingIdempotency.body_hash !== bodyHash) {
-      return auditedFailure({
-        db: input.db,
-        actorId: input.administratorId,
-        subjectId: null,
-        requestId: input.requestId,
-        type: `${input.kind}-attempt`,
-        kind: 'idempotency-key-reused',
-        code: 'idempotency-key-reused',
-      });
-    }
-    if (existingIdempotency.response_status === 202) {
-      return {
-        kind: 'accepted',
-        value: JSON.parse(existingIdempotency.response_body) as AdminReaderMessage,
-      };
-    }
+  const readCommitted = (): Promise<IdempotencyRow | null> =>
+    readIdempotency({
+      db: input.db,
+      actorId: input.administratorId,
+      method: 'POST',
+      path: input.normalizedPath,
+      targetId: input.readerId,
+      key: idempotencyKey,
+      now,
+    });
+  const existingIdempotency = await readCommitted();
+  if (existingIdempotency !== null && existingIdempotency.body_hash !== bodyHash) {
+    return auditedFailure({
+      db: input.db,
+      actorId: input.administratorId,
+      subjectId: null,
+      requestId: input.requestId,
+      type: `${input.kind}-attempt`,
+      kind: 'idempotency-key-reused',
+      code: 'idempotency-key-reused',
+    });
+  }
+  if (existingIdempotency?.response_status === 202) {
+    return {
+      kind: 'accepted',
+      value: JSON.parse(existingIdempotency.response_body) as AdminReaderMessage,
+    };
   }
   const target = await readTarget(input.db, input.readerId);
   if (target === null) {
-    if (existingIdempotency !== null && existingIdempotency.response_status === 503) {
+    if (existingIdempotency?.response_status === 503) {
       return auditedFailure({
         db: input.db,
         actorId: input.administratorId,
@@ -599,34 +639,194 @@ export async function requestReaderMessage(input: {
       code: 'reader-not-found',
     });
   }
-  if (existingIdempotency !== null && existingIdempotency.response_status === 503) {
-    const workflow = await readWorkflow(input.db, target.id, input.kind);
-    if (workflow === null) return { kind: 'internal-error' };
-    const retryClaim = await input.db
-      .prepare(
-        `UPDATE reader_message_workflow
-         SET state = 'pending', updated_at = ?
-         WHERE id = ? AND state = 'scheduling-failed'`,
-      )
-      .bind(now, workflow.id)
-      .run();
-    if (retryClaim.meta.changes !== 1) {
-      const committed = await readIdempotency({
+
+  const retrying = existingIdempotency?.response_status === 503;
+  const workflow = await readWorkflow(input.db, target.id, input.kind);
+  if (!retrying) {
+    if (input.kind === 'email-verification' && target.email_verified === 1) {
+      return auditedFailure({
         db: input.db,
         actorId: input.administratorId,
-        method: 'POST',
-        path: input.path,
-        targetId: input.readerId,
-        key: input.idempotencyKey,
-        now,
+        subjectId: target.id,
+        requestId: input.requestId,
+        type: `${input.kind}-attempt`,
+        kind: 'invalid-transition',
+        code: 'invalid-transition',
       });
-      if (committed !== null && committed.body_hash !== bodyHash) {
-        return auditedFailure({
+    }
+    if (input.kind === 'password-recovery' && !(await hasUsableCredential(input.db, target.id))) {
+      return auditedFailure({
+        db: input.db,
+        actorId: input.administratorId,
+        subjectId: target.id,
+        requestId: input.requestId,
+        type: `${input.kind}-attempt`,
+        kind: 'no-usable-login-method',
+        code: 'no-usable-login-method',
+      });
+    }
+    if (workflow !== null && workflow.cooldown_until > now) {
+      const retryAfterSeconds = Math.max(1, Math.ceil((workflow.cooldown_until - now) / 1000));
+      try {
+        await audit({
           db: input.db,
           actorId: input.administratorId,
           subjectId: target.id,
           requestId: input.requestId,
           type: `${input.kind}-attempt`,
+          result: 'failure',
+          problemCode: 'cooldown-active',
+        });
+        return { kind: 'cooldown-active', retryAfterSeconds };
+      } catch {
+        return { kind: 'internal-error' };
+      }
+    }
+  } else if (workflow === null) {
+    return { kind: 'internal-error' };
+  }
+
+  const workflowId = workflow?.id ?? opaqueId();
+  const cooldownUntil =
+    retrying && workflow !== null && workflow.cooldown_until > now
+      ? workflow.cooldown_until
+      : now + COOLDOWN_MS;
+  const response = responseValue({
+    workflowId,
+    kind: input.kind,
+    cooldownUntil,
+    revision: currentRevision(target),
+  });
+  const failureBody = problemBody({
+    status: 503,
+    code: 'delivery-scheduling-failed',
+    path: input.instancePath,
+  });
+  const claimToken = opaqueId();
+  const attemptType = `${input.kind}-attempt`;
+  const requestedType =
+    input.kind === 'email-verification'
+      ? 'email-verification-requested'
+      : 'password-recovery-requested';
+  const claimStatements = [
+    input.db
+      .prepare(
+        `INSERT INTO reader_message_workflow
+         (id, user_id, kind, state, cooldown_until, created_at, updated_at, last_scheduled_at,
+          claim_token, claimed_at)
+         VALUES (?, ?, ?, 'pending', ?, ?, ?, NULL, ?, ?)
+         ON CONFLICT(user_id, kind) DO UPDATE SET
+           state = 'pending',
+           cooldown_until = excluded.cooldown_until,
+           updated_at = excluded.updated_at,
+           claim_token = excluded.claim_token,
+           claimed_at = excluded.claimed_at
+         WHERE reader_message_workflow.cooldown_until <= excluded.created_at
+           OR reader_message_workflow.state = 'scheduling-failed'
+           OR (
+             reader_message_workflow.state = 'pending'
+             AND COALESCE(reader_message_workflow.claimed_at, reader_message_workflow.updated_at) <= ?
+           )`,
+      )
+      .bind(
+        workflowId,
+        target.id,
+        input.kind,
+        cooldownUntil,
+        now,
+        now,
+        claimToken,
+        now,
+        now - CLAIM_LEASE_MS,
+      ),
+  ];
+  if (!retrying) {
+    claimStatements.push(
+      input.db
+        .prepare(
+          `INSERT INTO identity_event
+           (id, version, type, occurred_at, actor_realm, actor_id, subject_realm, subject_id,
+            result, request_id, problem_code, metadata)
+           SELECT ?, 1, ?, ?, 'administrator', ?, 'reader', ?, 'success', ?, NULL, ?
+           WHERE EXISTS (
+             SELECT 1 FROM reader_message_workflow WHERE user_id = ? AND kind = ? AND claim_token = ?
+           )`,
+        )
+        .bind(
+          opaqueId(),
+          requestedType,
+          now,
+          input.administratorId,
+          target.id,
+          input.requestId,
+          JSON.stringify({ workflowId }),
+          target.id,
+          input.kind,
+          claimToken,
+        ),
+      input.db
+        .prepare(
+          `INSERT INTO identity_event
+           (id, version, type, occurred_at, actor_realm, actor_id, subject_realm, subject_id,
+            result, request_id, problem_code, metadata)
+           SELECT ?, 1, ?, ?, 'administrator', ?, 'reader', ?, 'success', ?, NULL, ?
+           WHERE EXISTS (
+             SELECT 1 FROM reader_message_workflow WHERE user_id = ? AND kind = ? AND claim_token = ?
+           )`,
+        )
+        .bind(
+          opaqueId(),
+          attemptType,
+          now,
+          input.administratorId,
+          target.id,
+          input.requestId,
+          JSON.stringify({ state: 'committed' }),
+          target.id,
+          input.kind,
+          claimToken,
+        ),
+    );
+  }
+  claimStatements.push(
+    input.db
+      .prepare(
+        `INSERT INTO admin_idempotency_record
+         (id, actor_id, key, method, normalized_path, target_id, body_hash, response_status,
+          response_body, created_at, expires_at)
+         SELECT ?, ?, ?, 'POST', ?, ?, ?, 503, ?, ?, ?
+         WHERE EXISTS (
+           SELECT 1 FROM reader_message_workflow WHERE user_id = ? AND kind = ? AND claim_token = ?
+         )
+         ON CONFLICT(actor_id, method, normalized_path, target_id, key) DO NOTHING`,
+      )
+      .bind(
+        opaqueId(),
+        input.administratorId,
+        idempotencyKey,
+        input.normalizedPath,
+        target.id,
+        bodyHash,
+        failureBody,
+        now,
+        now + IDEMPOTENCY_RETENTION_MS,
+        target.id,
+        input.kind,
+        claimToken,
+      ),
+  );
+
+  try {
+    const claimResults = await input.db.batch(claimStatements);
+    if (claimResults[0]?.meta.changes !== 1) {
+      const committed = await readCommitted();
+      if (committed !== null && committed.body_hash !== bodyHash) {
+        return await auditedFailure({
+          db: input.db,
+          actorId: input.administratorId,
+          subjectId: target.id,
+          requestId: input.requestId,
+          type: attemptType,
           kind: 'idempotency-key-reused',
           code: 'idempotency-key-reused',
         });
@@ -637,177 +837,30 @@ export async function requestReaderMessage(input: {
           value: JSON.parse(committed.response_body) as AdminReaderMessage,
         };
       }
-      return { kind: 'delivery-scheduling-failed' };
-    }
-    const scheduled = await scheduleMessage({
-      runtime: input.runtime,
-      kind: input.kind,
-      email: target.email,
-    });
-    const response = responseValue({
-      workflowId: workflow.id,
-      kind: input.kind,
-      cooldownUntil: workflow.cooldown_until,
-      revision: currentRevision(target),
-    });
-    try {
-      await finishScheduling({
-        db: input.db,
-        actorId: input.administratorId,
-        targetId: target.id,
-        kind: input.kind,
-        workflowId: workflow.id,
-        idempotencyKey: input.idempotencyKey,
-        path: input.path,
-        requestId: input.requestId,
-        response,
-        scheduled,
-        now,
-      });
-    } catch {
-      return { kind: 'internal-error' };
-    }
-    return scheduled
-      ? { kind: 'accepted', value: response }
-      : { kind: 'delivery-scheduling-failed' };
-  }
-  if (input.kind === 'email-verification' && target.email_verified === 1) {
-    return auditedFailure({
-      db: input.db,
-      actorId: input.administratorId,
-      subjectId: target.id,
-      requestId: input.requestId,
-      type: `${input.kind}-attempt`,
-      kind: 'invalid-transition',
-      code: 'invalid-transition',
-    });
-  }
-  if (input.kind === 'password-recovery' && !(await hasUsableCredential(input.db, target.id))) {
-    return auditedFailure({
-      db: input.db,
-      actorId: input.administratorId,
-      subjectId: target.id,
-      requestId: input.requestId,
-      type: `${input.kind}-attempt`,
-      kind: 'no-usable-login-method',
-      code: 'no-usable-login-method',
-    });
-  }
-
-  const workflow = await readWorkflow(input.db, target.id, input.kind);
-  if (workflow !== null && workflow.cooldown_until > now) {
-    const retryAfterSeconds = Math.max(1, Math.ceil((workflow.cooldown_until - now) / 1000));
-    try {
-      await audit({
-        db: input.db,
-        actorId: input.administratorId,
-        subjectId: target.id,
-        requestId: input.requestId,
-        type: `${input.kind}-attempt`,
-        result: 'failure',
-        problemCode: 'cooldown-active',
-      });
-      return { kind: 'cooldown-active', retryAfterSeconds };
-    } catch {
-      return { kind: 'internal-error' };
-    }
-  }
-
-  const workflowId = workflow?.id ?? opaqueId();
-  const cooldownUntil = now + COOLDOWN_MS;
-  const response = responseValue({
-    workflowId,
-    kind: input.kind,
-    cooldownUntil,
-    revision: currentRevision(target),
-  });
-  const failureBody = problemBody({
-    status: 503,
-    code: 'delivery-scheduling-failed',
-    path: input.path,
-  });
-  try {
-    const claim = await input.db
-      .prepare(
-        `INSERT INTO reader_message_workflow
-         (id, user_id, kind, state, cooldown_until, created_at, updated_at, last_scheduled_at)
-         VALUES (?, ?, ?, 'pending', ?, ?, ?, NULL)
-         ON CONFLICT(user_id, kind) DO UPDATE SET
-           state = 'pending', cooldown_until = excluded.cooldown_until, updated_at = excluded.updated_at
-         WHERE reader_message_workflow.cooldown_until <= excluded.created_at`,
-      )
-      .bind(workflowId, target.id, input.kind, cooldownUntil, now, now)
-      .run();
-    if (claim.meta.changes !== 1) {
+      if (committed?.response_status === 503) {
+        return { kind: 'delivery-scheduling-failed' };
+      }
       const current = await readWorkflow(input.db, target.id, input.kind);
       if (current === null) return { kind: 'internal-error' };
-      const retryAfterSeconds = Math.max(1, Math.ceil((current.cooldown_until - now) / 1000));
-      await audit({
-        db: input.db,
-        actorId: input.administratorId,
-        subjectId: target.id,
-        requestId: input.requestId,
-        type: `${input.kind}-attempt`,
-        result: 'failure',
-        problemCode: 'cooldown-active',
-      });
-      return { kind: 'cooldown-active', retryAfterSeconds };
+      if (current.cooldown_until > now) {
+        const retryAfterSeconds = Math.max(1, Math.ceil((current.cooldown_until - now) / 1000));
+        try {
+          await audit({
+            db: input.db,
+            actorId: input.administratorId,
+            subjectId: target.id,
+            requestId: input.requestId,
+            type: attemptType,
+            result: 'failure',
+            problemCode: 'cooldown-active',
+          });
+          return { kind: 'cooldown-active', retryAfterSeconds };
+        } catch {
+          return { kind: 'internal-error' };
+        }
+      }
+      return { kind: 'internal-error' };
     }
-    await input.db.batch([
-      input.db
-        .prepare(
-          `INSERT INTO identity_event
-           (id, version, type, occurred_at, actor_realm, actor_id, subject_realm, subject_id,
-            result, request_id, problem_code, metadata)
-           VALUES (?, 1, ?, ?, 'administrator', ?, 'reader', ?, 'success', ?, NULL, ?)`,
-        )
-        .bind(
-          opaqueId(),
-          input.kind === 'email-verification'
-            ? 'email-verification-requested'
-            : 'password-recovery-requested',
-          now,
-          input.administratorId,
-          target.id,
-          input.requestId,
-          JSON.stringify({ workflowId }),
-        ),
-      input.db
-        .prepare(
-          `INSERT INTO identity_event
-           (id, version, type, occurred_at, actor_realm, actor_id, subject_realm, subject_id,
-            result, request_id, problem_code, metadata)
-           VALUES (?, 1, ?, ?, 'administrator', ?, 'reader', ?, 'success', ?, NULL, ?)`,
-        )
-        .bind(
-          opaqueId(),
-          `${input.kind}-attempt`,
-          now,
-          input.administratorId,
-          target.id,
-          input.requestId,
-          JSON.stringify({ state: 'committed' }),
-        ),
-      input.db
-        .prepare(
-          `INSERT INTO admin_idempotency_record
-           (id, actor_id, key, method, normalized_path, target_id, body_hash, response_status,
-            response_body, created_at, expires_at)
-           VALUES (?, ?, ?, 'POST', ?, ?, ?, 503, ?, ?, ?)
-           ON CONFLICT(actor_id, method, normalized_path, target_id, key) DO NOTHING`,
-        )
-        .bind(
-          opaqueId(),
-          input.administratorId,
-          input.idempotencyKey,
-          input.path,
-          target.id,
-          bodyHash,
-          failureBody,
-          now,
-          now + 86_400_000,
-        ),
-    ]);
   } catch {
     return { kind: 'internal-error' };
   }
@@ -817,15 +870,19 @@ export async function requestReaderMessage(input: {
     kind: input.kind,
     email: target.email,
   });
+  let applied: boolean;
   try {
-    await finishScheduling({
+    applied = await finishScheduling({
       db: input.db,
       actorId: input.administratorId,
       targetId: target.id,
       kind: input.kind,
       workflowId,
-      idempotencyKey: input.idempotencyKey,
-      path: input.path,
+      claimToken,
+      idempotencyKey: idempotencyKey,
+      bodyHash,
+      normalizedPath: input.normalizedPath,
+      instancePath: input.instancePath,
       requestId: input.requestId,
       response,
       scheduled,
@@ -833,6 +890,27 @@ export async function requestReaderMessage(input: {
     });
   } catch {
     return { kind: 'internal-error' };
+  }
+  if (!applied) {
+    const committed = await readCommitted();
+    if (committed !== null && committed.body_hash !== bodyHash) {
+      return auditedFailure({
+        db: input.db,
+        actorId: input.administratorId,
+        subjectId: target.id,
+        requestId: input.requestId,
+        type: attemptType,
+        kind: 'idempotency-key-reused',
+        code: 'idempotency-key-reused',
+      });
+    }
+    if (committed?.response_status === 202) {
+      return {
+        kind: 'accepted',
+        value: JSON.parse(committed.response_body) as AdminReaderMessage,
+      };
+    }
+    return { kind: 'delivery-scheduling-failed' };
   }
   return scheduled ? { kind: 'accepted', value: response } : { kind: 'delivery-scheduling-failed' };
 }

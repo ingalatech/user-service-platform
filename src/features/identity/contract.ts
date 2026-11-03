@@ -314,9 +314,15 @@ export const AdminReaderDetailSchema = AdminUserSchema.extend({
     .array(
       z.object({
         id: z.string(),
-        type: z.enum(['email-change', 'deletion-request']),
+        type: z.enum([
+          'email-change',
+          'deletion-request',
+          'email-verification-message',
+          'password-recovery-message',
+        ]),
         state: z.string(),
         createdAt: z.iso.datetime(),
+        cooldownUntil: z.iso.datetime().optional(),
       }),
     )
     .openapi({ description: 'Only persisted active workflows; never inferred or fabricated.' }),

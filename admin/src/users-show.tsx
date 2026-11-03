@@ -82,17 +82,57 @@ function Activity({ userId }: { userId: string }) {
   );
 }
 
+type ReaderMessageKind = 'email-verification' | 'password-recovery';
+
+function messageWorkflow(record: AdminReaderDetail, kind: ReaderMessageKind) {
+  const type =
+    kind === 'email-verification' ? 'email-verification-message' : 'password-recovery-message';
+  return record.activeWorkflows.find((workflow) => workflow.type === type);
+}
+
+function cooldownSeconds(record: AdminReaderDetail, kind: ReaderMessageKind): number | null {
+  const workflow = messageWorkflow(record, kind);
+  if (workflow?.cooldownUntil === undefined) return null;
+  const remaining = Date.parse(workflow.cooldownUntil) - Date.now();
+  if (!Number.isFinite(remaining) || remaining <= 0) return null;
+  return Math.ceil(remaining / 1000);
+}
+
+function messageWorkflowState(record: AdminReaderDetail, kind: ReaderMessageKind): string | null {
+  const workflow = messageWorkflow(record, kind);
+  if (workflow === undefined) return null;
+  const remaining = cooldownSeconds(record, kind);
+  if (workflow.state === 'scheduling-failed') {
+    return 'El último envío no se pudo programar. Reintenta con el mismo intento.';
+  }
+  if (workflow.state === 'pending') {
+    return remaining === null
+      ? 'La programación está pendiente. Reintenta si persiste.'
+      : `La programación está pendiente. Podrás reintentar en ${String(remaining)} s.`;
+  }
+  return remaining === null
+    ? 'Correo programado.'
+    : `Correo programado. Podrás reenviar en ${String(remaining)} s.`;
+}
+
 function AccessActions({ record, refresh }: { record: AdminReaderDetail; refresh: () => void }) {
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
-  const run = async (action: () => Promise<unknown>, success: string) => {
+  const [messageKeys, setMessageKeys] = useState<Partial<Record<ReaderMessageKind, string>>>({});
+  const run = async (
+    action: () => Promise<unknown>,
+    success: string,
+    handleError?: (error: unknown) => boolean,
+  ) => {
     setBusy(true);
     setStatus(null);
     try {
       await action();
       setStatus(success);
       refresh();
+      return true;
     } catch (error) {
+      if (handleError?.(error) === true) return false;
       if (error instanceof ApiError && error.status === 429) {
         setStatus(
           `Espera ${String(error.retryAfterSeconds ?? 60)} segundos antes de volver a intentarlo.`,
@@ -101,13 +141,51 @@ function AccessActions({ record, refresh }: { record: AdminReaderDetail; refresh
         setStatus('El usuario cambió. Actualiza la página antes de reintentar.');
       } else if (error instanceof ApiError && error.code === 'invalid-transition') {
         setStatus('El correo ya está verificado.');
+      } else if (error instanceof ApiError && error.code === 'no-usable-login-method') {
+        setStatus('El usuario no tiene un método de acceso con contraseña.');
       } else {
         setStatus('No pudimos completar la acción. Inténtalo de nuevo.');
       }
+      return false;
     } finally {
       setBusy(false);
     }
   };
+  const clearMessageKey = (kind: ReaderMessageKind, key: string) => {
+    setMessageKeys((current) => {
+      if (current[kind] !== key) return current;
+      return { ...current, [kind]: undefined };
+    });
+  };
+  const requestMessage = (kind: ReaderMessageKind, success: string) => {
+    const key = messageKeys[kind] ?? crypto.randomUUID();
+    setMessageKeys((current) => ({ ...current, [kind]: key }));
+    void run(
+      () => adminRequestReaderMessage(record.id, kind, key),
+      success,
+      (error) => {
+        if (error instanceof ApiError && error.status === 503) {
+          setStatus(
+            'No pudimos programar el envío. Reintenta con el mismo intento para evitar un duplicado.',
+          );
+          return true;
+        }
+        clearMessageKey(kind, key);
+        return false;
+      },
+    ).then((succeeded) => {
+      if (succeeded) clearMessageKey(kind, key);
+    });
+  };
+  const hasPassword = record.methods.some((method) => method.type === 'password');
+  const verificationWorkflow = messageWorkflow(record, 'email-verification');
+  const recoveryWorkflow = messageWorkflow(record, 'password-recovery');
+  const verificationCooldown = cooldownSeconds(record, 'email-verification');
+  const recoveryCooldown = cooldownSeconds(record, 'password-recovery');
+  const verificationLocked =
+    verificationWorkflow?.state !== 'scheduling-failed' && verificationCooldown !== null;
+  const recoveryLocked =
+    recoveryWorkflow?.state !== 'scheduling-failed' && recoveryCooldown !== null;
   return (
     <div className="space-y-3 rounded-md border p-4">
       <h3 className="font-semibold">Acciones de correo</h3>
@@ -127,29 +205,34 @@ function AccessActions({ record, refresh }: { record: AdminReaderDetail; refresh
         ) : null}
         <Button
           variant="outline"
-          disabled={busy || record.emailVerified}
-          onClick={() =>
-            void run(
-              () => adminRequestReaderMessage(record.id, 'email-verification', crypto.randomUUID()),
-              'Correo de verificación programado.',
-            )
-          }
+          disabled={busy || record.emailVerified || verificationLocked}
+          onClick={() => {
+            requestMessage('email-verification', 'Correo de verificación programado.');
+          }}
         >
           Reenviar verificación
         </Button>
         <Button
           variant="outline"
-          disabled={busy}
-          onClick={() =>
-            void run(
-              () => adminRequestReaderMessage(record.id, 'password-recovery', crypto.randomUUID()),
-              'Correo de recuperación programado.',
-            )
-          }
+          disabled={busy || !hasPassword || recoveryLocked}
+          onClick={() => {
+            requestMessage('password-recovery', 'Correo de recuperación programado.');
+          }}
         >
           Enviar recuperación
         </Button>
       </div>
+      {!hasPassword ? (
+        <p className="text-muted-foreground">
+          La recuperación requiere un método de acceso con contraseña.
+        </p>
+      ) : null}
+      {verificationWorkflow !== undefined ? (
+        <p role="status">{messageWorkflowState(record, 'email-verification')}</p>
+      ) : null}
+      {recoveryWorkflow !== undefined ? (
+        <p role="status">{messageWorkflowState(record, 'password-recovery')}</p>
+      ) : null}
       {status !== null ? <p role="status">{status}</p> : null}
     </div>
   );

@@ -878,13 +878,19 @@
                       "type": "string",
                       "enum": [
                         "email-change",
-                        "deletion-request"
+                        "deletion-request",
+                        "email-verification-message",
+                        "password-recovery-message"
                       ]
                     },
                     "state": {
                       "type": "string"
                     },
                     "createdAt": {
+                      "type": "string",
+                      "format": "date-time"
+                    },
+                    "cooldownUntil": {
                       "type": "string",
                       "format": "date-time"
                     }

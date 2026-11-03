@@ -1007,10 +1007,12 @@ export interface components {
             activeWorkflows: {
                 id: string;
                 /** @enum {string} */
-                type: "email-change" | "deletion-request";
+                type: "email-change" | "deletion-request" | "email-verification-message" | "password-recovery-message";
                 state: string;
                 /** Format: date-time */
                 createdAt: string;
+                /** Format: date-time */
+                cooldownUntil?: string;
             }[];
         };
         AdminReaderSummary: {

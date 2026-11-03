@@ -4,7 +4,10 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../../app.js';
 import type { Env } from '../../env.js';
 import { createIdentityRuntime } from './identity-runtime.js';
-import { requestReaderMessage } from './admin-reader-email.js';
+import {
+  READER_EMAIL_VERIFICATION_MESSAGE_PATH,
+  requestReaderMessage,
+} from './admin-reader-email.js';
 import { InMemoryAuthMailer } from './mailer.js';
 
 // Seam under test (ticket #126, ADR-0011): the public HTTP boundary of the
@@ -188,6 +191,33 @@ async function verifiedRegularCookie(
     throw new Error('Expected a session cookie for the verified regular User.');
   }
   return { cookie, userId: await userIdForCookie(cookie) };
+}
+
+async function registerUnverifiedReader(
+  name: string,
+  email: string,
+  adminCookie: string,
+): Promise<string> {
+  const register = await post('/v1/auth/register', {
+    name,
+    email,
+    password: 'Correct-horse-41',
+  });
+  expect(register.status).toBe(201);
+  return (await adminReaderByEmail(adminCookie, email)).id;
+}
+
+async function adminReaderByEmail(
+  cookie: string,
+  email: string,
+): Promise<{ id: string; email: string }> {
+  const usersRes = await get('/v1/admin/users?limit=100&offset=0', { cookie });
+  expect(usersRes.status).toBe(200);
+  const users = (await usersRes.json()) as { items: { id: string; email: string }[] };
+  const reader = users.items.find((item) => item.email === email);
+  expect(reader).toBeDefined();
+  if (reader === undefined) throw new Error(`Expected the Reader ${email}.`);
+  return reader;
 }
 
 function capturedLogs(): { logs: string[]; restore: () => void } {
@@ -543,6 +573,22 @@ describe('Reader verification and recovery commands', () => {
     const first = await postWithCookie(path, {}, cookie, {}, { 'idempotency-key': 'message-1' });
     expect(first.status).toBe(202);
     expect(first.headers.get('cache-control')).toBe('private, no-store');
+    const detail = await get(`/v1/admin/users/${reader.id}`, { cookie });
+    expect(detail.status).toBe(200);
+    const detailBody = (await detail.json()) as {
+      activeWorkflows: {
+        type: string;
+        state: string;
+        cooldownUntil?: string;
+      }[];
+    };
+    expect(detailBody.activeWorkflows).toHaveLength(1);
+    const [verificationWorkflow] = detailBody.activeWorkflows;
+    expect(verificationWorkflow).toMatchObject({
+      type: 'email-verification-message',
+      state: 'scheduled',
+    });
+    expect(typeof verificationWorkflow?.cooldownUntil).toBe('string');
     const replay = await postWithCookie(path, {}, cookie, {}, { 'idempotency-key': 'message-1' });
     expect(replay.status).toBe(202);
     const cooldown = await postWithCookie(path, {}, cookie, {}, { 'idempotency-key': 'message-2' });
@@ -556,6 +602,320 @@ describe('Reader verification and recovery commands', () => {
       { 'idempotency-key': 'recovery-1' },
     );
     expect(recovery.status).toBe(202);
+  });
+
+  it('requires If-Match before force verification', async () => {
+    const { cookie } = await bootstrapVerifiedAdmin('precondition-admin@example.com');
+    const readerId = await registerUnverifiedReader(
+      'No Precondition',
+      'no-precondition@example.com',
+      cookie,
+    );
+
+    const res = await putWithCookie(`/v1/admin/users/${readerId}/email-verification`, cookie);
+
+    expect(res.status).toBe(428);
+    expect(await res.json()).toMatchObject({ code: 'precondition-required', status: 428 });
+  });
+
+  it('returns changed:false without a lifecycle event for an already verified email', async () => {
+    const { cookie } = await bootstrapVerifiedAdmin('no-op-admin@example.com');
+    const { userId } = await verifiedRegularCookie('no-op-reader@example.com');
+    const path = `/v1/admin/users/${userId}/email-verification`;
+
+    const forced = await putWithCookie(path, cookie, { 'if-match': '"1"' });
+
+    expect(forced.status).toBe(200);
+    expect(forced.headers.get('etag')).toBe('"1"');
+    expect(await forced.json()).toMatchObject({
+      email: 'no-op-reader@example.com',
+      emailVerified: true,
+      changed: false,
+      revision: 1,
+    });
+    const lifecycle = await workerEnv.DB.prepare(
+      `SELECT COUNT(*) AS count FROM identity_event
+       WHERE subject_id = ? AND type = 'email-verified'`,
+    )
+      .bind(userId)
+      .first<{ count: number }>();
+    expect(lifecycle?.count).toBe(0);
+    const attempted = await workerEnv.DB.prepare(
+      `SELECT COUNT(*) AS count FROM identity_event
+       WHERE subject_id = ? AND type = 'email-verification-attempt'
+         AND result = 'success' AND metadata LIKE '%changed%'`,
+    )
+      .bind(userId)
+      .first<{ count: number }>();
+    expect(attempted?.count).toBe(1);
+  });
+
+  it('rejects contradictory verification resends and recovery without a usable credential', async () => {
+    const { cookie } = await bootstrapVerifiedAdmin('transition-admin@example.com');
+    const { userId } = await verifiedRegularCookie('transition-reader@example.com');
+
+    const verification = await postWithCookie(
+      `/v1/admin/users/${userId}/email-verification/messages`,
+      {},
+      cookie,
+      {},
+      { 'idempotency-key': 'invalid-transition-1' },
+    );
+    expect(verification.status).toBe(409);
+    expect(await verification.json()).toMatchObject({ code: 'invalid-transition' });
+
+    await workerEnv.DB.prepare(
+      `UPDATE account SET password = NULL WHERE user_id = ? AND provider_id = 'credential'`,
+    )
+      .bind(userId)
+      .run();
+    const recovery = await postWithCookie(
+      `/v1/admin/users/${userId}/password-recovery/messages`,
+      {},
+      cookie,
+      {},
+      { 'idempotency-key': 'no-method-1' },
+    );
+    expect(recovery.status).toBe(409);
+    expect(await recovery.json()).toMatchObject({ code: 'no-usable-login-method' });
+  });
+
+  it('rejects a reused idempotency key with a different request fingerprint', async () => {
+    const { cookie, adminId } = await bootstrapVerifiedAdmin('reused-key-admin@example.com');
+    const readerId = await registerUnverifiedReader(
+      'Reused Key Reader',
+      'reused-key-reader@example.com',
+      cookie,
+    );
+    const now = Date.now();
+    await workerEnv.DB.prepare(
+      `INSERT INTO admin_idempotency_record
+       (id, actor_id, key, method, normalized_path, target_id, body_hash, response_status,
+        response_body, created_at, expires_at)
+       VALUES (?, ?, ?, 'POST', ?, ?, ?, 202, ?, ?, ?)`,
+    )
+      .bind(
+        'reused-key-record',
+        adminId,
+        'reused-key',
+        READER_EMAIL_VERIFICATION_MESSAGE_PATH,
+        readerId,
+        'some-other-body-hash',
+        '{}',
+        now,
+        now + 86_400_000,
+      )
+      .run();
+
+    const res = await postWithCookie(
+      `/v1/admin/users/${readerId}/email-verification/messages`,
+      {},
+      cookie,
+      {},
+      { 'idempotency-key': 'reused-key' },
+    );
+
+    expect(res.status).toBe(409);
+    expect(await res.json()).toMatchObject({ code: 'idempotency-key-reused' });
+  });
+
+  it('replays a concurrent same-key claim instead of reporting a cooldown', async () => {
+    const { cookie } = await bootstrapVerifiedAdmin('same-key-admin@example.com');
+    const readerId = await registerUnverifiedReader(
+      'Same Key Reader',
+      'same-key-reader@example.com',
+      cookie,
+    );
+    const path = `/v1/admin/users/${readerId}/email-verification/messages`;
+
+    const results = await Promise.all([
+      postWithCookie(path, {}, cookie, {}, { 'idempotency-key': 'same-key-1' }),
+      postWithCookie(path, {}, cookie, {}, { 'idempotency-key': 'same-key-1' }),
+    ]);
+    const statuses = results.map((result) => result.status);
+
+    expect(statuses).toContain(202);
+    expect(statuses).not.toContain(429);
+    expect(statuses.every((status) => status === 202 || status === 503)).toBe(true);
+  });
+
+  it('reclaims a stale pending workflow for the same idempotency key', async () => {
+    const { cookie } = await bootstrapVerifiedAdmin('stale-claim-admin@example.com');
+    const readerId = await registerUnverifiedReader(
+      'Stale Claim Reader',
+      'stale-claim-reader@example.com',
+      cookie,
+    );
+    const path = `/v1/admin/users/${readerId}/email-verification/messages`;
+    const enqueueFailure = vi
+      .spyOn(mailer, 'sendVerificationEmail')
+      .mockRejectedValue(new Error('scheduler failed'));
+    try {
+      const failed = await postWithCookie(path, {}, cookie, {}, { 'idempotency-key': 'stale-1' });
+      expect(failed.status).toBe(503);
+    } finally {
+      enqueueFailure.mockRestore();
+    }
+    const staleAt = Date.now() - 120_000;
+    await workerEnv.DB.prepare(
+      `UPDATE reader_message_workflow
+       SET state = 'pending', claim_token = 'crashed', claimed_at = ?, updated_at = ?
+       WHERE user_id = ? AND kind = 'email-verification'`,
+    )
+      .bind(staleAt, staleAt, readerId)
+      .run();
+
+    const retry = await postWithCookie(path, {}, cookie, {}, { 'idempotency-key': 'stale-1' });
+
+    expect(retry.status).toBe(202);
+    const workflow = await workerEnv.DB.prepare(
+      `SELECT state FROM reader_message_workflow WHERE user_id = ? AND kind = 'email-verification'`,
+    )
+      .bind(readerId)
+      .first<{ state: string }>();
+    expect(workflow).toEqual({ state: 'scheduled' });
+  });
+
+  it('emits a new email-verified event after the canonical email changes', async () => {
+    const { cookie } = await bootstrapVerifiedAdmin('email-change-admin@example.com');
+    const readerId = await registerUnverifiedReader(
+      'Email Change Reader',
+      'email-change-reader@example.com',
+      cookie,
+    );
+    const path = `/v1/admin/users/${readerId}/email-verification`;
+    const first = await putWithCookie(path, cookie, { 'if-match': '"1"' });
+    expect(first.status).toBe(200);
+    expect(await first.json()).toMatchObject({ changed: true, revision: 2 });
+
+    const now = Date.now();
+    await workerEnv.DB.prepare(
+      `UPDATE user SET email = ?, email_verified = 0, updated_at = ? WHERE id = ?`,
+    )
+      .bind('changed-canonical@example.com', now, readerId)
+      .run();
+    await workerEnv.DB.prepare(
+      `UPDATE reader_access_state SET revision = 3, mutation_token = NULL, updated_at = ?
+       WHERE user_id = ?`,
+    )
+      .bind(now, readerId)
+      .run();
+
+    const second = await putWithCookie(path, cookie, { 'if-match': '"3"' });
+    expect(second.status).toBe(200);
+    expect(await second.json()).toMatchObject({ changed: true, revision: 4 });
+    const events = await workerEnv.DB.prepare(
+      `SELECT metadata FROM identity_event
+       WHERE subject_id = ? AND type = 'email-verified'`,
+    )
+      .bind(readerId)
+      .all<{ metadata: string | null }>();
+    expect(events.results).toHaveLength(2);
+    expect(events.results.map((event) => event.metadata).join(' ')).not.toContain('@example.com');
+  });
+
+  it('keeps verification and recovery available for disabled and suspended Readers', async () => {
+    const { cookie } = await bootstrapVerifiedAdmin('access-state-admin@example.com');
+    const now = Date.now();
+    for (const state of ['disabled', 'suspended']) {
+      const email = `${state}-reader@example.com`;
+      const readerId = await registerUnverifiedReader(`${state} Reader`, email, cookie);
+      await workerEnv.DB.prepare(
+        `INSERT INTO reader_access_state (user_id, state, revision, updated_at)
+         VALUES (?, ?, 2, ?)`,
+      )
+        .bind(readerId, state, now)
+        .run();
+
+      const message = await postWithCookie(
+        `/v1/admin/users/${readerId}/email-verification/messages`,
+        {},
+        cookie,
+        {},
+        { 'idempotency-key': `${state}-message-1` },
+      );
+      expect(message.status).toBe(202);
+
+      const forced = await putWithCookie(`/v1/admin/users/${readerId}/email-verification`, cookie, {
+        'if-match': '"2"',
+      });
+      expect(forced.status).toBe(200);
+      const access = await workerEnv.DB.prepare(
+        'SELECT state FROM reader_access_state WHERE user_id = ?',
+      )
+        .bind(readerId)
+        .first<{ state: string }>();
+      expect(access).toEqual({ state });
+    }
+  });
+
+  it('returns 500 when an authenticated audit cannot be persisted', async () => {
+    const { cookie } = await bootstrapVerifiedAdmin('audit-failure-admin@example.com');
+    const { userId } = await verifiedRegularCookie('audit-failure-reader@example.com');
+    await workerEnv.DB.prepare(
+      'ALTER TABLE "identity_event" RENAME TO "identity_event_unavailable"',
+    ).run();
+    try {
+      const res = await putWithCookie(`/v1/admin/users/${userId}/email-verification`, cookie, {
+        'if-match': '"1"',
+      });
+      expect(res.status).toBe(500);
+      expect(await res.json()).toMatchObject({ code: 'internal-error', status: 500 });
+    } finally {
+      await workerEnv.DB.prepare(
+        'ALTER TABLE "identity_event_unavailable" RENAME TO "identity_event"',
+      ).run();
+    }
+  });
+
+  it('returns an observable 503 over HTTP and retries the same key', async () => {
+    const { cookie } = await bootstrapVerifiedAdmin('http-failure-admin@example.com');
+    const readerId = await registerUnverifiedReader(
+      'HTTP Failure Reader',
+      'http-failure-reader@example.com',
+      cookie,
+    );
+    const path = `/v1/admin/users/${readerId}/email-verification/messages`;
+    const enqueueFailure = vi
+      .spyOn(mailer, 'sendVerificationEmail')
+      .mockRejectedValue(new Error('scheduler failed'));
+    try {
+      const res = await postWithCookie(path, {}, cookie, {}, { 'idempotency-key': 'http-503-1' });
+      expect(res.status).toBe(503);
+      expect(res.headers.get('cache-control')).toBe('private, no-store');
+      expect(await res.json()).toMatchObject({ code: 'delivery-scheduling-failed', status: 503 });
+    } finally {
+      enqueueFailure.mockRestore();
+    }
+
+    const retry = await postWithCookie(path, {}, cookie, {}, { 'idempotency-key': 'http-503-1' });
+    expect(retry.status).toBe(202);
+  });
+
+  it('stores the stable route template rather than the raw request pathname', async () => {
+    const { cookie, adminId } = await bootstrapVerifiedAdmin('template-admin@example.com');
+    const readerId = await registerUnverifiedReader(
+      'Template Reader',
+      'template-reader@example.com',
+      cookie,
+    );
+    const res = await postWithCookie(
+      `/v1/admin/users/${readerId}/email-verification/messages`,
+      {},
+      cookie,
+      {},
+      { 'idempotency-key': 'template-1' },
+    );
+    expect(res.status).toBe(202);
+
+    const record = await workerEnv.DB.prepare(
+      `SELECT normalized_path FROM admin_idempotency_record
+       WHERE actor_id = ? AND key = ? AND target_id = ?`,
+    )
+      .bind(adminId, 'template-1', readerId)
+      .first<{ normalized_path: string }>();
+    expect(record).toEqual({ normalized_path: READER_EMAIL_VERIFICATION_MESSAGE_PATH });
+    expect(record?.normalized_path).not.toContain(readerId);
   });
 
   it('allows only one concurrent force-verification CAS winner', async () => {
@@ -701,7 +1061,8 @@ describe('Reader verification and recovery commands', () => {
       headers: new Headers(),
       idempotencyKey: 'forbidden-admin-1',
       body: {},
-      path: '/v1/admin/users/arbitrary-reader/email-verification/messages',
+      normalizedPath: READER_EMAIL_VERIFICATION_MESSAGE_PATH,
+      instancePath: '/v1/admin/users/arbitrary-reader/email-verification/messages',
       requestId: 'forbidden-request',
     });
     expect(forbidden.kind).toBe('forbidden');
@@ -734,20 +1095,17 @@ describe('Reader verification and recovery commands', () => {
       headers: new Headers({ cookie }),
       idempotencyKey: 'failure-1',
       body: {},
-      path,
+      normalizedPath: READER_EMAIL_VERIFICATION_MESSAGE_PATH,
+      instancePath: path,
       requestId: 'failure-request',
     };
+    const enqueueFailure = vi
+      .spyOn(mailer, 'sendVerificationEmail')
+      .mockRejectedValue(new Error('scheduler failed'));
     const failingRuntime = createIdentityRuntime({
       env: testEnv(),
       requestUrl: `https://service.example${path}`,
-      executionContext: {
-        waitUntil: () => {
-          throw new Error('scheduler failed');
-        },
-      },
-      background: () => {
-        throw new Error('scheduler failed');
-      },
+      executionContext: { waitUntil: () => undefined },
       authMailer: mailer,
     });
     const failingAdministration = failingRuntime.administration();
@@ -764,11 +1122,11 @@ describe('Reader verification and recovery commands', () => {
       .bind(adminId, 'failure-1')
       .first<{ response_status: number }>();
     expect(stored?.response_status).toBe(503);
+    enqueueFailure.mockRestore();
     const retryRuntime = createIdentityRuntime({
       env: testEnv(),
       requestUrl: `https://service.example${path}`,
       executionContext: { waitUntil: () => undefined },
-      background: () => undefined,
       authMailer: mailer,
     });
     const retryAdministration = retryRuntime.administration();
@@ -799,13 +1157,17 @@ describe('Reader verification and recovery commands', () => {
       ...request,
       readerId: disappearing.id,
       idempotencyKey: 'failure-disappearing-1',
-      path: `/v1/admin/users/${disappearing.id}/email-verification/messages`,
+      instancePath: `/v1/admin/users/${disappearing.id}/email-verification/messages`,
     };
+    const disappearingEnqueueFailure = vi
+      .spyOn(mailer, 'sendVerificationEmail')
+      .mockRejectedValue(new Error('scheduler failed'));
     const failedDisappearing = await requestReaderMessage({
       ...disappearingRequest,
       runtime: failingRuntime,
     });
     expect(failedDisappearing.kind).toBe('delivery-scheduling-failed');
+    disappearingEnqueueFailure.mockRestore();
     await workerEnv.DB.prepare('DELETE FROM "user" WHERE id = ?').bind(disappearing.id).run();
     const replayAfterDelete = await requestReaderMessage({
       ...disappearingRequest,

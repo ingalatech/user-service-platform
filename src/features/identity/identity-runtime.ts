@@ -205,10 +205,13 @@ export function createIdentityRuntime(input: IdentityRuntimeInput) {
       verifyEmailActionURL: effective.config.AUTH_VERIFY_EMAIL_ACTION_URL,
       resetPasswordActionURL: effective.config.AUTH_RESET_PASSWORD_ACTION_URL,
       background,
+      // Synchronous post-commit scheduling must expose enqueue failure to the
+      // command instead of handing the task to waitUntil, whose scheduler
+      // errors are deliberately swallowed for background work.
       ...(mailResolution === 'synchronous'
         ? {
             schedule: async (task: Promise<unknown>): Promise<void> => {
-              background(task);
+              await task;
             },
           }
         : {}),
