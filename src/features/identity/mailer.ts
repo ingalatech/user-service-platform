@@ -20,6 +20,10 @@ export interface PasswordResetMessage {
   readonly expiresAt?: Date;
 }
 
+export type AuthMailTask =
+  | { readonly kind: 'email-verification'; readonly message: VerificationMessage }
+  | { readonly kind: 'password-recovery'; readonly message: PasswordResetMessage };
+
 export type AuthMailDeliveryResult =
   { readonly status: 'sent' } | { readonly status: 'skipped' } | { readonly status: 'failed' };
 

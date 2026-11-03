@@ -2183,8 +2183,8 @@ export interface operations {
     requestAdminReaderEmailVerificationMessage: {
         parameters: {
             query?: never;
-            header: {
-                "idempotency-key": string;
+            header?: {
+                "idempotency-key"?: string;
             };
             path: {
                 /** @description Opaque administrative User identifier. */
@@ -2302,8 +2302,8 @@ export interface operations {
     requestAdminReaderPasswordRecoveryMessage: {
         parameters: {
             query?: never;
-            header: {
-                "idempotency-key": string;
+            header?: {
+                "idempotency-key"?: string;
             };
             path: {
                 /** @description Opaque administrative User identifier. */

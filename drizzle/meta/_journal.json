@@ -127,6 +127,13 @@
       "when": 1793674325018,
       "tag": "0017_lean_natasha_romanoff",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1793705604125,
+      "tag": "0018_narrow_venom",
+      "breakpoints": true
     }
   ]
 }

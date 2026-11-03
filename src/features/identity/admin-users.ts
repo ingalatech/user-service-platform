@@ -150,7 +150,7 @@ export async function getAdminUserById(
     return null;
   }
   const methodRows = await database
-    .select({ providerId: account.providerId })
+    .select({ providerId: account.providerId, password: account.password })
     .from(account)
     .where(eq(account.userId, row.id));
   const messageRows = await database
@@ -167,7 +167,7 @@ export async function getAdminUserById(
   const methods: AdminReaderDetail['methods'] = [];
   const seen = new Set<string>();
   for (const method of methodRows) {
-    if (method.providerId === 'credential' && !seen.has('password')) {
+    if (method.providerId === 'credential' && method.password !== null && !seen.has('password')) {
       methods.push({ type: 'password' });
       seen.add('password');
     } else if (

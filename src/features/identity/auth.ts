@@ -15,7 +15,7 @@ import {
   buildAuthActionUrl,
 } from './action-urls.js';
 import { capReaderStateExpirySeconds } from './reader-state.js';
-import type { AuthMailer } from './mailer.js';
+import type { AuthMailer, AuthMailTask } from './mailer.js';
 import type { AuthPolicy } from './policy.js';
 import { adminIdentitySchema, identitySchema } from './schema.js';
 import {
@@ -60,7 +60,7 @@ export interface IdentityAuthInput {
   // Synchronous application-owned enqueue boundary used after an atomic
   // administrative command commit. It propagates scheduler acceptance
   // failure, but the provider task itself remains supervised in background.
-  readonly schedule?: (task: Promise<unknown>) => Promise<void>;
+  readonly schedule?: (task: AuthMailTask) => Promise<void>;
   readonly realm?: 'reader' | 'administrator';
 }
 
@@ -321,9 +321,9 @@ function sharedOptions(
             realm === 'reader' ? RESET_PASSWORD_ACTION_PATH : ADMIN_RESET_PASSWORD_ACTION_PATH,
           token,
         });
-        const task = mailer.sendPasswordResetEmail({ to: user.email, url, token });
-        if (schedule === undefined) background(task);
-        else await schedule(task);
+        const message = { to: user.email, url, token };
+        if (schedule === undefined) background(mailer.sendPasswordResetEmail(message));
+        else await schedule({ kind: 'password-recovery', message });
       },
     },
     emailVerification: {
@@ -389,9 +389,8 @@ function sharedOptions(
             throw new Error('The verification message was not accepted by the mail transport.');
           }
         } else {
-          const task = mailer.sendVerificationEmail(message);
-          if (schedule === undefined) background(task);
-          else await schedule(task);
+          if (schedule === undefined) background(mailer.sendVerificationEmail(message));
+          else await schedule({ kind: 'email-verification', message });
         }
       },
     },

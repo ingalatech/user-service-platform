@@ -345,6 +345,7 @@ export const adminIdempotencyRecord = sqliteTable(
     bodyHash: text('body_hash').notNull(),
     responseStatus: integer('response_status').notNull(),
     responseBody: text('response_body').notNull(),
+    retryPayload: text('retry_payload'),
     createdAt: integer('created_at').notNull(),
     expiresAt: integer('expires_at').notNull(),
   },

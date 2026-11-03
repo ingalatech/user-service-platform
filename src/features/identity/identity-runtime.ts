@@ -20,6 +20,7 @@ import {
   resolveGatewayOrigins,
 } from './origin-guard.js';
 import type { AuthMailer } from './mailer.js';
+import type { AuthMailTask } from './mailer.js';
 import { deferredAuthMailer, resolveAuthMailer } from './mailer.js';
 import { resolveAuthPolicy } from './policy.js';
 import type { AuthPolicy } from './policy.js';
@@ -32,6 +33,8 @@ import type {
 } from './session.js';
 import { toAdministratorSessionContext, toSessionContext } from './session.js';
 import { identitySchema } from './schema.js';
+import { base64url } from 'jose';
+import { z } from 'zod';
 
 // A tagged mode describes the behavior the caller needs; mail transport
 // construction and execution-context scheduling remain implementation details.
@@ -57,6 +60,10 @@ export interface IdentityRuntime {
   authentication(): ReturnType<typeof createIdentityAuth>;
   administration(): ReturnType<typeof createAdministrationAuth>;
   readerMessaging(): ReturnType<typeof createIdentityAuth>;
+  sealPreparedReaderMessage(): Promise<string | null>;
+  retryReaderMessageScheduling(
+    payload: string,
+  ): Promise<'accepted' | 'rejected' | 'invalid-envelope'>;
   bootstrapAdministrator(userId: string): ReturnType<typeof createBootstrapIdentityAuth>;
   readerState(): ReturnType<typeof createReaderStateAuth>;
   cookieMutationAllowed(headers: Headers): boolean;
@@ -137,6 +144,78 @@ function createBackgroundScheduler(input: IdentityRuntimeInput): (task: Promise<
   };
 }
 
+const sealedAuthMailTaskSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('email-verification'),
+    message: z.object({ to: z.string(), url: z.string(), token: z.string() }),
+  }),
+  z.object({
+    kind: z.literal('password-recovery'),
+    message: z.object({ to: z.string(), url: z.string(), token: z.string() }),
+  }),
+]);
+
+async function authMailEncryptionKey(secret: string) {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(secret));
+  return crypto.subtle.importKey('raw', digest, 'AES-GCM', false, ['encrypt', 'decrypt']);
+}
+
+async function sealAuthMailTask(task: AuthMailTask, secret: string): Promise<string> {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const plaintext = new TextEncoder().encode(JSON.stringify(task));
+  const ciphertext = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv },
+    await authMailEncryptionKey(secret),
+    plaintext,
+  );
+  return `v1.${base64url.encode(iv)}.${base64url.encode(new Uint8Array(ciphertext))}`;
+}
+
+async function openAuthMailTask(payload: string, secret: string): Promise<AuthMailTask> {
+  const [version, encodedIv, encodedCiphertext, extra] = payload.split('.');
+  if (version !== 'v1' || encodedIv === undefined || encodedCiphertext === undefined || extra) {
+    throw new Error('Invalid sealed auth mail task.');
+  }
+  const plaintext = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: base64url.decode(encodedIv) },
+    await authMailEncryptionKey(secret),
+    base64url.decode(encodedCiphertext),
+  );
+  const parsed: unknown = JSON.parse(new TextDecoder().decode(plaintext));
+  return sealedAuthMailTaskSchema.parse(parsed);
+}
+
+function createAcceptedScheduler(input: IdentityRuntimeInput) {
+  return (mailer: AuthMailer, task: AuthMailTask): Promise<void> => {
+    let resolveTask!: () => void;
+    let rejectTask!: (reason: unknown) => void;
+    const deferred = new Promise<void>((resolve, reject) => {
+      resolveTask = resolve;
+      rejectTask = reject;
+    });
+    deferred.catch(() => {
+      console.log(JSON.stringify({ level: 'error', event: 'auth-mail.failed' }));
+    });
+    try {
+      if (input.background !== undefined) input.background(deferred);
+      else if (input.executionContext !== undefined) input.executionContext.waitUntil(deferred);
+    } catch (error) {
+      resolveTask();
+      throw error;
+    }
+    try {
+      const delivery =
+        task.kind === 'email-verification'
+          ? mailer.sendVerificationEmail(task.message)
+          : mailer.sendPasswordResetEmail(task.message);
+      delivery.then(resolveTask, rejectTask);
+    } catch (error) {
+      rejectTask(error);
+    }
+    return Promise.resolve();
+  };
+}
+
 // Request-scoped Identity runtime. One instance owns effective configuration,
 // policy, secret, mail resolution, action URLs, request origin, scheduling and
 // Better Auth construction. Its engine builders stay private to the Identity
@@ -147,7 +226,10 @@ export function createIdentityRuntime(input: IdentityRuntimeInput) {
   const readerAuthInstances = new Map<MailResolution, ReturnType<typeof createIdentityAuth>>();
   const adminAuthInstances = new Map<MailResolution, ReturnType<typeof createAdministrationAuth>>();
   let readerStateInstance: ReturnType<typeof createReaderStateAuth> | undefined;
+  let resolvedAuthSecret: string | undefined;
+  let preparedReaderMailTask: AuthMailTask | undefined;
   const background = createBackgroundScheduler(input);
+  const acceptedScheduler = createAcceptedScheduler(input);
 
   function resolveSettings(): ResolvedSettings {
     if (settings !== undefined) return settings;
@@ -177,6 +259,7 @@ export function createIdentityRuntime(input: IdentityRuntimeInput) {
         ENVIRONMENT: effective.config.ENVIRONMENT,
         BETTER_AUTH_SECRET: input.env.BETTER_AUTH_SECRET,
       });
+      resolvedAuthSecret = secret;
     } catch (error) {
       throw new RuntimeBuildFailure('config', error, effective.environment);
     }
@@ -210,8 +293,9 @@ export function createIdentityRuntime(input: IdentityRuntimeInput) {
       // errors are deliberately swallowed for background work.
       ...(mailResolution === 'synchronous'
         ? {
-            schedule: async (task: Promise<unknown>): Promise<void> => {
-              await task;
+            schedule: (task: AuthMailTask): Promise<void> => {
+              preparedReaderMailTask = task;
+              return Promise.resolve();
             },
           }
         : {}),
@@ -387,12 +471,37 @@ export function createIdentityRuntime(input: IdentityRuntimeInput) {
     });
   }
 
+  async function sealPreparedReaderMessage(): Promise<string | null> {
+    if (preparedReaderMailTask === undefined || resolvedAuthSecret === undefined) return null;
+    return sealAuthMailTask(preparedReaderMailTask, resolvedAuthSecret);
+  }
+
+  async function retryReaderMessageScheduling(
+    payload: string,
+  ): Promise<'accepted' | 'rejected' | 'invalid-envelope'> {
+    const authInput = resolveAuthInput('reader', 'synchronous');
+    let task: AuthMailTask;
+    try {
+      task = await openAuthMailTask(payload, authInput.secret);
+    } catch {
+      return 'invalid-envelope';
+    }
+    try {
+      await acceptedScheduler(authInput.mailer, task);
+      return 'accepted';
+    } catch {
+      return 'rejected';
+    }
+  }
+
   const runtime: IdentityRuntime = {
     get authPolicy() {
       return resolveSettings().policy;
     },
     authentication: () => readerAuth('eager'),
     readerMessaging: () => readerAuth('synchronous'),
+    sealPreparedReaderMessage,
+    retryReaderMessageScheduling,
     administration: () => adminAuth('deferred'),
     bootstrapAdministrator: createBootstrapAuth,
     readerState: readerStateAuth,

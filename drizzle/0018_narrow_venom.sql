@@ -1,0 +1,1 @@
+ALTER TABLE `admin_idempotency_record` ADD `retry_payload` text;

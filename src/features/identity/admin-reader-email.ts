@@ -1,10 +1,11 @@
 import type { D1Database } from '@cloudflare/workers-types';
 import { normalizeVerificationTarget } from './verification-token.js';
 import { authorizeAdministrator } from './admin-authorization.js';
-import type {
-  AdminReaderEmailVerification,
-  AdminReaderMessage,
-  AdminReaderMessageRequest,
+import {
+  AdminReaderMessageSchema,
+  type AdminReaderEmailVerification,
+  type AdminReaderMessage,
+  type AdminReaderMessageRequest,
 } from './contract.js';
 import type { IdentityRuntime } from './identity-runtime.js';
 import { createProblem, type ProblemCode } from '../../shared/problem.js';
@@ -44,6 +45,7 @@ interface IdempotencyRow {
   readonly body_hash: string;
   readonly response_status: number;
   readonly response_body: string;
+  readonly retry_payload: string | null;
 }
 
 type CommonFailure =
@@ -105,6 +107,16 @@ function responseValue(input: {
     cooldownUntil: new Date(input.cooldownUntil).toISOString(),
     revision: input.revision,
   };
+}
+
+function parseCommittedResponse(body: string): AdminReaderMessage | null {
+  try {
+    const parsed: unknown = JSON.parse(body);
+    const result = AdminReaderMessageSchema.safeParse(parsed);
+    return result.success ? result.data : null;
+  } catch {
+    return null;
+  }
 }
 
 function problemBody(input: {
@@ -178,7 +190,7 @@ async function readIdempotency(input: {
 }): Promise<IdempotencyRow | null> {
   const row = await input.db
     .prepare(
-      `SELECT body_hash, response_status, response_body
+      `SELECT body_hash, response_status, response_body, retry_payload
        FROM admin_idempotency_record
        WHERE actor_id = ? AND method = ? AND normalized_path = ? AND target_id = ? AND key = ?
          AND expires_at > ?
@@ -186,6 +198,26 @@ async function readIdempotency(input: {
     )
     .bind(input.actorId, input.method, input.path, input.targetId, input.key, input.now)
     .first<IdempotencyRow>();
+  return row ?? null;
+}
+
+async function readActiveMessageAttempt(input: {
+  readonly db: D1Database;
+  readonly path: string;
+  readonly targetId: string;
+  readonly now: number;
+}): Promise<{ readonly expires_at: number } | null> {
+  const row = await input.db
+    .prepare(
+      `SELECT expires_at
+       FROM admin_idempotency_record
+       WHERE method = 'POST' AND normalized_path = ? AND target_id = ?
+         AND response_status IN (102, 503) AND expires_at > ?
+       ORDER BY expires_at DESC
+       LIMIT 1`,
+    )
+    .bind(input.path, input.targetId, input.now)
+    .first<{ expires_at: number }>();
   return row ?? null;
 }
 
@@ -246,11 +278,17 @@ async function auditedFailure<T extends CommonFailure | { readonly kind: string 
   }
 }
 
-async function scheduleMessage(input: {
+async function prepareMessage(input: {
   readonly runtime: IdentityRuntime;
   readonly kind: MessageKind;
   readonly email: string;
-}): Promise<boolean> {
+  readonly retryPayload: string | null;
+}): Promise<
+  { readonly kind: 'prepared'; readonly retryPayload: string } | { readonly kind: 'internal-error' }
+> {
+  if (input.retryPayload !== null) {
+    return { kind: 'prepared', retryPayload: input.retryPayload };
+  }
   try {
     const auth = input.runtime.readerMessaging();
     const response =
@@ -265,9 +303,11 @@ async function scheduleMessage(input: {
             headers: new Headers(),
             asResponse: true,
           });
-    return response instanceof Response && response.ok;
+    if (!(response instanceof Response) || !response.ok) return { kind: 'internal-error' };
+    const retryPayload = await input.runtime.sealPreparedReaderMessage();
+    return retryPayload === null ? { kind: 'internal-error' } : { kind: 'prepared', retryPayload };
   } catch {
-    return false;
+    return { kind: 'internal-error' };
   }
 }
 
@@ -285,6 +325,7 @@ async function finishScheduling(input: {
   readonly requestId: string;
   readonly response: AdminReaderMessage;
   readonly scheduled: boolean;
+  readonly retryPayload: string | null;
   readonly now: number;
 }): Promise<boolean> {
   const status = input.scheduled ? 202 : 503;
@@ -295,7 +336,8 @@ async function finishScheduling(input: {
     input.db
       .prepare(
         `UPDATE reader_message_workflow
-         SET state = ?, updated_at = ?, last_scheduled_at = CASE WHEN ? = 1 THEN ? ELSE last_scheduled_at END
+         SET state = ?, updated_at = ?,
+           last_scheduled_at = CASE WHEN ? = 1 THEN ? ELSE last_scheduled_at END
          WHERE id = ? AND claim_token = ?`,
       )
       .bind(
@@ -309,7 +351,7 @@ async function finishScheduling(input: {
     input.db
       .prepare(
         `UPDATE admin_idempotency_record
-         SET response_status = ?, response_body = ?
+         SET response_status = ?, response_body = ?, retry_payload = ?
          WHERE actor_id = ? AND method = 'POST' AND normalized_path = ? AND target_id = ? AND key = ?
            AND body_hash = ?
            AND EXISTS (
@@ -319,6 +361,7 @@ async function finishScheduling(input: {
       .bind(
         status,
         responseBody,
+        input.scheduled ? null : input.retryPayload,
         input.actorId,
         input.normalizedPath,
         input.targetId,
@@ -355,7 +398,81 @@ async function finishScheduling(input: {
     );
   }
   const results = await input.db.batch(statements);
-  return results[0]?.meta.changes === 1;
+  return results[0]?.meta.changes === 1 && results[1]?.meta.changes === 1;
+}
+
+async function persistPreparedMessage(input: {
+  readonly db: D1Database;
+  readonly actorId: string;
+  readonly targetId: string;
+  readonly normalizedPath: string;
+  readonly idempotencyKey: string;
+  readonly bodyHash: string;
+  readonly workflowId: string;
+  readonly claimToken: string;
+  readonly retryPayload: string;
+}): Promise<boolean> {
+  const result = await input.db
+    .prepare(
+      `UPDATE admin_idempotency_record
+       SET retry_payload = ?
+       WHERE actor_id = ? AND method = 'POST' AND normalized_path = ? AND target_id = ? AND key = ?
+         AND body_hash = ? AND response_status = 102
+         AND EXISTS (
+           SELECT 1 FROM reader_message_workflow WHERE id = ? AND claim_token = ?
+         )`,
+    )
+    .bind(
+      input.retryPayload,
+      input.actorId,
+      input.normalizedPath,
+      input.targetId,
+      input.idempotencyKey,
+      input.bodyHash,
+      input.workflowId,
+      input.claimToken,
+    )
+    .run();
+  return result.meta.changes === 1;
+}
+
+async function invalidatePreparedMessage(input: {
+  readonly db: D1Database;
+  readonly actorId: string;
+  readonly targetId: string;
+  readonly normalizedPath: string;
+  readonly idempotencyKey: string;
+  readonly workflowId: string;
+  readonly claimToken: string;
+  readonly now: number;
+}): Promise<void> {
+  await input.db.batch([
+    input.db
+      .prepare(
+        `UPDATE admin_idempotency_record
+         SET expires_at = ?, retry_payload = NULL
+         WHERE actor_id = ? AND method = 'POST' AND normalized_path = ? AND target_id = ? AND key = ?`,
+      )
+      .bind(input.now, input.actorId, input.normalizedPath, input.targetId, input.idempotencyKey),
+    input.db
+      .prepare(
+        `UPDATE reader_message_workflow
+         SET state = 'scheduling-failed', cooldown_until = ?, updated_at = ?
+         WHERE id = ? AND claim_token = ?`,
+      )
+      .bind(input.now, input.now, input.workflowId, input.claimToken),
+  ]);
+}
+
+async function waitForTerminalIdempotency(
+  readCommitted: () => Promise<IdempotencyRow | null>,
+): Promise<IdempotencyRow | null> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const committed = await readCommitted();
+    if (committed?.response_status !== 102) return committed;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  return readCommitted();
 }
 
 export async function forceReaderEmailVerification(input: {
@@ -443,9 +560,22 @@ export async function forceReaderEmailVerification(input: {
           .prepare(
             `UPDATE reader_access_state
              SET revision = ?, mutation_token = ?, updated_at = ?
-             WHERE user_id = ? AND revision = ?`,
+             WHERE user_id = ? AND revision = ?
+               AND NOT EXISTS (
+                 SELECT 1 FROM reader_message_workflow
+                 WHERE user_id = ? AND kind = 'email-verification' AND state = 'pending'
+                   AND COALESCE(claimed_at, updated_at) > ?
+               )`,
           )
-          .bind(nextRevision, mutationToken, now, target.id, revision),
+          .bind(
+            nextRevision,
+            mutationToken,
+            now,
+            target.id,
+            revision,
+            target.id,
+            now - CLAIM_LEASE_MS,
+          ),
         input.db
           .prepare(
             `UPDATE user SET email_verified = 1, updated_at = ?
@@ -464,6 +594,27 @@ export async function forceReaderEmailVerification(input: {
              WHERE identifier = ? AND ${fenced()}`,
           )
           .bind(target.email, target.id, nextRevision, mutationToken),
+        input.db
+          .prepare(
+            `UPDATE admin_idempotency_record
+             SET expires_at = ?, retry_payload = NULL
+             WHERE target_id = ? AND normalized_path = ? AND response_status IN (102, 503)
+               AND ${fenced()}`,
+          )
+          .bind(
+            now,
+            target.id,
+            READER_EMAIL_VERIFICATION_MESSAGE_PATH,
+            target.id,
+            nextRevision,
+            mutationToken,
+          ),
+        input.db
+          .prepare(
+            `DELETE FROM reader_message_workflow
+             WHERE user_id = ? AND kind = 'email-verification' AND ${fenced()}`,
+          )
+          .bind(target.id, target.id, nextRevision, mutationToken),
         input.db
           .prepare(
             `INSERT INTO identity_event
@@ -611,9 +762,11 @@ export async function requestReaderMessage(input: {
     });
   }
   if (existingIdempotency?.response_status === 202) {
+    const value = parseCommittedResponse(existingIdempotency.response_body);
+    if (value === null) return { kind: 'internal-error' };
     return {
       kind: 'accepted',
-      value: JSON.parse(existingIdempotency.response_body) as AdminReaderMessage,
+      value,
     };
   }
   const target = await readTarget(input.db, input.readerId);
@@ -640,9 +793,38 @@ export async function requestReaderMessage(input: {
     });
   }
 
-  const retrying = existingIdempotency?.response_status === 503;
+  const retrying =
+    existingIdempotency?.response_status === 503 || existingIdempotency?.response_status === 102;
   const workflow = await readWorkflow(input.db, target.id, input.kind);
   if (!retrying) {
+    if (existingIdempotency === null) {
+      const raced = await readCommitted();
+      if (raced !== null && raced.body_hash !== bodyHash) {
+        return auditedFailure({
+          db: input.db,
+          actorId: input.administratorId,
+          subjectId: target.id,
+          requestId: input.requestId,
+          type: `${input.kind}-attempt`,
+          kind: 'idempotency-key-reused',
+          code: 'idempotency-key-reused',
+        });
+      }
+      if (raced?.response_status === 202) {
+        const value = parseCommittedResponse(raced.response_body);
+        return value === null ? { kind: 'internal-error' } : { kind: 'accepted', value };
+      }
+      if (raced?.response_status === 503) return { kind: 'delivery-scheduling-failed' };
+      if (raced?.response_status === 102) {
+        const terminal = await waitForTerminalIdempotency(readCommitted);
+        if (terminal?.response_status === 202) {
+          const value = parseCommittedResponse(terminal.response_body);
+          return value === null ? { kind: 'internal-error' } : { kind: 'accepted', value };
+        }
+        if (terminal?.response_status === 503) return { kind: 'delivery-scheduling-failed' };
+        return { kind: 'internal-error' };
+      }
+    }
     if (input.kind === 'email-verification' && target.email_verified === 1) {
       return auditedFailure({
         db: input.db,
@@ -667,6 +849,29 @@ export async function requestReaderMessage(input: {
     }
     if (workflow !== null && workflow.cooldown_until > now) {
       const retryAfterSeconds = Math.max(1, Math.ceil((workflow.cooldown_until - now) / 1000));
+      try {
+        await audit({
+          db: input.db,
+          actorId: input.administratorId,
+          subjectId: target.id,
+          requestId: input.requestId,
+          type: `${input.kind}-attempt`,
+          result: 'failure',
+          problemCode: 'cooldown-active',
+        });
+        return { kind: 'cooldown-active', retryAfterSeconds };
+      } catch {
+        return { kind: 'internal-error' };
+      }
+    }
+    const activeAttempt = await readActiveMessageAttempt({
+      db: input.db,
+      path: input.normalizedPath,
+      targetId: target.id,
+      now,
+    });
+    if (activeAttempt !== null) {
+      const retryAfterSeconds = Math.max(1, Math.ceil((activeAttempt.expires_at - now) / 1000));
       try {
         await audit({
           db: input.db,
@@ -712,15 +917,30 @@ export async function requestReaderMessage(input: {
     input.db
       .prepare(
         `INSERT INTO reader_message_workflow
-         (id, user_id, kind, state, cooldown_until, created_at, updated_at, last_scheduled_at,
-          claim_token, claimed_at)
-         VALUES (?, ?, ?, 'pending', ?, ?, ?, NULL, ?, ?)
-         ON CONFLICT(user_id, kind) DO UPDATE SET
-           state = 'pending',
-           cooldown_until = excluded.cooldown_until,
-           updated_at = excluded.updated_at,
-           claim_token = excluded.claim_token,
-           claimed_at = excluded.claimed_at
+          (id, user_id, kind, state, cooldown_until, created_at, updated_at, last_scheduled_at,
+            claim_token, claimed_at)
+          SELECT ?, ?, ?, 'pending', ?, ?, ?, NULL, ?, ?
+          WHERE EXISTS (
+            SELECT 1
+            FROM user AS u
+            LEFT JOIN reader_access_state AS ras ON ras.user_id = u.id
+            WHERE u.id = ? AND u.email = ? AND COALESCE(ras.revision, 1) = ?
+              AND (u.role IS NULL OR u.role <> 'admin')
+              AND (? = 'password-recovery' OR u.email_verified = 0)
+              AND (
+                ? = 'email-verification'
+                OR EXISTS (
+                  SELECT 1 FROM account
+                  WHERE user_id = ? AND provider_id = 'credential' AND password IS NOT NULL
+                )
+              )
+          )
+          ON CONFLICT(user_id, kind) DO UPDATE SET
+            state = 'pending',
+            cooldown_until = excluded.cooldown_until,
+            updated_at = excluded.updated_at,
+            claim_token = excluded.claim_token,
+            claimed_at = excluded.claimed_at
          WHERE reader_message_workflow.cooldown_until <= excluded.created_at
            OR reader_message_workflow.state = 'scheduling-failed'
            OR (
@@ -737,6 +957,12 @@ export async function requestReaderMessage(input: {
         now,
         claimToken,
         now,
+        target.id,
+        target.email,
+        currentRevision(target),
+        input.kind,
+        input.kind,
+        target.id,
         now - CLAIM_LEASE_MS,
       ),
   ];
@@ -792,13 +1018,29 @@ export async function requestReaderMessage(input: {
     input.db
       .prepare(
         `INSERT INTO admin_idempotency_record
-         (id, actor_id, key, method, normalized_path, target_id, body_hash, response_status,
-          response_body, created_at, expires_at)
-         SELECT ?, ?, ?, 'POST', ?, ?, ?, 503, ?, ?, ?
+          (id, actor_id, key, method, normalized_path, target_id, body_hash, response_status,
+           response_body, retry_payload, created_at, expires_at)
+          SELECT ?, ?, ?, 'POST', ?, ?, ?, 102, ?, NULL, ?, ?
          WHERE EXISTS (
            SELECT 1 FROM reader_message_workflow WHERE user_id = ? AND kind = ? AND claim_token = ?
          )
-         ON CONFLICT(actor_id, method, normalized_path, target_id, key) DO NOTHING`,
+          ON CONFLICT(actor_id, method, normalized_path, target_id, key) DO UPDATE SET
+            id = CASE WHEN admin_idempotency_record.expires_at <= excluded.created_at
+              THEN excluded.id ELSE admin_idempotency_record.id END,
+            body_hash = excluded.body_hash,
+            response_status = excluded.response_status,
+            response_body = excluded.response_body,
+            retry_payload = CASE WHEN admin_idempotency_record.expires_at <= excluded.created_at
+              THEN NULL ELSE admin_idempotency_record.retry_payload END,
+            created_at = CASE WHEN admin_idempotency_record.expires_at <= excluded.created_at
+              THEN excluded.created_at ELSE admin_idempotency_record.created_at END,
+            expires_at = CASE WHEN admin_idempotency_record.expires_at <= excluded.created_at
+              THEN excluded.expires_at ELSE admin_idempotency_record.expires_at END
+          WHERE admin_idempotency_record.expires_at <= excluded.created_at
+            OR (
+              admin_idempotency_record.body_hash = excluded.body_hash
+              AND admin_idempotency_record.response_status IN (102, 503)
+            )`,
       )
       .bind(
         opaqueId(),
@@ -832,13 +1074,61 @@ export async function requestReaderMessage(input: {
         });
       }
       if (committed?.response_status === 202) {
+        const value = parseCommittedResponse(committed.response_body);
+        if (value === null) return { kind: 'internal-error' };
         return {
           kind: 'accepted',
-          value: JSON.parse(committed.response_body) as AdminReaderMessage,
+          value,
         };
       }
       if (committed?.response_status === 503) {
         return { kind: 'delivery-scheduling-failed' };
+      }
+      if (committed?.response_status === 102) {
+        const terminal = await waitForTerminalIdempotency(readCommitted);
+        if (terminal?.response_status === 202) {
+          const value = parseCommittedResponse(terminal.response_body);
+          return value === null ? { kind: 'internal-error' } : { kind: 'accepted', value };
+        }
+        if (terminal?.response_status === 503) return { kind: 'delivery-scheduling-failed' };
+        return { kind: 'internal-error' };
+      }
+      const latestTarget = await readTarget(input.db, target.id);
+      if (latestTarget === null) {
+        return await auditedFailure({
+          db: input.db,
+          actorId: input.administratorId,
+          subjectId: null,
+          requestId: input.requestId,
+          type: attemptType,
+          kind: 'reader-not-found',
+          code: 'reader-not-found',
+        });
+      }
+      if (input.kind === 'email-verification' && latestTarget.email_verified === 1) {
+        return await auditedFailure({
+          db: input.db,
+          actorId: input.administratorId,
+          subjectId: latestTarget.id,
+          requestId: input.requestId,
+          type: attemptType,
+          kind: 'invalid-transition',
+          code: 'invalid-transition',
+        });
+      }
+      if (
+        input.kind === 'password-recovery' &&
+        !(await hasUsableCredential(input.db, latestTarget.id))
+      ) {
+        return await auditedFailure({
+          db: input.db,
+          actorId: input.administratorId,
+          subjectId: latestTarget.id,
+          requestId: input.requestId,
+          type: attemptType,
+          kind: 'no-usable-login-method',
+          code: 'no-usable-login-method',
+        });
       }
       const current = await readWorkflow(input.db, target.id, input.kind);
       if (current === null) return { kind: 'internal-error' };
@@ -865,11 +1155,49 @@ export async function requestReaderMessage(input: {
     return { kind: 'internal-error' };
   }
 
-  const scheduled = await scheduleMessage({
+  const preparation = await prepareMessage({
     runtime: input.runtime,
     kind: input.kind,
     email: target.email,
+    retryPayload: retrying ? existingIdempotency.retry_payload : null,
   });
+  if (preparation.kind === 'internal-error') return { kind: 'internal-error' };
+  let prepared: boolean;
+  try {
+    prepared = await persistPreparedMessage({
+      db: input.db,
+      actorId: input.administratorId,
+      targetId: target.id,
+      normalizedPath: input.normalizedPath,
+      idempotencyKey,
+      bodyHash,
+      workflowId,
+      claimToken,
+      retryPayload: preparation.retryPayload,
+    });
+  } catch {
+    return { kind: 'internal-error' };
+  }
+  if (!prepared) return { kind: 'internal-error' };
+  const scheduling = await input.runtime.retryReaderMessageScheduling(preparation.retryPayload);
+  if (scheduling === 'invalid-envelope') {
+    try {
+      await invalidatePreparedMessage({
+        db: input.db,
+        actorId: input.administratorId,
+        targetId: target.id,
+        normalizedPath: input.normalizedPath,
+        idempotencyKey,
+        workflowId,
+        claimToken,
+        now: Date.now(),
+      });
+    } catch {
+      return { kind: 'internal-error' };
+    }
+    return { kind: 'internal-error' };
+  }
+  const scheduled = scheduling === 'accepted';
   let applied: boolean;
   try {
     applied = await finishScheduling({
@@ -886,6 +1214,7 @@ export async function requestReaderMessage(input: {
       requestId: input.requestId,
       response,
       scheduled,
+      retryPayload: preparation.retryPayload,
       now: Date.now(),
     });
   } catch {
@@ -905,9 +1234,11 @@ export async function requestReaderMessage(input: {
       });
     }
     if (committed?.response_status === 202) {
+      const value = parseCommittedResponse(committed.response_body);
+      if (value === null) return { kind: 'internal-error' };
       return {
         kind: 'accepted',
-        value: JSON.parse(committed.response_body) as AdminReaderMessage,
+        value,
       };
     }
     return { kind: 'delivery-scheduling-failed' };

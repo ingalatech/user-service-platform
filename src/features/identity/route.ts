@@ -43,7 +43,7 @@ const adminReaderIfMatchHeaders = z
   .openapi('AdminReaderIfMatchHeaders');
 
 const adminReaderMessageHeaders = z
-  .object({ 'idempotency-key': z.string().min(1).max(128) })
+  .object({ 'idempotency-key': z.string().min(1).max(128).optional() })
   .openapi('AdminReaderMessageHeaders');
 
 const adminReaderCommandResponses = {

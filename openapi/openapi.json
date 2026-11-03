@@ -2568,7 +2568,7 @@
               "minLength": 1,
               "maxLength": 128
             },
-            "required": true,
+            "required": false,
             "name": "idempotency-key",
             "in": "header"
           }
@@ -2724,7 +2724,7 @@
               "minLength": 1,
               "maxLength": 128
             },
-            "required": true,
+            "required": false,
             "name": "idempotency-key",
             "in": "header"
           }
