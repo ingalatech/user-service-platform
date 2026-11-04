@@ -60,8 +60,13 @@ export interface IdentityRuntime {
   authentication(): ReturnType<typeof createIdentityAuth>;
   administration(): ReturnType<typeof createAdministrationAuth>;
   readerMessaging(): ReturnType<typeof createIdentityAuth>;
+  administratorMessaging(): ReturnType<typeof createAdministrationAuth>;
   sealPreparedReaderMessage(): Promise<string | null>;
+  sealPreparedAdministratorMessage(): Promise<string | null>;
   retryReaderMessageScheduling(
+    payload: string,
+  ): Promise<'accepted' | 'rejected' | 'invalid-envelope'>;
+  retryAdministratorMessageScheduling(
     payload: string,
   ): Promise<'accepted' | 'rejected' | 'invalid-envelope'>;
   bootstrapAdministrator(userId: string): ReturnType<typeof createBootstrapIdentityAuth>;
@@ -227,7 +232,7 @@ export function createIdentityRuntime(input: IdentityRuntimeInput) {
   const adminAuthInstances = new Map<MailResolution, ReturnType<typeof createAdministrationAuth>>();
   let readerStateInstance: ReturnType<typeof createReaderStateAuth> | undefined;
   let resolvedAuthSecret: string | undefined;
-  let preparedReaderMailTask: AuthMailTask | undefined;
+  const preparedAuthMailTasks = new Map<'reader' | 'administrator', AuthMailTask>();
   const background = createBackgroundScheduler(input);
   const acceptedScheduler = createAcceptedScheduler(input);
 
@@ -294,7 +299,7 @@ export function createIdentityRuntime(input: IdentityRuntimeInput) {
       ...(mailResolution === 'synchronous'
         ? {
             schedule: (task: AuthMailTask): Promise<void> => {
-              preparedReaderMailTask = task;
+              preparedAuthMailTasks.set(realm, task);
               return Promise.resolve();
             },
           }
@@ -471,15 +476,17 @@ export function createIdentityRuntime(input: IdentityRuntimeInput) {
     });
   }
 
-  async function sealPreparedReaderMessage(): Promise<string | null> {
-    if (preparedReaderMailTask === undefined || resolvedAuthSecret === undefined) return null;
-    return sealAuthMailTask(preparedReaderMailTask, resolvedAuthSecret);
+  async function sealPreparedMessage(realm: 'reader' | 'administrator'): Promise<string | null> {
+    const task = preparedAuthMailTasks.get(realm);
+    if (task === undefined || resolvedAuthSecret === undefined) return null;
+    return sealAuthMailTask(task, resolvedAuthSecret);
   }
 
-  async function retryReaderMessageScheduling(
+  async function retryMessageScheduling(
+    realm: 'reader' | 'administrator',
     payload: string,
   ): Promise<'accepted' | 'rejected' | 'invalid-envelope'> {
-    const authInput = resolveAuthInput('reader', 'synchronous');
+    const authInput = resolveAuthInput(realm, 'synchronous');
     let task: AuthMailTask;
     try {
       task = await openAuthMailTask(payload, authInput.secret);
@@ -500,8 +507,12 @@ export function createIdentityRuntime(input: IdentityRuntimeInput) {
     },
     authentication: () => readerAuth('eager'),
     readerMessaging: () => readerAuth('synchronous'),
-    sealPreparedReaderMessage,
-    retryReaderMessageScheduling,
+    administratorMessaging: () => adminAuth('synchronous'),
+    sealPreparedReaderMessage: () => sealPreparedMessage('reader'),
+    sealPreparedAdministratorMessage: () => sealPreparedMessage('administrator'),
+    retryReaderMessageScheduling: (payload) => retryMessageScheduling('reader', payload),
+    retryAdministratorMessageScheduling: (payload) =>
+      retryMessageScheduling('administrator', payload),
     administration: () => adminAuth('deferred'),
     bootstrapAdministrator: createBootstrapAuth,
     readerState: readerStateAuth,

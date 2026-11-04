@@ -1,0 +1,1 @@
+ALTER TABLE `administrator_access_state` ADD `mutation_token` text;

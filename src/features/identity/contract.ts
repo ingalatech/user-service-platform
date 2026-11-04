@@ -254,6 +254,81 @@ export const AdminMeSchema = z
   })
   .openapi('AdminMe');
 
+export const AdminAdministratorSchema = AdminMeSchema.extend({
+  revision: z.number().int().min(1).openapi({ example: 1 }),
+  access: z.object({ state: z.enum(['active', 'disabled']) }).openapi('AdminAdministratorAccess'),
+}).openapi('AdminAdministrator');
+
+export const AdminAdministratorListSchema = z
+  .object({
+    items: z.array(AdminAdministratorSchema).openapi({ description: 'Ascending email order.' }),
+    total: z.number().int().min(0).openapi({ description: 'Matches before pagination.' }),
+  })
+  .openapi('AdminAdministratorList');
+
+export const AdminAdministratorListQuerySchema = z
+  .object({
+    limit: z.coerce.number().int().min(1).max(100).default(25),
+    offset: z.coerce.number().int().min(0).default(0),
+    email: z.string().trim().min(1).max(254).optional(),
+  })
+  .openapi('AdminAdministratorListQuery');
+
+export const AdminAdministratorDetailSchema = AdminAdministratorSchema.extend({
+  summary: z.object({ createdAt: z.iso.datetime(), updatedAt: z.iso.datetime() }),
+  methods: z.array(
+    z.object({
+      type: z.enum(['password', 'social']),
+      provider: z.enum(['google', 'facebook', 'apple']).optional(),
+    }),
+  ),
+}).openapi('AdminAdministratorDetail');
+
+export const AdminAdministratorParamsSchema = z
+  .object({ administratorId: z.string().min(1).max(128) })
+  .openapi('AdminAdministratorParams');
+
+export const AdminAdministratorActivityQuerySchema = z
+  .object({
+    limit: z.coerce.number().int().min(1).max(50).default(25),
+    cursor: z.string().min(1).max(512).optional(),
+  })
+  .openapi('AdminAdministratorActivityQuery');
+
+export const AdminAdministratorActivitySchema = z
+  .object({
+    items: z.array(
+      z.object({
+        id: z.string(),
+        type: z.enum([
+          'email-verified',
+          'email-verification-requested',
+          'password-recovery-requested',
+          'sessions-revoked',
+          'access-disabled',
+          'access-rehabilitated',
+        ]),
+        occurredAt: z.iso.datetime(),
+        actor: z.object({ id: z.string(), realm: z.literal('administrator') }),
+      }),
+    ),
+    nextCursor: z.string().nullable(),
+  })
+  .openapi('AdminAdministratorActivity');
+
+export const AdminAdministratorAccessRequestSchema = z
+  .object({ state: z.enum(['active', 'disabled']) })
+  .strict()
+  .openapi('AdminAdministratorAccessRequest');
+
+export const AdminAdministratorAccessResultSchema = z
+  .object({
+    state: z.enum(['active', 'disabled']),
+    changed: z.boolean(),
+    revision: z.number().int().min(1),
+  })
+  .openapi('AdminAdministratorAccessResult');
+
 export const AdminBootstrapRequestSchema = z
   .object({
     name: z.string().min(1).max(200).openapi({ example: 'Ada Lovelace' }),
@@ -388,6 +463,21 @@ export const AdminReaderMessageSchema = z
   })
   .openapi('AdminReaderMessage');
 
+export const AdminAdministratorMessageRequestSchema = z
+  .object({})
+  .strict()
+  .openapi('AdminAdministratorMessageRequest');
+
+export const AdminAdministratorMessageSchema = z
+  .object({
+    workflowId: z.string(),
+    kind: z.enum(['email-verification', 'password-recovery']),
+    state: z.literal('scheduled'),
+    cooldownUntil: z.iso.datetime(),
+    revision: z.number().int().min(1),
+  })
+  .openapi('AdminAdministratorMessage');
+
 export const AdminUserListSchema = z
   .object({
     items: z.array(AdminUserSchema).openapi({ description: 'Ascending email order.' }),
@@ -494,6 +584,17 @@ export type ResetPasswordResult = z.infer<typeof ResetPasswordResultSchema>;
 export type CurrentUser = z.infer<typeof CurrentUserSchema>;
 export type SignOutResult = z.infer<typeof SignOutResultSchema>;
 export type AdminMe = z.infer<typeof AdminMeSchema>;
+export type AdminAdministrator = z.infer<typeof AdminAdministratorSchema>;
+export type AdminAdministratorList = z.infer<typeof AdminAdministratorListSchema>;
+export type AdminAdministratorListQuery = z.infer<typeof AdminAdministratorListQuerySchema>;
+export type AdminAdministratorDetail = z.infer<typeof AdminAdministratorDetailSchema>;
+export type AdminAdministratorActivity = z.infer<typeof AdminAdministratorActivitySchema>;
+export type AdminAdministratorAccessRequest = z.infer<typeof AdminAdministratorAccessRequestSchema>;
+export type AdminAdministratorAccessResult = z.infer<typeof AdminAdministratorAccessResultSchema>;
+export type AdminAdministratorMessageRequest = z.infer<
+  typeof AdminAdministratorMessageRequestSchema
+>;
+export type AdminAdministratorMessage = z.infer<typeof AdminAdministratorMessageSchema>;
 export type AdminBootstrapRequest = z.infer<typeof AdminBootstrapRequestSchema>;
 export type AdminBootstrapResult = z.infer<typeof AdminBootstrapResultSchema>;
 export type AdminUser = z.infer<typeof AdminUserSchema>;

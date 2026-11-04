@@ -486,6 +486,120 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/admin/administrators": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Administrators
+         * @description Returns safe application-owned Administrator metadata and access state in ascending email order.
+         */
+        get: operations["listAdminAdministrators"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/administrators/{administratorId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read one Administrator */
+        get: operations["getAdminAdministrator"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/administrators/{administratorId}/activity": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Read Administrator lifecycle activity */
+        get: operations["getAdminAdministratorActivity"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/administrators/{administratorId}/access": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Set Administrator access
+         * @description Atomically disables or rehabilitates another Administrator using a strong revision precondition.
+         */
+        put: operations["setAdminAdministratorAccess"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/administrators/{administratorId}/email-verification/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Schedule an Administrator verification message
+         * @description Schedules verification for another Administrator, including a disabled account, without changing access or exposing a token, action URL or delivery result.
+         */
+        post: operations["requestAdminAdministratorEmailVerificationMessage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/administrators/{administratorId}/password-recovery/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Schedule an Administrator password recovery message
+         * @description Schedules normal password recovery for another Administrator with a usable credential, including a disabled account, without changing access or exposing secrets.
+         */
+        post: operations["requestAdminAdministratorPasswordRecoveryMessage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/admin/users/{userId}": {
         parameters: {
             query?: never;
@@ -991,6 +1105,71 @@ export interface components {
             /** @example user */
             role: string;
         };
+        AdminAdministratorList: {
+            /** @description Ascending email order. */
+            items: components["schemas"]["AdminAdministrator"][];
+            /** @description Matches before pagination. */
+            total: number;
+        };
+        AdminAdministrator: components["schemas"]["AdminMe"] & {
+            /** @example 1 */
+            revision: number;
+            access: components["schemas"]["AdminAdministratorAccess"];
+        };
+        AdminAdministratorAccess: {
+            /** @enum {string} */
+            state: "active" | "disabled";
+        };
+        AdminAdministratorDetail: components["schemas"]["AdminAdministrator"] & {
+            summary: {
+                /** Format: date-time */
+                createdAt: string;
+                /** Format: date-time */
+                updatedAt: string;
+            };
+            methods: {
+                /** @enum {string} */
+                type: "password" | "social";
+                /** @enum {string} */
+                provider?: "google" | "facebook" | "apple";
+            }[];
+        };
+        AdminAdministratorActivity: {
+            items: {
+                id: string;
+                /** @enum {string} */
+                type: "email-verified" | "email-verification-requested" | "password-recovery-requested" | "sessions-revoked" | "access-disabled" | "access-rehabilitated";
+                /** Format: date-time */
+                occurredAt: string;
+                actor: {
+                    id: string;
+                    /** @enum {string} */
+                    realm: "administrator";
+                };
+            }[];
+            nextCursor: string | null;
+        };
+        AdminAdministratorAccessResult: {
+            /** @enum {string} */
+            state: "active" | "disabled";
+            changed: boolean;
+            revision: number;
+        };
+        AdminAdministratorAccessRequest: {
+            /** @enum {string} */
+            state: "active" | "disabled";
+        };
+        AdminAdministratorMessage: {
+            workflowId: string;
+            /** @enum {string} */
+            kind: "email-verification" | "password-recovery";
+            /** @enum {string} */
+            state: "scheduled";
+            /** Format: date-time */
+            cooldownUntil: string;
+            revision: number;
+        };
+        AdminAdministratorMessageRequest: Record<string, never>;
         AdminReaderDetail: components["schemas"]["AdminUser"] & {
             /** @example 1 */
             revision: number;
@@ -1953,6 +2132,440 @@ export interface operations {
             };
             /** @description Authorization failure as RFC 9457 Problem Details. */
             default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+        };
+    };
+    listAdminAdministrators: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number | null;
+                email?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The matching Administrators and their total. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminAdministratorList"];
+                };
+            };
+            /** @description Authorization failure as RFC 9457 Problem Details. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+        };
+    };
+    getAdminAdministrator: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                administratorId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The matching Administrator detail. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminAdministratorDetail"];
+                };
+            };
+            /** @description Authorization or lookup failure as RFC 9457 Problem Details. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+        };
+    };
+    getAdminAdministratorActivity: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                administratorId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The Administrator lifecycle activity page. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminAdministratorActivity"];
+                };
+            };
+            /** @description Authorization, lookup, or cursor failure as RFC 9457 Problem Details. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+        };
+    };
+    setAdminAdministratorAccess: {
+        parameters: {
+            query?: never;
+            header?: {
+                "if-match"?: string;
+            };
+            path: {
+                administratorId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["AdminAdministratorAccessRequest"];
+            };
+        };
+        responses: {
+            /** @description The committed Administrator access state. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminAdministratorAccessResult"];
+                };
+            };
+            /** @description Invalid command input. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description No authoritative Administrator session. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The actor is not allowed to perform the command. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description Reader not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The command conflicts with current Reader state. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The resource revision is stale. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description A required precondition is missing. */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The message cooldown is active. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The command could not be audited or completed. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description Message scheduling failed after the command was committed. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+        };
+    };
+    requestAdminAdministratorEmailVerificationMessage: {
+        parameters: {
+            query?: never;
+            header?: {
+                "idempotency-key"?: string;
+            };
+            path: {
+                administratorId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["AdminAdministratorMessageRequest"];
+            };
+        };
+        responses: {
+            /** @description The verification message was accepted for scheduling. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminAdministratorMessage"];
+                };
+            };
+            /** @description Invalid command input. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description No authoritative Administrator session. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The actor is not allowed to perform the command. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description Administrator not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The command conflicts with current Administrator state. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description A required Idempotency-Key is missing. */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The message cooldown is active. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The command could not be audited or completed. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description Message scheduling failed after the command was committed. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+        };
+    };
+    requestAdminAdministratorPasswordRecoveryMessage: {
+        parameters: {
+            query?: never;
+            header?: {
+                "idempotency-key"?: string;
+            };
+            path: {
+                administratorId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["AdminAdministratorMessageRequest"];
+            };
+        };
+        responses: {
+            /** @description The recovery message was accepted for scheduling. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminAdministratorMessage"];
+                };
+            };
+            /** @description Invalid command input. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description No authoritative Administrator session. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The actor is not allowed to perform the command. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description Administrator not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The command conflicts with current Administrator state. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description A required Idempotency-Key is missing. */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The message cooldown is active. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The command could not be audited or completed. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description Message scheduling failed after the command was committed. */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

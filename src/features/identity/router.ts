@@ -4,6 +4,18 @@ import type { Env } from '../../env.js';
 import { PROBLEM_JSON, createProblem, type ProblemCode } from '../../shared/problem.js';
 import { createAdminUserReader } from './admin-users.js';
 import {
+  getAdminAdministrator,
+  listAdminAdministrators,
+  readAdminAdministratorActivity,
+  setAdminAdministratorAccess,
+} from './admin-administrators.js';
+import {
+  ADMINISTRATOR_EMAIL_VERIFICATION_MESSAGE_PATH,
+  ADMINISTRATOR_PASSWORD_RECOVERY_MESSAGE_PATH,
+  requestAdministratorMessage,
+  type RequestAdministratorMessageOutcome,
+} from './admin-administrator-email.js';
+import {
   forceReaderEmailVerification,
   READER_EMAIL_VERIFICATION_MESSAGE_PATH,
   READER_PASSWORD_RECOVERY_MESSAGE_PATH,
@@ -35,12 +47,22 @@ import {
 } from './consumer-cors.js';
 import { createReaderStateOperations } from './reader-state-operations.js';
 import type { AuthMailer } from './mailer.js';
-import type { AdminBootstrapRequest, AdminReaderMessageRequest } from './contract.js';
+import type {
+  AdminAdministratorMessageRequest,
+  AdminBootstrapRequest,
+  AdminReaderMessageRequest,
+} from './contract.js';
 import { createIdentityRuntime } from './identity-runtime.js';
 import type { IdentityRuntime } from './identity-runtime.js';
 import { createPasswordPolicyProblemDetails } from './problem.js';
 import {
   adminBootstrapRoute,
+  adminAdministratorsRoute,
+  adminAdministratorDetailRoute,
+  adminAdministratorActivityRoute,
+  adminAdministratorAccessRoute,
+  adminAdministratorVerificationMessageRoute,
+  adminAdministratorPasswordRecoveryMessageRoute,
   adminBootstrapLegacyRoute,
   adminCheckPasswordResetRoute,
   adminLoginRoute,
@@ -108,14 +130,23 @@ type IdentityContext = Context<{ Bindings: Env; Variables: { requestId: string }
 const CONSUMER_JWKS_CACHE_MAX_AGE_SECONDS = 300;
 
 function requestIdentityRuntime(c: IdentityContext, authMailer?: AuthMailer): IdentityRuntime {
+  let executionContext: { waitUntil(task: Promise<unknown>): void } | undefined;
+  try {
+    const workerContext = c.executionCtx;
+    executionContext = {
+      waitUntil: (task) => {
+        workerContext.waitUntil(task);
+      },
+    };
+  } catch {
+    // Direct Hono app.request tests have no Worker lifetime context. In that
+    // seam the accepted scheduler still invokes the mailer and supervises it
+    // locally; a real Worker always supplies the context above.
+  }
   return createIdentityRuntime({
     env: c.env,
     requestUrl: c.req.url,
-    executionContext: {
-      waitUntil: (task) => {
-        c.executionCtx.waitUntil(task);
-      },
-    },
+    ...(executionContext === undefined ? {} : { executionContext }),
     authMailer,
   });
 }
@@ -181,6 +212,37 @@ function readerEmailProblem(
   }
 }
 
+function administratorMessageProblem(
+  c: IdentityContext,
+  outcome: Exclude<RequestAdministratorMessageOutcome, { kind: 'accepted' }>,
+) {
+  switch (outcome.kind) {
+    case 'forbidden':
+      return problem(c, 403, 'forbidden', 'Forbidden', 'Administrator access is required.');
+    case 'administrator-disabled':
+      return problem(c, 403, 'administrator-disabled', 'Administrator disabled');
+    case 'administrator-not-found':
+      return problem(c, 404, 'administrator-not-found', 'Administrator not found');
+    case 'precondition-required':
+      return problem(c, 428, 'precondition-required', 'Precondition Required');
+    case 'invalid-transition':
+      return problem(c, 409, 'invalid-transition', 'Invalid transition');
+    case 'no-usable-login-method':
+      return problem(c, 409, 'no-usable-login-method', 'No usable login method');
+    case 'idempotency-key-reused':
+      return problem(c, 409, 'idempotency-key-reused', 'Idempotency key reused');
+    case 'cooldown-active': {
+      const response = problem(c, 429, 'cooldown-active', 'Cooldown active');
+      response.headers.set('Retry-After', String(outcome.retryAfterSeconds));
+      return response;
+    }
+    case 'delivery-scheduling-failed':
+      return problem(c, 503, 'delivery-scheduling-failed', 'Delivery scheduling failed');
+    case 'internal-error':
+      return problem(c, 500, 'internal-error', 'Internal Server Error');
+  }
+}
+
 // An Administrator endpoint never resolves a Reader cookie. It reports the
 // explicitly foreign realm as forbidden for the SPA's denied-session UX while
 // keeping anonymous and invalid Administrator credentials unauthenticated.
@@ -218,6 +280,8 @@ function credentialProblem(c: IdentityContext, failure: CredentialFailure, cache
       );
     case 'invalid-credentials':
       return problem(c, 401, 'invalid-credentials', 'Invalid credentials');
+    case 'administrator-disabled':
+      return problem(c, 403, 'administrator-disabled', 'Administrator disabled');
     case 'verification-invalid':
       return problem(
         c,
@@ -927,6 +991,207 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     }
     return c.json(outcome.value, 200);
   });
+
+  router.openapi(adminAdministratorsRoute, async (c) => {
+    const runtime = requestIdentityRuntime(c, override);
+    const session = await runtime.resolveAdministratorSessionContext(
+      c.req.raw.headers,
+      c.get('requestId'),
+    );
+    if (session === null) return administratorSessionProblem(c);
+    const outcome = await listAdminAdministrators({
+      auth: runtime.administration(),
+      db: c.env.DB,
+      actorId: session.administrator.id,
+      headers: c.req.raw.headers,
+      query: c.req.valid('query'),
+    });
+
+    if (outcome.kind === 'forbidden') {
+      return problem(c, 403, 'forbidden', 'Forbidden', 'Administrator access is required.');
+    }
+    if (outcome.kind === 'administrator-disabled') {
+      return problem(c, 403, 'administrator-disabled', 'Administrator disabled');
+    }
+    return c.json(outcome.value, 200);
+  });
+
+  router.openapi(adminAdministratorDetailRoute, async (c) => {
+    const runtime = requestIdentityRuntime(c, override);
+    const session = await runtime.resolveAdministratorSessionContext(
+      c.req.raw.headers,
+      c.get('requestId'),
+    );
+    if (session === null) return administratorSessionProblem(c);
+    const outcome = await getAdminAdministrator({
+      auth: runtime.administration(),
+      db: c.env.DB,
+      actorId: session.administrator.id,
+      administratorId: c.req.valid('param').administratorId,
+      headers: c.req.raw.headers,
+    });
+    if (outcome.kind === 'forbidden') {
+      return problem(c, 403, 'forbidden', 'Forbidden', 'Administrator access is required.');
+    }
+    if (outcome.kind === 'administrator-disabled') {
+      return problem(c, 403, 'administrator-disabled', 'Administrator disabled');
+    }
+    if (outcome.kind === 'administrator-not-found') {
+      return problem(c, 404, 'administrator-not-found', 'Administrator not found');
+    }
+    c.header('ETag', `"${String(outcome.value.revision)}"`);
+    return c.json(outcome.value, 200);
+  });
+
+  router.openapi(adminAdministratorActivityRoute, async (c) => {
+    const runtime = requestIdentityRuntime(c, override);
+    const session = await runtime.resolveAdministratorSessionContext(
+      c.req.raw.headers,
+      c.get('requestId'),
+    );
+    if (session === null) return administratorSessionProblem(c);
+    const query = c.req.valid('query');
+    const outcome = await readAdminAdministratorActivity({
+      auth: runtime.administration(),
+      db: c.env.DB,
+      actorId: session.administrator.id,
+      administratorId: c.req.valid('param').administratorId,
+      headers: c.req.raw.headers,
+      limit: query.limit,
+      cursor: query.cursor,
+    });
+    if (outcome.kind === 'forbidden') {
+      return problem(c, 403, 'forbidden', 'Forbidden', 'Administrator access is required.');
+    }
+    if (outcome.kind === 'administrator-disabled') {
+      return problem(c, 403, 'administrator-disabled', 'Administrator disabled');
+    }
+    if (outcome.kind === 'administrator-not-found') {
+      return problem(c, 404, 'administrator-not-found', 'Administrator not found');
+    }
+    if (outcome.kind === 'bad-cursor') return problem(c, 400, 'bad-request', 'Bad Request');
+    return c.json(outcome.value, 200);
+  });
+
+  router.openapi(adminAdministratorAccessRoute, async (c) => {
+    const runtime = requestIdentityRuntime(c, override);
+    c.header('Cache-Control', 'private, no-store');
+    const rejected = guardCookieMutation(c, runtime, 'private, no-store');
+    if (rejected !== null) return rejected as never;
+    const session = await runtime.resolveAdministratorSessionContext(
+      c.req.raw.headers,
+      c.get('requestId'),
+    );
+    if (session === null) return administratorSessionProblem(c) as never;
+    const outcome = await setAdminAdministratorAccess({
+      auth: runtime.administration(),
+      db: c.env.DB,
+      actorId: session.administrator.id,
+      administratorId: c.req.valid('param').administratorId,
+      headers: c.req.raw.headers,
+      ifMatch: c.req.header('if-match'),
+      request: c.req.valid('json'),
+      requestId: c.get('requestId'),
+      emailPasswordEnabled: runtime.authPolicy.emailPasswordEnabled,
+    });
+    if (outcome.kind === 'forbidden') {
+      return problem(
+        c,
+        403,
+        'forbidden',
+        'Forbidden',
+        'Administrator access is required.',
+      ) as never;
+    }
+    if (outcome.kind === 'administrator-disabled') {
+      return problem(c, 403, 'administrator-disabled', 'Administrator disabled') as never;
+    }
+    if (outcome.kind === 'administrator-not-found') {
+      return problem(c, 404, 'administrator-not-found', 'Administrator not found') as never;
+    }
+    if (outcome.kind === 'bad-request') {
+      return problem(c, 400, 'bad-request', 'Bad Request') as never;
+    }
+    if (outcome.kind === 'precondition-required') {
+      return problem(c, 428, 'precondition-required', 'Precondition Required') as never;
+    }
+    if (outcome.kind === 'stale-revision') {
+      return problem(c, 412, 'stale-revision', 'Precondition Failed') as never;
+    }
+    if (outcome.kind === 'self-disable-forbidden') {
+      return problem(c, 409, 'self-disable-forbidden', 'Self-disable forbidden') as never;
+    }
+    if (outcome.kind === 'last-operational-administrator') {
+      return problem(
+        c,
+        409,
+        'last-operational-administrator',
+        'Last operational Administrator',
+      ) as never;
+    }
+    if (outcome.kind === 'internal-error') {
+      return problem(c, 500, 'internal-error', 'Internal Server Error') as never;
+    }
+    c.header('ETag', `"${String(outcome.value.revision)}"`);
+    return c.json(outcome.value, 200);
+  });
+
+  async function handleAdministratorMessage(
+    c: IdentityContext,
+    kind: 'email-verification' | 'password-recovery',
+    administratorId: string,
+    body: AdminAdministratorMessageRequest,
+  ) {
+    const runtime = requestIdentityRuntime(c, override);
+    c.header('Cache-Control', 'private, no-store');
+    const rejected = guardCookieMutation(c, runtime, 'private, no-store');
+    if (rejected !== null) return rejected;
+    const session = await runtime.resolveAdministratorSessionContext(
+      c.req.raw.headers,
+      c.get('requestId'),
+    );
+    if (session === null) return administratorSessionProblem(c);
+    const outcome = await requestAdministratorMessage({
+      db: c.env.DB,
+      runtime,
+      actorId: session.administrator.id,
+      administratorId,
+      kind,
+      headers: c.req.raw.headers,
+      idempotencyKey: c.req.header('idempotency-key'),
+      body,
+      normalizedPath:
+        kind === 'email-verification'
+          ? ADMINISTRATOR_EMAIL_VERIFICATION_MESSAGE_PATH
+          : ADMINISTRATOR_PASSWORD_RECOVERY_MESSAGE_PATH,
+      instancePath: new URL(c.req.url).pathname,
+      requestId: c.get('requestId'),
+    });
+    if (outcome.kind !== 'accepted') return administratorMessageProblem(c, outcome);
+    return c.json(outcome.value, 202);
+  }
+
+  router.openapi(
+    adminAdministratorVerificationMessageRoute,
+    (c) =>
+      handleAdministratorMessage(
+        c,
+        'email-verification',
+        c.req.valid('param').administratorId,
+        c.req.valid('json'),
+      ) as never,
+  );
+
+  router.openapi(
+    adminAdministratorPasswordRecoveryMessageRoute,
+    (c) =>
+      handleAdministratorMessage(
+        c,
+        'password-recovery',
+        c.req.valid('param').administratorId,
+        c.req.valid('json'),
+      ) as never,
+  );
 
   router.openapi(adminUserDetailRoute, async (c) => {
     const runtime = requestIdentityRuntime(c, override);

@@ -20,6 +20,11 @@ export type { IdentityRouterOptions };
 export type {
   AdminBootstrapRequest,
   AdminBootstrapResult,
+  AdminAdministrator,
+  AdminAdministratorActivity,
+  AdminAdministratorDetail,
+  AdminAdministratorList,
+  AdminAdministratorListQuery,
   AdminMe,
   AdminUser,
   AdminUserDetailParams,

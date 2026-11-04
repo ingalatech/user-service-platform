@@ -3,6 +3,16 @@ import { IdentityProblemDetailsSchema } from './problem.js';
 import {
   AdminBootstrapRequestSchema,
   AdminBootstrapResultSchema,
+  AdminAdministratorListQuerySchema,
+  AdminAdministratorListSchema,
+  AdminAdministratorDetailSchema,
+  AdminAdministratorParamsSchema,
+  AdminAdministratorActivityQuerySchema,
+  AdminAdministratorActivitySchema,
+  AdminAdministratorAccessRequestSchema,
+  AdminAdministratorAccessResultSchema,
+  AdminAdministratorMessageRequestSchema,
+  AdminAdministratorMessageSchema,
   AdminMeSchema,
   AdminUserDetailParamsSchema,
   AdminUserListQuerySchema,
@@ -42,6 +52,14 @@ const adminReaderIfMatchHeaders = z
   .object({ 'if-match': z.string().min(1).max(128).optional() })
   .openapi('AdminReaderIfMatchHeaders');
 
+const adminAdministratorIfMatchHeaders = z
+  .object({ 'if-match': z.string().min(1).max(128).optional() })
+  .openapi('AdminAdministratorIfMatchHeaders');
+
+const adminAdministratorMessageHeaders = z
+  .object({ 'idempotency-key': z.string().min(1).max(128).optional() })
+  .openapi('AdminAdministratorMessageHeaders');
+
 const adminReaderMessageHeaders = z
   .object({ 'idempotency-key': z.string().min(1).max(128).optional() })
   .openapi('AdminReaderMessageHeaders');
@@ -74,6 +92,45 @@ const adminReaderCommandResponses = {
   428: {
     content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
     description: 'A required precondition is missing.',
+  },
+  429: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'The message cooldown is active.',
+  },
+  500: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'The command could not be audited or completed.',
+  },
+  503: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'Message scheduling failed after the command was committed.',
+  },
+} as const;
+
+const adminAdministratorMessageResponses = {
+  400: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'Invalid command input.',
+  },
+  401: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'No authoritative Administrator session.',
+  },
+  403: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'The actor is not allowed to perform the command.',
+  },
+  404: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'Administrator not found.',
+  },
+  409: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'The command conflicts with current Administrator state.',
+  },
+  428: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'A required Idempotency-Key is missing.',
   },
   429: {
     content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
@@ -501,6 +558,131 @@ export const adminMeRoute = createRoute({
       description: 'The authenticated administrator.',
     },
     ...problemResponses('Authorization failure as RFC 9457 Problem Details.'),
+  },
+});
+
+export const adminAdministratorsRoute = createRoute({
+  method: 'get',
+  path: '/admin/administrators',
+  operationId: 'listAdminAdministrators',
+  summary: 'List Administrators',
+  description:
+    'Returns safe application-owned Administrator metadata and access state in ascending email order.',
+  tags: ['admin'],
+  request: { query: AdminAdministratorListQuerySchema },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: AdminAdministratorListSchema } },
+      description: 'The matching Administrators and their total.',
+    },
+    ...problemResponses('Authorization failure as RFC 9457 Problem Details.'),
+  },
+});
+
+export const adminAdministratorDetailRoute = createRoute({
+  method: 'get',
+  path: '/admin/administrators/{administratorId}',
+  operationId: 'getAdminAdministrator',
+  summary: 'Read one Administrator',
+  tags: ['admin'],
+  request: { params: AdminAdministratorParamsSchema },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: AdminAdministratorDetailSchema } },
+      description: 'The matching Administrator detail.',
+    },
+    ...problemResponses('Authorization or lookup failure as RFC 9457 Problem Details.'),
+  },
+});
+
+export const adminAdministratorActivityRoute = createRoute({
+  method: 'get',
+  path: '/admin/administrators/{administratorId}/activity',
+  operationId: 'getAdminAdministratorActivity',
+  summary: 'Read Administrator lifecycle activity',
+  tags: ['admin'],
+  request: {
+    params: AdminAdministratorParamsSchema,
+    query: AdminAdministratorActivityQuerySchema,
+  },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: AdminAdministratorActivitySchema } },
+      description: 'The Administrator lifecycle activity page.',
+    },
+    ...problemResponses('Authorization, lookup, or cursor failure as RFC 9457 Problem Details.'),
+  },
+});
+
+export const adminAdministratorAccessRoute = createRoute({
+  method: 'put',
+  path: '/admin/administrators/{administratorId}/access',
+  operationId: 'setAdminAdministratorAccess',
+  summary: 'Set Administrator access',
+  description:
+    'Atomically disables or rehabilitates another Administrator using a strong revision precondition.',
+  tags: ['admin'],
+  request: {
+    params: AdminAdministratorParamsSchema,
+    headers: adminAdministratorIfMatchHeaders,
+    body: { content: { 'application/json': { schema: AdminAdministratorAccessRequestSchema } } },
+  },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: AdminAdministratorAccessResultSchema } },
+      description: 'The committed Administrator access state.',
+    },
+    ...adminReaderCommandResponses,
+  },
+});
+
+export const adminAdministratorVerificationMessageRoute = createRoute({
+  method: 'post',
+  path: '/admin/administrators/{administratorId}/email-verification/messages',
+  operationId: 'requestAdminAdministratorEmailVerificationMessage',
+  summary: 'Schedule an Administrator verification message',
+  description:
+    'Schedules verification for another Administrator, including a disabled account, without ' +
+    'changing access or exposing a token, action URL or delivery result.',
+  tags: ['admin'],
+  request: {
+    params: AdminAdministratorParamsSchema,
+    headers: adminAdministratorMessageHeaders,
+    body: {
+      content: { 'application/json': { schema: AdminAdministratorMessageRequestSchema } },
+    },
+  },
+  responses: {
+    202: {
+      content: { 'application/json': { schema: AdminAdministratorMessageSchema } },
+      description: 'The verification message was accepted for scheduling.',
+    },
+    ...adminAdministratorMessageResponses,
+  },
+});
+
+export const adminAdministratorPasswordRecoveryMessageRoute = createRoute({
+  method: 'post',
+  path: '/admin/administrators/{administratorId}/password-recovery/messages',
+  operationId: 'requestAdminAdministratorPasswordRecoveryMessage',
+  summary: 'Schedule an Administrator password recovery message',
+  description:
+    'Schedules normal password recovery for another Administrator with a usable credential, ' +
+    'including a disabled account, without changing access or exposing secrets.',
+  tags: ['admin'],
+  request: {
+    params: AdminAdministratorParamsSchema,
+    headers: adminAdministratorMessageHeaders,
+    body: {
+      content: { 'application/json': { schema: AdminAdministratorMessageRequestSchema } },
+    },
+  },
+  responses: {
+    202: {
+      content: { 'application/json': { schema: AdminAdministratorMessageSchema } },
+      description: 'The recovery message was accepted for scheduling.',
+    },
+    ...adminAdministratorMessageResponses,
   },
 });
 
