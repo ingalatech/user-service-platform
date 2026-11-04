@@ -46,7 +46,10 @@ export type ProblemCode =
   | 'delivery-scheduling-failed'
   | 'admin-already-bootstrapped'
   | 'admin-bootstrap-in-progress'
-  | 'admin-email-conflict';
+  | 'admin-email-conflict'
+  | 'same-email'
+  | 'email-conflict'
+  | 'email-change-not-found';
 
 export interface CreateProblemInput<TCode extends string = ProblemCode> {
   status: number;

@@ -64,6 +64,68 @@ export interface IdentityAuthInput {
   readonly realm?: 'reader' | 'administrator';
 }
 
+export interface ReaderEmailChangeTokenClaims {
+  readonly currentEmail: string;
+  readonly newEmail: string;
+  readonly workflowId: string;
+  readonly expiresAt: number;
+}
+
+// Reader email-change tokens use Better Auth's existing signed verification
+// token format. Their distinct requestType and workflow ID let the public
+// application boundary complete the application-owned transition atomically
+// instead of invoking Better Auth's mutable email-change HTTP handler.
+export async function createReaderEmailChangeToken(input: {
+  readonly secret: string;
+  readonly currentEmail: string;
+  readonly newEmail: string;
+  readonly workflowId: string;
+  readonly expiresInSeconds: number;
+}): Promise<string> {
+  return createEmailVerificationToken(
+    input.secret,
+    input.currentEmail,
+    input.newEmail,
+    input.expiresInSeconds,
+    { requestType: 'reader-email-change', workflowId: input.workflowId, jti: crypto.randomUUID() },
+  );
+}
+
+export async function readReaderEmailChangeToken(input: {
+  readonly secret: string;
+  readonly token: string;
+}): Promise<ReaderEmailChangeTokenClaims | null> {
+  try {
+    const verified = await jwtVerify(input.token, new TextEncoder().encode(input.secret), {
+      algorithms: ['HS256'],
+    });
+    const payload = verified.payload;
+    const currentEmail = payload.email;
+    const newEmail = payload.updateTo;
+    const workflowId = payload.workflowId;
+    const expiresAt = payload.exp;
+    if (
+      typeof currentEmail !== 'string' ||
+      typeof newEmail !== 'string' ||
+      payload.requestType !== 'reader-email-change' ||
+      typeof workflowId !== 'string' ||
+      !/^[A-Za-z0-9_-]{1,128}$/.test(workflowId) ||
+      typeof expiresAt !== 'number' ||
+      !Number.isSafeInteger(expiresAt)
+    ) {
+      return null;
+    }
+    return {
+      currentEmail,
+      newEmail,
+      workflowId,
+      expiresAt: expiresAt * 1_000,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export interface ReaderStateAuthInput extends IdentityAuthInput {
   // Validated Reader State options (issuer/audience/TTL). Required here so
   // the JWT capability is always configured explicitly; deployments without

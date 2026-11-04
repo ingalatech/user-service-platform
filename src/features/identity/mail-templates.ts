@@ -9,6 +9,12 @@ export interface AuthMailTemplateInput {
   readonly url: string;
 }
 
+export interface EmailChangeNoticeTemplateInput {
+  readonly appName: string;
+  readonly previousEmail: string;
+  readonly newEmail: string;
+}
+
 export interface AuthMailTemplate {
   readonly subject: string;
   readonly html: string;
@@ -50,5 +56,20 @@ export function renderPasswordResetEmail(input: AuthMailTemplateInput): AuthMail
       `<p>You requested a password reset for ${escapeHtml(appName)}:</p>` +
       `<p><a href="${escapeHtml(input.url)}">Choose a new password</a></p>` +
       `<p>If you did not request a reset, you can ignore this message.</p>`,
+  };
+}
+
+export function renderEmailChangeNotice(input: EmailChangeNoticeTemplateInput): AuthMailTemplate {
+  return {
+    subject: `Email change requested for ${input.appName}`,
+    text:
+      `A request was made to change the ${input.appName} email address from ` +
+      `${input.previousEmail} to ${input.newEmail}.\n\n` +
+      `If you did not request this change, contact support.`,
+    html:
+      `<p>A request was made to change the ${escapeHtml(input.appName)} email address from ` +
+      `<strong>${escapeHtml(input.previousEmail)}</strong> to ` +
+      `<strong>${escapeHtml(input.newEmail)}</strong>.</p>` +
+      '<p>If you did not request this change, contact support.</p>',
   };
 }

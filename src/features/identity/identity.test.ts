@@ -153,6 +153,7 @@ beforeEach(async () => {
     db.prepare('DELETE FROM "account"'),
     db.prepare('DELETE FROM "verification"'),
     db.prepare('DELETE FROM "email_verification_token"'),
+    db.prepare('DELETE FROM identity_reservation'),
     db.prepare('DELETE FROM "user"'),
   ]);
   mailer.clear();
@@ -433,6 +434,125 @@ describe('POST /v1/auth/register', () => {
     expect(await userCount(workerEnv.DB)).toBe(1);
     await waitForVerificationMessages(1);
     expect(mailer.sent).toHaveLength(1);
+  });
+
+  it('rejects a Reader address held by any pending identity reservation', async () => {
+    for (const [path, email] of [
+      ['/v1/auth/register', 'reserved-v1@example.com'],
+      ['/v2/auth/register', 'reserved-v2@example.com'],
+    ] as const) {
+      await workerEnv.DB.prepare(
+        `INSERT INTO identity_reservation
+         (id, kind, realm, normalized_value, subject_id, workflow_id, created_at, expires_at)
+         VALUES (?, 'email', 'administrator', ?, 'reserved-admin', 'reserved-workflow', ?, ?)`,
+      )
+        .bind(`reservation-${email}`, email, Date.now(), Date.now() + 60_000)
+        .run();
+      const response = await post(path, {
+        name: 'Reserved Reader',
+        email,
+        password: 'Correct-horse-41',
+      });
+      expect(response.status).toBe(400);
+      const problem = await response.text();
+      expect(JSON.parse(problem)).toMatchObject({ code: 'bad-request' });
+      expect(problem).not.toContain(email);
+    }
+    expect(await userCount(workerEnv.DB)).toBe(0);
+    expect(mailer.sent).toHaveLength(0);
+  });
+
+  it('rejects a reservation created immediately before the canonical Reader insert', async () => {
+    const email = 'reservation-registration-race@example.com';
+    let reservationInserted = false;
+    const preparedQueries: string[] = [];
+    const insertRaceReservation = async (): Promise<void> => {
+      if (reservationInserted) return;
+      reservationInserted = true;
+      await workerEnv.DB.prepare(
+        `INSERT INTO identity_reservation
+         (id, kind, realm, normalized_value, subject_id, workflow_id, created_at, expires_at)
+         VALUES ('registration-race-reservation', 'email', 'administrator', ?,
+           'race-admin', 'race-workflow', ?, ?)`,
+      )
+        .bind(email, Date.now(), Date.now() + 60_000)
+        .run();
+    };
+    const injectBeforeCanonicalInsert = async (query: string): Promise<void> => {
+      if (!reservationInserted && /insert\s+into\s+["`]?user\b/i.test(query)) {
+        await insertRaceReservation();
+      }
+    };
+    const racingDatabase = new Proxy(workerEnv.DB, {
+      get(database, property) {
+        if (property === 'batch') {
+          return async (statements: Parameters<Env['DB']['batch']>[0]) => {
+            await insertRaceReservation();
+            return database.batch(statements);
+          };
+        }
+        if (property === 'prepare') {
+          return (query: string) => {
+            preparedQueries.push(query);
+            const statement = database.prepare(query);
+            const wrap = (prepared: ReturnType<typeof database.prepare>): typeof prepared =>
+              new Proxy(prepared, {
+                get(target, method) {
+                  if (method === 'bind') {
+                    return (...values: unknown[]) => wrap(target.bind(...values));
+                  }
+                  if (method === 'run') {
+                    return async (...args: Parameters<typeof target.run>) => {
+                      await injectBeforeCanonicalInsert(query);
+                      return target.run(...args);
+                    };
+                  }
+                  if (method === 'all') {
+                    return async () => {
+                      await injectBeforeCanonicalInsert(query);
+                      return target.all();
+                    };
+                  }
+                  if (method === 'raw') {
+                    return async () => {
+                      await injectBeforeCanonicalInsert(query);
+                      return target.raw();
+                    };
+                  }
+                  const value: unknown = Reflect.get(target, method, target);
+                  if (typeof value === 'function') {
+                    const bound: unknown = value.bind(target);
+                    return bound;
+                  }
+                  return value;
+                },
+              });
+            return wrap(statement);
+          };
+        }
+        const value: unknown = Reflect.get(database, property, database);
+        if (typeof value === 'function') {
+          const bound: unknown = value.bind(database);
+          return bound;
+        }
+        return value;
+      },
+    });
+    const response = await app.request(
+      '/v1/auth/register',
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'Race Reader', email, password: 'Correct-horse-41' }),
+      },
+      testEnv({ DB: racingDatabase }),
+    );
+    expect(reservationInserted, preparedQueries.join('\n')).toBe(true);
+    expect(response.status).toBe(400);
+    const problem = await response.text();
+    expect(JSON.parse(problem)).toMatchObject({ code: 'bad-request' });
+    expect(problem).not.toContain(email);
+    expect(await userCount(workerEnv.DB)).toBe(0);
   });
 
   it('rejects auth operations with a stable error when email/password is disabled', async () => {

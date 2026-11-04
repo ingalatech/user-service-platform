@@ -12,6 +12,7 @@ import {
 } from './api.js';
 import { RecordField } from './kit/components/admin/record-field.js';
 import { Show } from './kit/components/admin/show.js';
+import { EmailChangeActions } from './email-change-actions.js';
 import { Button } from './kit/components/ui/button.js';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './kit/components/ui/tabs.js';
 
@@ -283,6 +284,14 @@ export function UsersShow() {
   const search = listSearch(location.state);
   const navigationState = search.length > 0 ? { fromList: search } : undefined;
   const validId = id !== undefined && id.length > 0 && id.length <= 128;
+  const [lifecycleVisited, setLifecycleVisited] = useState(false);
+  const [activeTab, setActiveTab] = useState('summary');
+  const [emailChangeTerminalState, setEmailChangeTerminalState] = useState<string | null>(null);
+  useEffect(() => {
+    setLifecycleVisited(false);
+    setActiveTab('summary');
+    setEmailChangeTerminalState(null);
+  }, [id]);
   const query = useGetOne<AdminReaderDetail>(
     'users',
     { id: id ?? '' },
@@ -361,7 +370,17 @@ export function UsersShow() {
       queryOptions={{ enabled: false, initialData: query.data }}
     >
       <div className="flex min-w-0 flex-col gap-6">
-        <Tabs defaultValue="summary" className="min-w-0 max-w-full overflow-hidden">
+        <Tabs
+          key={id}
+          value={activeTab}
+          onValueChange={(value) => {
+            if (typeof value === 'string') {
+              setActiveTab(value);
+              if (value === 'lifecycle') setLifecycleVisited(true);
+            }
+          }}
+          className="min-w-0 max-w-full overflow-hidden"
+        >
           <div className="max-w-full overflow-x-auto">
             <TabsList variant="line" className="justify-start">
               <TabsTrigger value="summary">Resumen</TabsTrigger>
@@ -434,6 +453,19 @@ export function UsersShow() {
                 ))}
               </ul>
             )}
+            {emailChangeTerminalState !== null ? (
+              <p role="status">
+                Estado terminal de la solicitud anterior: {emailChangeTerminalState}.
+              </p>
+            ) : null}
+            {lifecycleVisited ? (
+              <EmailChangeActions
+                key={query.data.id}
+                record={query.data}
+                refresh={() => query.refetch()}
+                onTerminalState={setEmailChangeTerminalState}
+              />
+            ) : null}
           </TabsContent>
           <TabsContent value="activity" className="pt-4">
             <Activity userId={id} />

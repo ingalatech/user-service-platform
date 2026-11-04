@@ -52,6 +52,17 @@ The persisted scheduling state for one Reader verification or password-recovery
 message kind. It owns the cooldown and retry claim while never exposing a token,
 action URL, email body or provider-delivery assertion.
 
+### Reader Email Change Workflow
+
+An application-owned, revisioned workflow for changing a Reader's canonical
+email. At most one workflow is pending per Reader; its normalized target email
+is reserved globally across Reader and Administrator canonical addresses and
+all pending reservations. The old email remains canonical until the new address
+is verified. Completion atomically promotes and verifies the new address,
+revokes Reader sessions, and invalidates earlier verification, recovery and
+email-change workflows. Tokens and action URLs are never exposed by
+administrative projections.
+
 ### Auth Policy
 
 Deployment-level configuration that controls supported authentication behaviour without exposing Better Auth configuration directly to feature code. It includes capabilities such as registration enablement, email/password enablement, required email verification, password creation requirements, OAuth providers, and auth/session lifetimes. Password creation requirements apply to registration, reset and administrator bootstrap, not login. The initial deployment requires verified email before login succeeds.

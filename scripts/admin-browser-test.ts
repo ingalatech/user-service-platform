@@ -7,6 +7,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { chromium, type Browser, type Page } from 'playwright-core';
+import { AdminReaderDetailSchema } from '../admin/src/generated/contracts.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const exec = promisify(execFile);
@@ -739,11 +740,12 @@ export async function runAdminBrowserTest(): Promise<void> {
     const unverifiedPayload = (await unverifiedLookup.json()) as {
       items?: { id?: unknown }[];
     };
-    const unverifiedId = unverifiedPayload.items?.[0]?.id;
+    const unverifiedIdValue = unverifiedPayload.items?.[0]?.id;
     assert(
-      typeof unverifiedId === 'string' && unverifiedId.length > 0,
+      typeof unverifiedIdValue === 'string' && unverifiedIdValue.length > 0,
       'unverified Reader identifier resolved',
     );
+    const unverifiedId = unverifiedIdValue;
     await page.goto(`${base}/admin/users/${encodeURIComponent(unverifiedId)}`);
     await visible(page, 'Detalle de usuario');
     await page.getByRole('tab', { name: 'Acceso', exact: true }).click();
@@ -818,9 +820,283 @@ export async function runAdminBrowserTest(): Promise<void> {
     assert(verifiedDetail.status === 200, 'verified Reader detail remains readable');
     await verifiedDetail.arrayBuffer();
     await sql(`DELETE FROM "user" WHERE id = '${unverifiedId}'`);
+    const emailChangeReaderEmail = 'qa-email-change-reader@example.com';
+    const emailChangeRegistration = await http('/v1/auth/register', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        name: 'QA Email Change Reader',
+        email: emailChangeReaderEmail,
+        password,
+      }),
+    });
+    assert(emailChangeRegistration.status === 201, 'email-change Reader fixture created');
+    const emailChangeReader = (await emailChangeRegistration.json()) as { id: string };
+    await sql(`UPDATE "user" SET email_verified = 1 WHERE id = '${emailChangeReader.id}'`);
+    const emailChangeReaderId = emailChangeReader.id;
+    await page.goto(`${base}/admin/users/${encodeURIComponent(emailChangeReaderId)}`);
+    await visible(page, 'Detalle de usuario');
+    phase = 'Reader administrative email-change create, replace, resend, and cancel';
+    const canonicalReaderEmail = emailChangeReaderEmail;
+    phase = 'Reader email-change account ETag lookup';
+    const accountBeforeCreate = await http(
+      `/v1/admin/users/${encodeURIComponent(emailChangeReaderId)}`,
+      {
+        headers: { cookie: cookieHeader },
+      },
+    );
+    assert(accountBeforeCreate.status === 200, 'email-change account revision available');
+    const initialAccountEtag = accountBeforeCreate.headers.get('etag');
+    assert(initialAccountEtag !== null, 'email-change creation receives account ETag');
+    await accountBeforeCreate.arrayBuffer();
+    const emailChangeKeys: string[] = [];
+    const emailChangeEtags: string[] = [];
+    let rejectEmailChangeScheduling = true;
+    await page.route(`**/v1/admin/users/${emailChangeReaderId}/email-changes`, async (route) => {
+      emailChangeKeys.push(route.request().headers()['idempotency-key'] ?? '');
+      emailChangeEtags.push(route.request().headers()['if-match'] ?? '');
+      if (rejectEmailChangeScheduling) {
+        rejectEmailChangeScheduling = false;
+        await route.fulfill({
+          status: 503,
+          contentType: 'application/problem+json',
+          body: JSON.stringify({
+            type: 'urn:problem:delivery-scheduling-failed',
+            title: 'Delivery scheduling failed',
+            status: 503,
+            code: 'delivery-scheduling-failed',
+          }),
+        });
+        return;
+      }
+      await route.continue();
+    });
+    phase = 'Reader email-change lifecycle controls';
+    await page.getByRole('tab', { name: 'Ciclo de vida', exact: true }).click();
+    phase = 'Reader email-change render pending state';
+    await page
+      .getByText('No hay una solicitud de cambio de correo pendiente.', { exact: true })
+      .waitFor();
+    phase = 'Reader email-change input';
+    await page
+      .getByLabel('Nuevo correo', { exact: true })
+      .fill('qa-email-change-first@example.com');
+    phase = 'Reader email-change initial 503 request';
+    const failedCreate = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'POST' && response.url().endsWith('/email-changes'),
+    );
+    await page.getByRole('button', { name: 'Iniciar cambio', exact: true }).click();
+    phase = 'Reader email-change 503 response arrival';
+    const failedCreateResponse = await failedCreate;
+    phase = `Reader email-change scheduling status ${String(failedCreateResponse.status())}`;
+    assert(failedCreateResponse.status() === 503, 'email-change scheduling failure is retryable');
+    phase = 'Reader email-change 503 status message';
+    await page
+      .getByText('No pudimos programar los avisos. Reintenta con la misma solicitud.', {
+        exact: true,
+      })
+      .waitFor();
+    phase = 'Reader email-change retry';
+    const createResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'POST' && response.url().endsWith('/email-changes'),
+    );
+    const createDetailRefresh = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'GET' &&
+        response.url().endsWith(`/v1/admin/users/${emailChangeReaderId}`),
+    );
+    await page.getByRole('button', { name: 'Reintentar solicitud', exact: true }).click();
+    const createdEmailChange = await createResponse;
+    assert(createdEmailChange.status() === 201, 'email-change retry creates the workflow');
+    const createdChange = (await createdEmailChange.json()) as {
+      workflowId: string;
+      email: string;
+      state: string;
+      revision: number;
+    };
+    const refreshedCreateDetail = await createDetailRefresh;
+    assert(
+      refreshedCreateDetail.status() === 200,
+      'successful retry refreshes committed Reader detail',
+    );
+    const refreshedCreateBody: unknown = await refreshedCreateDetail.json();
+    const refreshedCreateParse = AdminReaderDetailSchema.safeParse(refreshedCreateBody);
+    assert(refreshedCreateParse.success, 'committed email-change detail matches Admin contract');
+    assert(
+      refreshedCreateParse.data.activeWorkflows.some(
+        (workflow) =>
+          workflow.type === 'email-change' &&
+          workflow.id === createdChange.workflowId &&
+          workflow.email === createdChange.email,
+      ),
+      'committed detail refresh projects the new pending email-change workflow',
+    );
+    await page.getByRole('tab', { name: 'Ciclo de vida', exact: true }).click();
+    assert(
+      emailChangeKeys.length === 2 &&
+        emailChangeKeys[0] !== '' &&
+        emailChangeKeys[0] === emailChangeKeys[1] &&
+        emailChangeEtags.every((etag) => etag === initialAccountEtag),
+      'create retry preserves its Idempotency-Key and account ETag',
+    );
+    assert(
+      createdChange.email === 'qa-email-change-first@example.com' &&
+        createdChange.state === 'pending' &&
+        createdChange.revision === 1,
+      'created response exposes only safe email-change state',
+    );
+    assert(
+      !/token|actionUrl|password|emailBody/i.test(JSON.stringify(createdChange)),
+      'email-change response contains no secrets or message body',
+    );
+    phase = 'Reader email-change pending projection';
+    await page.getByText('qa-email-change-first@example.com', { exact: true }).waitFor();
+    await page.getByText('Expira', { exact: true }).waitFor();
+    await page.getByText('Revisión del workflow', { exact: true }).waitFor();
+    const canonicalAfterCreate = await http(
+      `/v1/admin/users/${encodeURIComponent(emailChangeReaderId)}`,
+      {
+        headers: { cookie: cookieHeader },
+      },
+    );
+    assert(canonicalAfterCreate.status === 200, 'canonical Reader remains readable after create');
+    const canonicalAfterCreateBody = (await canonicalAfterCreate.json()) as { email?: unknown };
+    assert(
+      canonicalAfterCreateBody.email === canonicalReaderEmail,
+      'create keeps the old canonical email',
+    );
+
+    const accountBeforeReplace = await http(
+      `/v1/admin/users/${encodeURIComponent(emailChangeReaderId)}`,
+      {
+        headers: { cookie: cookieHeader },
+      },
+    );
+    assert(accountBeforeReplace.status === 200, 'replacement account revision available');
+    const replacementAccountEtag = accountBeforeReplace.headers.get('etag');
+    assert(replacementAccountEtag !== null, 'replacement receives current account ETag');
+    await accountBeforeReplace.arrayBuffer();
+    await page
+      .getByLabel('Reemplazar con otro correo', { exact: true })
+      .fill('qa-email-change-replacement@example.com');
+    const replacementRequest = page.waitForRequest(
+      (request) => request.method() === 'POST' && request.url().endsWith('/email-changes'),
+    );
+    const replacementResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'POST' && response.url().endsWith('/email-changes'),
+    );
+    await page.getByRole('button', { name: 'Reemplazar solicitud', exact: true }).click();
+    const replacementReq = await replacementRequest;
+    const replacedEmailChange = await replacementResponse;
+    assert(replacedEmailChange.status() === 200, 'pending email change is replaced');
+    assert(
+      replacementReq.headers()['if-match'] === replacementAccountEtag &&
+        (replacementReq.headers()['idempotency-key'] ?? '').length > 0,
+      'replacement uses account ETag and Idempotency-Key',
+    );
+    const replacementBody = (await replacedEmailChange.json()) as {
+      workflowId: string;
+      email: string;
+      revision: number;
+    };
+    assert(
+      replacementBody.workflowId !== createdChange.workflowId &&
+        replacementBody.email === 'qa-email-change-replacement@example.com' &&
+        replacementBody.revision === 1,
+      'replacement supersedes the prior workflow with a new safe workflow',
+    );
+    await page.getByRole('tab', { name: 'Ciclo de vida', exact: true }).click();
+    const canonicalAfterReplace = await http(
+      `/v1/admin/users/${encodeURIComponent(emailChangeReaderId)}`,
+      {
+        headers: { cookie: cookieHeader },
+      },
+    );
+    assert(canonicalAfterReplace.status === 200, 'canonical Reader remains readable after replace');
+    const canonicalAfterReplaceBody = (await canonicalAfterReplace.json()) as { email?: unknown };
+    assert(
+      canonicalAfterReplaceBody.email === canonicalReaderEmail,
+      'replace keeps the old canonical email',
+    );
+
+    await sql(
+      `UPDATE reader_email_change_workflow SET cooldown_until = ${String(Date.now() - 1)} WHERE id = '${replacementBody.workflowId}'`,
+    );
+    await page.reload();
+    await visible(page, 'Detalle de usuario');
+    await page.getByRole('tab', { name: 'Ciclo de vida', exact: true }).click();
+    await page.getByText('Disponible para reenviar', { exact: true }).waitFor();
+    const resendRequest = page.waitForRequest(
+      (request) =>
+        request.method() === 'POST' &&
+        request.url().endsWith(`/email-changes/${replacementBody.workflowId}/messages`),
+    );
+    const resendResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'POST' &&
+        response.url().endsWith(`/email-changes/${replacementBody.workflowId}/messages`),
+    );
+    await page.getByRole('button', { name: 'Reenviar avisos', exact: true }).click();
+    const resendReq = await resendRequest;
+    const resent = await resendResponse;
+    assert(resent.status() === 202, 'email-change resend is accepted');
+    assert(
+      (resendReq.headers()['idempotency-key'] ?? '').length > 0,
+      'email-change resend carries Idempotency-Key',
+    );
+    const resendBody = (await resent.json()) as { workflowId: string; revision: number };
+    assert(
+      resendBody.workflowId === replacementBody.workflowId && resendBody.revision === 2,
+      'resend returns the current workflow revision',
+    );
+    await page.reload();
+    await visible(page, 'Detalle de usuario');
+    await page.getByRole('tab', { name: 'Ciclo de vida', exact: true }).click();
+    await page.getByText('qa-email-change-replacement@example.com', { exact: true }).waitFor();
+    await page.getByText('Revisión del workflow', { exact: true }).waitFor();
+    assert(
+      await page.getByRole('button', { name: 'Cancelar solicitud', exact: true }).isEnabled(),
+      'a reloaded pending workflow is immediately cancellable using its persisted revision',
+    );
+    const cancelRequest = page.waitForRequest(
+      (request) =>
+        request.method() === 'DELETE' &&
+        request.url().endsWith(`/email-changes/${replacementBody.workflowId}`),
+    );
+    const cancelResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'DELETE' &&
+        response.url().endsWith(`/email-changes/${replacementBody.workflowId}`),
+    );
+    await page.getByRole('button', { name: 'Cancelar solicitud', exact: true }).click();
+    const cancelReq = await cancelRequest;
+    const cancelled = await cancelResponse;
+    assert(cancelled.status() === 200, 'email-change cancellation is committed');
+    assert(
+      cancelReq.headers()['if-match'] === '"2"' &&
+        (cancelReq.headers()['idempotency-key'] ?? '').length > 0,
+      'cancellation uses workflow ETag and Idempotency-Key',
+    );
+    const cancelledBody: unknown = await cancelled.json();
+    assert(
+      typeof cancelledBody === 'object' &&
+        cancelledBody !== null &&
+        'state' in cancelledBody &&
+        cancelledBody.state === 'cancelled',
+      'terminal cancellation state is rendered by the UI',
+    );
+    await page
+      .getByText('Estado terminal de la solicitud anterior: cancelled.', { exact: true })
+      .waitFor();
+    await page.unroute(`**/v1/admin/users/${emailChangeReaderId}/email-changes`);
     phase = 'user detail, reload, back and direct navigation';
     await page.goto(`${base}/admin/users`);
+    phase = 'user list after email-change cleanup';
     await visible(page, 'Usuarios');
+    await sql(`DELETE FROM "user" WHERE id = '${emailChangeReaderId}'`);
     const detailLookup = await http(`/v1/admin/users?email=${encodeURIComponent(regular)}`, {
       headers: { cookie: cookieHeader },
     });
@@ -836,12 +1112,14 @@ export async function runAdminBrowserTest(): Promise<void> {
     await searchBox.fill(regular);
     await page.getByText('1 usuario en total', { exact: true }).waitFor();
     await table.getByText(regular, { exact: true }).waitFor();
+    phase = 'regular Reader detail after email-change flow';
     let detailAccountDetailsReads = 0;
     await page.route('**/v1/admin/users/*/account-details', async (route) => {
       detailAccountDetailsReads++;
       await route.continue();
     });
     await page.getByRole('link', { name: 'Ver detalle', exact: true }).click();
+    phase = 'regular Reader detail fields';
     await visible(page, 'Detalle de usuario');
     await page.getByText(regular, { exact: true }).waitFor();
     await page.getByText('Correo verificado', { exact: true }).waitFor();
@@ -863,6 +1141,7 @@ export async function runAdminBrowserTest(): Promise<void> {
       })
       .waitFor();
     await page.getByRole('tab', { name: 'Ciclo de vida', exact: true }).click();
+    phase = 'regular Reader lifecycle empty state';
     await page.getByText('No hay procesos de ciclo de vida activos.', { exact: true }).waitFor();
     await page.getByRole('tab', { name: 'Actividad', exact: true }).click();
     await page
@@ -877,6 +1156,7 @@ export async function runAdminBrowserTest(): Promise<void> {
       `INSERT INTO identity_event (id, version, type, occurred_at, actor_realm, actor_id, subject_realm, subject_id, result, request_id, problem_code, metadata) VALUES ${activityValues}`,
     );
     await page.reload();
+    phase = 'regular Reader activity detail reload';
     await visible(page, 'Detalle de usuario');
     let releaseActivity: (() => void) | undefined;
     const activityGate = new Promise<void>((resolve) => {
@@ -1219,7 +1499,7 @@ export async function runAdminBrowserTest(): Promise<void> {
             `JSON.stringify({
         path: location.pathname,
         headings: [...document.querySelectorAll('h1')].map(node => node.textContent),
-        alerts: [...document.querySelectorAll('[role="alert"]')].map(node => node.textContent)
+        alerts: [...document.querySelectorAll('[role="alert"]')].map(node => node.textContent),
       })`,
           )
           .catch(() => 'Page diagnostics unavailable'),

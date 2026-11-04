@@ -328,6 +328,12 @@ export const AdminAuditMetadataSchema = z
     revision: z.number().int().min(1).optional(),
     retryAfterSeconds: z.number().int().min(1).max(86_400).optional(),
     state: z.enum(['committed', 'scheduling-failed']).optional(),
+    supersedesId: z
+      .string()
+      .min(1)
+      .max(128)
+      .regex(/^[A-Za-z0-9_-]+$/)
+      .optional(),
     workflowId: z
       .string()
       .min(1)
@@ -369,6 +375,9 @@ export const AdminAuditProblemCodeSchema = z
     'admin-already-bootstrapped',
     'admin-bootstrap-in-progress',
     'admin-email-conflict',
+    'same-email',
+    'email-conflict',
+    'email-change-not-found',
   ])
   .openapi('AdminAuditProblemCode');
 
@@ -515,18 +524,39 @@ export const AdminReaderDetailSchema = AdminUserSchema.extend({
     .openapi({ description: 'Safe locally usable login methods without provider identifiers.' }),
   activeWorkflows: z
     .array(
-      z.object({
-        id: z.string(),
-        type: z.enum([
-          'email-change',
-          'deletion-request',
-          'email-verification-message',
-          'password-recovery-message',
-        ]),
-        state: z.string(),
-        createdAt: z.iso.datetime(),
-        cooldownUntil: z.iso.datetime().optional(),
-      }),
+      z.discriminatedUnion('type', [
+        z.object({
+          id: z.string(),
+          type: z.literal('email-verification-message'),
+          state: z.string(),
+          createdAt: z.iso.datetime(),
+          cooldownUntil: z.iso.datetime(),
+        }),
+        z.object({
+          id: z.string(),
+          type: z.literal('password-recovery-message'),
+          state: z.string(),
+          createdAt: z.iso.datetime(),
+          cooldownUntil: z.iso.datetime(),
+        }),
+        z.object({
+          id: z.string(),
+          type: z.literal('deletion-request'),
+          state: z.string(),
+          createdAt: z.iso.datetime(),
+          cooldownUntil: z.iso.datetime().optional(),
+        }),
+        z.object({
+          id: z.string(),
+          type: z.literal('email-change'),
+          state: z.literal('pending'),
+          createdAt: z.iso.datetime(),
+          email: emailField,
+          expiresAt: z.iso.datetime(),
+          cooldownUntil: z.iso.datetime(),
+          revision: z.number().int().min(1),
+        }),
+      ]),
     )
     .openapi({ description: 'Only persisted active workflows; never inferred or fabricated.' }),
 }).openapi('AdminReaderDetail');
@@ -545,6 +575,8 @@ export const AdminReaderActivityEventSchema = z
       'email-verified',
       'email-verification-requested',
       'password-recovery-requested',
+      'email-change-requested',
+      'email-change-cancelled',
       'email-changed',
       'social-identity-unlinked',
       'sessions-revoked',
@@ -590,6 +622,59 @@ export const AdminReaderMessageSchema = z
     revision: z.number().int().min(1),
   })
   .openapi('AdminReaderMessage');
+
+export const AdminReaderEmailChangeRequestSchema = z
+  .object({ email: emailField })
+  .strict()
+  .openapi('AdminReaderEmailChangeRequest');
+
+export const AdminReaderEmailChangeParamsSchema = z
+  .object({
+    userId: z.string().min(1).max(128),
+    emailChangeId: z.string().min(1).max(128),
+  })
+  .openapi('AdminReaderEmailChangeParams');
+
+export const AdminReaderEmailChangeCommandSchema = z
+  .object({})
+  .strict()
+  .openapi('AdminReaderEmailChangeCommand');
+
+export const AdminReaderEmailChangeSchema = z
+  .object({
+    workflowId: z.string().min(1).max(128),
+    email: emailField,
+    state: z.literal('pending'),
+    changed: z.boolean(),
+    revision: z.number().int().min(1),
+    accountRevision: z.number().int().min(1),
+    createdAt: z.iso.datetime(),
+    expiresAt: z.iso.datetime(),
+    cooldownUntil: z.iso.datetime(),
+  })
+  .strict()
+  .openapi('AdminReaderEmailChange');
+
+export const AdminReaderEmailChangeCancelSchema = z
+  .object({
+    workflowId: z.string().min(1).max(128),
+    state: z.enum(['pending', 'cancelled', 'completed', 'superseded', 'expired']),
+    changed: z.boolean(),
+    revision: z.number().int().min(1),
+  })
+  .strict()
+  .openapi('AdminReaderEmailChangeCancel');
+
+export const AdminReaderEmailChangeMessageSchema = z
+  .object({
+    workflowId: z.string().min(1).max(128),
+    state: z.literal('pending'),
+    cooldownUntil: z.iso.datetime(),
+    expiresAt: z.iso.datetime(),
+    revision: z.number().int().min(1),
+  })
+  .strict()
+  .openapi('AdminReaderEmailChangeMessage');
 
 export const AdminAdministratorMessageRequestSchema = z
   .object({})
@@ -737,6 +822,12 @@ export type AdminReaderActivityQuery = z.infer<typeof AdminReaderActivityQuerySc
 export type AdminReaderEmailVerification = z.infer<typeof AdminReaderEmailVerificationSchema>;
 export type AdminReaderMessage = z.infer<typeof AdminReaderMessageSchema>;
 export type AdminReaderMessageRequest = z.infer<typeof AdminReaderMessageRequestSchema>;
+export type AdminReaderEmailChangeRequest = z.infer<typeof AdminReaderEmailChangeRequestSchema>;
+export type AdminReaderEmailChangeParams = z.infer<typeof AdminReaderEmailChangeParamsSchema>;
+export type AdminReaderEmailChangeCommand = z.infer<typeof AdminReaderEmailChangeCommandSchema>;
+export type AdminReaderEmailChange = z.infer<typeof AdminReaderEmailChangeSchema>;
+export type AdminReaderEmailChangeCancel = z.infer<typeof AdminReaderEmailChangeCancelSchema>;
+export type AdminReaderEmailChangeMessage = z.infer<typeof AdminReaderEmailChangeMessageSchema>;
 export type AdminUserList = z.infer<typeof AdminUserListSchema>;
 export type AdminUserListQuery = z.infer<typeof AdminUserListQuerySchema>;
 export type AdminUserDetailParams = z.infer<typeof AdminUserDetailParamsSchema>;

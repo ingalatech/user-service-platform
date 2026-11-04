@@ -25,6 +25,12 @@ import {
   AdminReaderEmailVerificationSchema,
   AdminReaderMessageRequestSchema,
   AdminReaderMessageSchema,
+  AdminReaderEmailChangeRequestSchema,
+  AdminReaderEmailChangeParamsSchema,
+  AdminReaderEmailChangeCommandSchema,
+  AdminReaderEmailChangeSchema,
+  AdminReaderEmailChangeCancelSchema,
+  AdminReaderEmailChangeMessageSchema,
   AuthConfigSchema,
   CheckPasswordResetRequestSchema,
   CheckPasswordResetResultSchema,
@@ -66,6 +72,20 @@ const adminReaderMessageHeaders = z
   .object({ 'idempotency-key': z.string().min(1).max(128).optional() })
   .openapi('AdminReaderMessageHeaders');
 
+const adminReaderEmailChangeCreateHeaders = z
+  .object({
+    'if-match': z.string().min(1).max(128).optional(),
+    'idempotency-key': z.string().min(1).max(128).optional(),
+  })
+  .openapi('AdminReaderEmailChangeCreateHeaders');
+
+const adminReaderEmailChangeWorkflowHeaders = z
+  .object({
+    'if-match': z.string().min(1).max(128).optional(),
+    'idempotency-key': z.string().min(1).max(128).optional(),
+  })
+  .openapi('AdminReaderEmailChangeWorkflowHeaders');
+
 const adminReaderCommandResponses = {
   400: {
     content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
@@ -106,6 +126,49 @@ const adminReaderCommandResponses = {
   503: {
     content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
     description: 'Message scheduling failed after the command was committed.',
+  },
+} as const;
+
+const adminReaderEmailChangeResponses = {
+  400: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'Invalid command input.',
+  },
+  401: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'No authoritative Administrator session or invalid verification token.',
+  },
+  403: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'The actor is not allowed to perform the command.',
+  },
+  404: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'Reader or email-change workflow not found.',
+  },
+  409: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'The command conflicts with the canonical email or workflow state.',
+  },
+  412: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'The supplied revision is stale.',
+  },
+  428: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'A required precondition or idempotency key is missing.',
+  },
+  429: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'The email-change message cooldown is active.',
+  },
+  500: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'The command could not be audited or completed.',
+  },
+  503: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'Message scheduling failed after the workflow was committed.',
   },
 } as const;
 
@@ -239,10 +302,12 @@ export const verifyEmailRoute = createRoute({
   operationId: 'verifyIdentityEmail',
   summary: 'Complete email verification',
   description:
-    'Marks the email address verified from the token delivered by the ' +
-    'verification action. Clients extract the `token` query parameter from ' +
-    'the action URL and submit it here. Invalid or expired actions fail ' +
-    'safely without revealing token material.',
+    'Completes either ordinary email verification or an administrative Reader email-change ' +
+    'workflow. For email change, the new address is promoted to canonical and verified, all ' +
+    'Reader sessions are revoked, and earlier verification, recovery and email-change workflows ' +
+    'are invalidated atomically. Clients extract the `token` query parameter from the action URL ' +
+    'and submit it here. Invalid or expired actions return the stable `verification-invalid` ' +
+    'Problem Details code without revealing token material.',
   tags: ['identity'],
   request: {
     body: { content: { 'application/json': { schema: VerifyEmailRequestSchema } } },
@@ -250,7 +315,16 @@ export const verifyEmailRoute = createRoute({
   responses: {
     200: {
       content: { 'application/json': { schema: VerifyEmailResultSchema } },
-      description: 'The email address is verified.',
+      description:
+        'Ordinary verification completed, or email change atomically promoted and verified the new canonical address while revoking sessions.',
+    },
+    400: {
+      content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+      description: 'Invalid or expired action; stable code `verification-invalid`.',
+    },
+    500: {
+      content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+      description: 'Atomic completion failed; no partial email-change effects are committed.',
     },
     ...problemResponses('Verification failure as RFC 9457 Problem Details.'),
   },
@@ -879,6 +953,79 @@ export const adminReaderPasswordRecoveryMessageRoute = createRoute({
       description: 'The recovery message was accepted for scheduling.',
     },
     ...adminReaderCommandResponses,
+  },
+});
+
+export const adminReaderEmailChangeRoute = createRoute({
+  method: 'post',
+  path: '/admin/users/{userId}/email-changes',
+  operationId: 'startAdminReaderEmailChange',
+  summary: 'Create or replace a pending Reader email change',
+  description:
+    'Reserves a normalized email for an active Reader and schedules verification to the new ' +
+    'address plus a notice to the current address. The canonical email remains unchanged until ' +
+    'the public verification action completes.',
+  tags: ['admin'],
+  request: {
+    params: AdminUserDetailParamsSchema,
+    headers: adminReaderEmailChangeCreateHeaders,
+    body: { content: { 'application/json': { schema: AdminReaderEmailChangeRequestSchema } } },
+  },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: AdminReaderEmailChangeSchema } },
+      description: 'An existing pending email-change workflow was replaced.',
+    },
+    201: {
+      content: { 'application/json': { schema: AdminReaderEmailChangeSchema } },
+      description: 'A new email-change workflow was created.',
+    },
+    ...adminReaderEmailChangeResponses,
+  },
+});
+
+export const adminReaderEmailChangeMessageRoute = createRoute({
+  method: 'post',
+  path: '/admin/users/{userId}/email-changes/{emailChangeId}/messages',
+  operationId: 'resendAdminReaderEmailChangeMessage',
+  summary: 'Resend a pending Reader email-change message',
+  description:
+    'Rotates the verification token and schedules the verification and current-address notice ' +
+    'for a pending Reader email-change workflow.',
+  tags: ['admin'],
+  request: {
+    params: AdminReaderEmailChangeParamsSchema,
+    headers: adminReaderMessageHeaders,
+    body: { content: { 'application/json': { schema: AdminReaderEmailChangeCommandSchema } } },
+  },
+  responses: {
+    202: {
+      content: { 'application/json': { schema: AdminReaderEmailChangeMessageSchema } },
+      description: 'The email-change messages were accepted for scheduling.',
+    },
+    ...adminReaderEmailChangeResponses,
+  },
+});
+
+export const adminReaderEmailChangeCancelRoute = createRoute({
+  method: 'delete',
+  path: '/admin/users/{userId}/email-changes/{emailChangeId}',
+  operationId: 'cancelAdminReaderEmailChange',
+  summary: 'Cancel a pending Reader email change',
+  description:
+    'Cancels a pending email-change workflow with its workflow revision precondition and releases ' +
+    'the email reservation.',
+  tags: ['admin'],
+  request: {
+    params: AdminReaderEmailChangeParamsSchema,
+    headers: adminReaderEmailChangeWorkflowHeaders,
+  },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: AdminReaderEmailChangeCancelSchema } },
+      description: 'The current or newly cancelled workflow state.',
+    },
+    ...adminReaderEmailChangeResponses,
   },
 });
 

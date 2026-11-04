@@ -11,6 +11,18 @@ import {
 } from './admin-administrators.js';
 import { readAdminAuditEvents } from './admin-audit.js';
 import {
+  READER_EMAIL_CHANGE_CANCEL_PATH,
+  READER_EMAIL_CHANGE_MESSAGES_PATH,
+  READER_EMAIL_CHANGES_PATH,
+  cancelReaderEmailChange,
+  completeReaderEmailChange,
+  resendReaderEmailChangeMessage,
+  startReaderEmailChange,
+  type CancelReaderEmailChangeOutcome,
+  type ResendReaderEmailChangeOutcome,
+  type StartReaderEmailChangeOutcome,
+} from './admin-reader-email-changes.js';
+import {
   ADMINISTRATOR_EMAIL_VERIFICATION_MESSAGE_PATH,
   ADMINISTRATOR_PASSWORD_RECOVERY_MESSAGE_PATH,
   requestAdministratorMessage,
@@ -82,6 +94,9 @@ import {
   adminReaderEmailVerificationRoute,
   adminReaderVerificationMessageRoute,
   adminReaderPasswordRecoveryMessageRoute,
+  adminReaderEmailChangeRoute,
+  adminReaderEmailChangeMessageRoute,
+  adminReaderEmailChangeCancelRoute,
   adminUserAccountDetailsRoute,
   adminUsersRoute,
   adminVerifyEmailRoute,
@@ -231,6 +246,48 @@ function administratorMessageProblem(
       return problem(c, 409, 'invalid-transition', 'Invalid transition');
     case 'no-usable-login-method':
       return problem(c, 409, 'no-usable-login-method', 'No usable login method');
+    case 'idempotency-key-reused':
+      return problem(c, 409, 'idempotency-key-reused', 'Idempotency key reused');
+    case 'cooldown-active': {
+      const response = problem(c, 429, 'cooldown-active', 'Cooldown active');
+      response.headers.set('Retry-After', String(outcome.retryAfterSeconds));
+      return response;
+    }
+    case 'delivery-scheduling-failed':
+      return problem(c, 503, 'delivery-scheduling-failed', 'Delivery scheduling failed');
+    case 'internal-error':
+      return problem(c, 500, 'internal-error', 'Internal Server Error');
+  }
+}
+
+function readerEmailChangeProblem(
+  c: IdentityContext,
+  outcome: Exclude<
+    StartReaderEmailChangeOutcome | CancelReaderEmailChangeOutcome | ResendReaderEmailChangeOutcome,
+    { kind: 'success' }
+  >,
+) {
+  switch (outcome.kind) {
+    case 'forbidden':
+      return problem(c, 403, 'forbidden', 'Forbidden', 'Administrator access is required.');
+    case 'administrator-disabled':
+      return problem(c, 403, 'administrator-disabled', 'Administrator disabled');
+    case 'reader-not-found':
+      return problem(c, 404, 'reader-not-found', 'Reader not found');
+    case 'email-change-not-found':
+      return problem(c, 404, 'email-change-not-found', 'Email change not found');
+    case 'bad-request':
+      return problem(c, 400, 'bad-request', 'Bad Request');
+    case 'precondition-required':
+      return problem(c, 428, 'precondition-required', 'Precondition Required');
+    case 'stale-revision':
+      return problem(c, 412, 'stale-revision', 'Precondition Failed');
+    case 'same-email':
+      return problem(c, 409, 'same-email', 'Email is already canonical');
+    case 'email-conflict':
+      return problem(c, 409, 'email-conflict', 'Email is already reserved');
+    case 'invalid-transition':
+      return problem(c, 409, 'invalid-transition', 'Invalid transition');
     case 'idempotency-key-reused':
       return problem(c, 409, 'idempotency-key-reused', 'Idempotency key reused');
     case 'cooldown-active': {
@@ -704,14 +761,27 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
   });
 
   router.openapi(verifyEmailRoute, async (c) => {
-    const credentialOperations = createCredentialOperations({
-      runtime: requestIdentityRuntime(c, override),
+    c.header('Cache-Control', 'no-store');
+    const runtime = requestIdentityRuntime(c, override);
+    const request = c.req.valid('json');
+    const emailChange = await completeReaderEmailChange({
       db: c.env.DB,
+      runtime,
+      token: request.token,
+      requestId: c.get('requestId'),
     });
-    const result = await credentialOperations.verifyEmail(c.req.valid('json'), c.req.raw.headers);
+    if (emailChange.kind === 'completed') return c.json({ emailVerified: true as const }, 200);
+    if (emailChange.kind === 'verification-invalid') {
+      return credentialProblem(c, { kind: 'verification-invalid' }, 'no-store');
+    }
+    if (emailChange.kind === 'internal-error') {
+      return problem(c, 500, 'internal-error', 'Internal Server Error', undefined, 'no-store');
+    }
+    const credentialOperations = createCredentialOperations({ runtime, db: c.env.DB });
+    const result = await credentialOperations.verifyEmail(request, c.req.raw.headers);
     return result.kind === 'failure'
-      ? credentialProblem(c, result.failure)
-      : c.json(result.value, 200);
+      ? credentialProblem(c, result.failure, 'no-store')
+      : c.json(result.value, 200, { 'Cache-Control': 'no-store' });
   });
 
   router.openapi(requestVerificationRoute, async (c) => {
@@ -1356,6 +1426,92 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
   router.openapi(adminReaderPasswordRecoveryMessageRoute, (c) => {
     const params = c.req.valid('param');
     return handleReaderMessage(c, 'password-recovery', params.userId, c.req.valid('json')) as never;
+  });
+
+  router.openapi(adminReaderEmailChangeRoute, async (c) => {
+    const runtime = requestIdentityRuntime(c, override);
+    c.header('Cache-Control', 'private, no-store');
+    const rejected = guardCookieMutation(c, runtime, 'private, no-store');
+    if (rejected !== null) return rejected as never;
+    const session = await runtime.resolveAdministratorSessionContext(
+      c.req.raw.headers,
+      c.get('requestId'),
+    );
+    if (session === null) return administratorSessionProblem(c) as never;
+    const params = c.req.valid('param');
+    const outcome = await startReaderEmailChange({
+      db: c.env.DB,
+      runtime,
+      administratorId: session.administrator.id,
+      readerId: params.userId,
+      headers: c.req.raw.headers,
+      ifMatch: c.req.header('if-match'),
+      idempotencyKey: c.req.header('idempotency-key'),
+      body: c.req.valid('json'),
+      normalizedPath: READER_EMAIL_CHANGES_PATH,
+      instancePath: new URL(c.req.url).pathname,
+      requestId: c.get('requestId'),
+    });
+    if (outcome.kind !== 'success') return readerEmailChangeProblem(c, outcome) as never;
+    c.header('ETag', `"${String(outcome.value.accountRevision)}"`);
+    return c.json(outcome.value, outcome.status);
+  });
+
+  router.openapi(adminReaderEmailChangeMessageRoute, async (c) => {
+    const runtime = requestIdentityRuntime(c, override);
+    c.header('Cache-Control', 'private, no-store');
+    const rejected = guardCookieMutation(c, runtime, 'private, no-store');
+    if (rejected !== null) return rejected as never;
+    const session = await runtime.resolveAdministratorSessionContext(
+      c.req.raw.headers,
+      c.get('requestId'),
+    );
+    if (session === null) return administratorSessionProblem(c) as never;
+    const params = c.req.valid('param');
+    const outcome = await resendReaderEmailChangeMessage({
+      db: c.env.DB,
+      runtime,
+      administratorId: session.administrator.id,
+      readerId: params.userId,
+      emailChangeId: params.emailChangeId,
+      headers: c.req.raw.headers,
+      idempotencyKey: c.req.header('idempotency-key'),
+      body: c.req.valid('json'),
+      normalizedPath: READER_EMAIL_CHANGE_MESSAGES_PATH,
+      instancePath: new URL(c.req.url).pathname,
+      requestId: c.get('requestId'),
+    });
+    if (outcome.kind !== 'success') return readerEmailChangeProblem(c, outcome) as never;
+    c.header('ETag', `"${String(outcome.value.revision)}"`);
+    return c.json(outcome.value, 202);
+  });
+
+  router.openapi(adminReaderEmailChangeCancelRoute, async (c) => {
+    const runtime = requestIdentityRuntime(c, override);
+    c.header('Cache-Control', 'private, no-store');
+    const rejected = guardCookieMutation(c, runtime, 'private, no-store');
+    if (rejected !== null) return rejected as never;
+    const session = await runtime.resolveAdministratorSessionContext(
+      c.req.raw.headers,
+      c.get('requestId'),
+    );
+    if (session === null) return administratorSessionProblem(c) as never;
+    const params = c.req.valid('param');
+    const outcome = await cancelReaderEmailChange({
+      db: c.env.DB,
+      runtime,
+      administratorId: session.administrator.id,
+      readerId: params.userId,
+      emailChangeId: params.emailChangeId,
+      headers: c.req.raw.headers,
+      ifMatch: c.req.header('if-match'),
+      idempotencyKey: c.req.header('idempotency-key'),
+      normalizedPath: READER_EMAIL_CHANGE_CANCEL_PATH,
+      requestId: c.get('requestId'),
+    });
+    if (outcome.kind !== 'success') return readerEmailChangeProblem(c, outcome) as never;
+    c.header('ETag', `"${String(outcome.value.revision)}"`);
+    return c.json(outcome.value, 200);
   });
 
   router.openapi(adminUserAccountDetailsRoute, async (c) => {

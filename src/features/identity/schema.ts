@@ -1,4 +1,5 @@
 import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { sql } from 'drizzle-orm';
 
 // Identity persistence owned by the identity feature slice (ADR-0002,
 // ADR-0004). These tables back Better Auth through its Drizzle adapter; they
@@ -347,11 +348,7 @@ export const identityReservation = sqliteTable(
     expiresAt: integer('expires_at').notNull(),
   },
   (table) => [
-    uniqueIndex('identity_reservation_scope_value_idx').on(
-      table.kind,
-      table.realm,
-      table.normalizedValue,
-    ),
+    uniqueIndex('identity_reservation_global_value_idx').on(table.kind, table.normalizedValue),
     index('identity_reservation_expiry_idx').on(table.expiresAt),
   ],
 );
@@ -406,6 +403,38 @@ export const readerMessageWorkflow = sqliteTable(
   (table) => [
     uniqueIndex('reader_message_workflow_user_kind_idx').on(table.userId, table.kind),
     index('reader_message_workflow_cooldown_idx').on(table.cooldownUntil),
+  ],
+);
+
+export const readerEmailChangeWorkflow = sqliteTable(
+  'reader_email_change_workflow',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    oldEmail: text('old_email').notNull(),
+    newEmail: text('new_email').notNull(),
+    normalizedNewEmail: text('normalized_new_email').notNull(),
+    state: text('state').notNull(),
+    revision: integer('revision').notNull().default(1),
+    supersedesId: text('supersedes_id'),
+    creatorId: text('creator_id').notNull(),
+    creationKey: text('creation_key').notNull(),
+    expiresAt: integer('expires_at').notNull(),
+    cooldownUntil: integer('cooldown_until').notNull(),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+    lastScheduledAt: integer('last_scheduled_at'),
+    claimToken: text('claim_token'),
+    claimedAt: integer('claimed_at'),
+  },
+  (table) => [
+    uniqueIndex('reader_email_change_pending_user_idx')
+      .on(table.userId)
+      .where(sql`${table.state} = 'pending'`),
+    index('reader_email_change_user_created_idx').on(table.userId, table.createdAt, table.id),
+    index('reader_email_change_expiry_idx').on(table.expiresAt),
   ],
 );
 

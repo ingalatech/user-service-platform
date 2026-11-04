@@ -4,7 +4,7 @@ export function normalizeVerificationTarget(email: string): string {
   return email.trim().toLowerCase();
 }
 
-async function digestToken(token: string): Promise<string> {
+export async function digestVerificationToken(token: string): Promise<string> {
   const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
   return Array.from(new Uint8Array(bytes), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
@@ -18,7 +18,7 @@ export async function reserveLatestVerificationToken(input: {
 }): Promise<void> {
   const table =
     input.realm === 'administrator' ? 'admin_email_verification_token' : 'email_verification_token';
-  const tokenDigest = await digestToken(input.token);
+  const tokenDigest = await digestVerificationToken(input.token);
   const issuedAt = Date.now();
   await input.db
     .prepare(
@@ -47,7 +47,7 @@ export async function consumeLatestVerificationToken(input: {
 }): Promise<boolean> {
   const table =
     input.realm === 'administrator' ? 'admin_email_verification_token' : 'email_verification_token';
-  const tokenDigest = await digestToken(input.token);
+  const tokenDigest = await digestVerificationToken(input.token);
   const result = await input.db
     .prepare(
       `UPDATE "${table}"

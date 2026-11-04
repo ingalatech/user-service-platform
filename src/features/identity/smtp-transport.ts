@@ -1,10 +1,15 @@
 import type { Env } from '../../env.js';
 import { createWorkersSmtpSendMail, SmtpDeliveryError } from './smtp-client.js';
 import type { SmtpFailurePhase } from './smtp-client.js';
-import { renderPasswordResetEmail, renderVerificationEmail } from './mail-templates.js';
+import {
+  renderEmailChangeNotice,
+  renderPasswordResetEmail,
+  renderVerificationEmail,
+} from './mail-templates.js';
 import type {
   AuthMailDeliveryResult,
   AuthMailer,
+  EmailChangeNoticeMessage,
   PasswordResetMessage,
   VerificationMessage,
 } from './mailer.js';
@@ -52,7 +57,7 @@ import { isAllowlisted, parseAllowlist } from './resend-transport.js';
 // provider outcome metadata only. Recipient addresses, action URLs, tokens,
 // message bodies, usernames, passwords and credentials never enter logs.
 
-export type SmtpMailPurpose = 'email-verification' | 'password-reset';
+export type SmtpMailPurpose = 'email-verification' | 'password-reset' | 'email-change-notice';
 
 // Structured telemetry record for a delivery outcome (ADR-0009). Only
 // operational metadata: purpose, transport, recipient domain and provider
@@ -304,6 +309,21 @@ export class SmtpAuthMailer implements AuthMailer {
     });
     return this.deliver({
       purpose: 'password-reset',
+      to: message.to,
+      subject: template.subject,
+      html: template.html,
+      text: template.text,
+    }).then(() => undefined);
+  }
+
+  sendEmailChangeNotice(message: EmailChangeNoticeMessage): Promise<void> {
+    const template = renderEmailChangeNotice({
+      appName: this.config.appName,
+      previousEmail: message.previousEmail,
+      newEmail: message.newEmail,
+    });
+    return this.deliver({
+      purpose: 'email-change-notice',
       to: message.to,
       subject: template.subject,
       html: template.html,
