@@ -600,6 +600,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/admin/audit-events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read global Administrative Audit
+         * @description Returns allowlisted authenticated Administrator commands newest-first from the Event Ledger. It is distinct from Reader Account Activity and never returns personal or secret data.
+         */
+        get: operations["listAdminAuditEvents"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/admin/users/{userId}": {
         parameters: {
             query?: never;
@@ -1170,6 +1190,43 @@ export interface components {
             revision: number;
         };
         AdminAdministratorMessageRequest: Record<string, never>;
+        AdminAuditEvents: {
+            items: components["schemas"]["AdminAuditEvent"][];
+            nextCursor: string | null;
+        };
+        AdminAuditEvent: {
+            id: string;
+            version: number;
+            type: string;
+            /** Format: date-time */
+            occurredAt: string;
+            actor: {
+                id: string;
+                /** @enum {string} */
+                realm: "administrator";
+            };
+            subject: {
+                id: string;
+                /** @enum {string} */
+                realm: "reader" | "administrator";
+            } | null;
+            /** @enum {string} */
+            result: "success" | "failure";
+            requestId: string;
+            problemCode: components["schemas"]["AdminAuditProblemCode"];
+            metadata: components["schemas"]["AdminAuditMetadata"];
+        };
+        /** @enum {string|null} */
+        AdminAuditProblemCode: "bad-request" | "conflict" | "payload-too-large" | "service-unavailable" | "not-found" | "internal-error" | "registration-disabled" | "email-password-disabled" | "email-verification-required" | "invalid-credentials" | "verification-invalid" | "reset-invalid" | "unauthenticated" | "forbidden" | "reader-not-found" | "administrator-not-found" | "administrator-disabled" | "self-disable-forbidden" | "last-operational-administrator" | "invalid-transition" | "no-usable-login-method" | "idempotency-key-reused" | "stale-revision" | "precondition-required" | "cooldown-active" | "delivery-scheduling-failed" | "admin-already-bootstrapped" | "admin-bootstrap-in-progress" | "admin-email-conflict" | null;
+        AdminAuditMetadata: {
+            changed?: boolean;
+            operation?: string;
+            revision?: number;
+            retryAfterSeconds?: number;
+            /** @enum {string} */
+            state?: "committed" | "scheduling-failed";
+            workflowId?: string;
+        } | null;
         AdminReaderDetail: components["schemas"]["AdminUser"] & {
             /** @example 1 */
             revision: number;
@@ -2566,6 +2623,83 @@ export interface operations {
             };
             /** @description Message scheduling failed after the command was committed. */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+        };
+    };
+    listAdminAuditEvents: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+                /** @description Filter by opaque Administrator actor ID. */
+                actorId?: string;
+                /** @description Filter by versioned Event Ledger type. */
+                action?: string;
+                result?: "success" | "failure";
+                /** @description Inclusive lower bound for event occurrence time. */
+                from?: string;
+                /** @description Inclusive upper bound for event occurrence time. */
+                to?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The filtered Administrative Audit page. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminAuditEvents"];
+                };
+            };
+            /** @description Invalid filters or cursor. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description No authoritative Administrator session. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The actor is disabled or lacks Administrator authority. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The audit projection could not be completed. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description Authorization failure as RFC 9457 Problem Details. */
+            default: {
                 headers: {
                     [name: string]: unknown;
                 };

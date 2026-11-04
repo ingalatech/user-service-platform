@@ -13,6 +13,8 @@ import {
   AdminAdministratorAccessResultSchema,
   AdminAdministratorMessageRequestSchema,
   AdminAdministratorMessageSchema,
+  AdminAuditEventsQuerySchema,
+  AdminAuditEventsSchema,
   AdminMeSchema,
   AdminUserDetailParamsSchema,
   AdminUserListQuerySchema,
@@ -683,6 +685,41 @@ export const adminAdministratorPasswordRecoveryMessageRoute = createRoute({
       description: 'The recovery message was accepted for scheduling.',
     },
     ...adminAdministratorMessageResponses,
+  },
+});
+
+export const adminAuditEventsRoute = createRoute({
+  method: 'get',
+  path: '/admin/audit-events',
+  operationId: 'listAdminAuditEvents',
+  summary: 'Read global Administrative Audit',
+  description:
+    'Returns allowlisted authenticated Administrator commands newest-first from the Event Ledger. ' +
+    'It is distinct from Reader Account Activity and never returns personal or secret data.',
+  tags: ['admin'],
+  request: { query: AdminAuditEventsQuerySchema },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: AdminAuditEventsSchema } },
+      description: 'The filtered Administrative Audit page.',
+    },
+    400: {
+      content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+      description: 'Invalid filters or cursor.',
+    },
+    401: {
+      content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+      description: 'No authoritative Administrator session.',
+    },
+    403: {
+      content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+      description: 'The actor is disabled or lacks Administrator authority.',
+    },
+    500: {
+      content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+      description: 'The audit projection could not be completed.',
+    },
+    ...problemResponses('Authorization failure as RFC 9457 Problem Details.'),
   },
 });
 

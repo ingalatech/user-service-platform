@@ -9,6 +9,7 @@ import {
   readAdminAdministratorActivity,
   setAdminAdministratorAccess,
 } from './admin-administrators.js';
+import { readAdminAuditEvents } from './admin-audit.js';
 import {
   ADMINISTRATOR_EMAIL_VERIFICATION_MESSAGE_PATH,
   ADMINISTRATOR_PASSWORD_RECOVERY_MESSAGE_PATH,
@@ -63,6 +64,7 @@ import {
   adminAdministratorAccessRoute,
   adminAdministratorVerificationMessageRoute,
   adminAdministratorPasswordRecoveryMessageRoute,
+  adminAuditEventsRoute,
   adminBootstrapLegacyRoute,
   adminCheckPasswordResetRoute,
   adminLoginRoute,
@@ -1192,6 +1194,34 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
         c.req.valid('json'),
       ) as never,
   );
+
+  router.openapi(adminAuditEventsRoute, async (c) => {
+    c.header('Cache-Control', 'private, no-store');
+    const runtime = requestIdentityRuntime(c, override);
+    const session = await runtime.resolveAdministratorSessionContext(
+      c.req.raw.headers,
+      c.get('requestId'),
+    );
+    if (session === null) return administratorSessionProblem(c);
+    const outcome = await readAdminAuditEvents({
+      auth: runtime.administration(),
+      db: c.env.DB,
+      administratorId: session.administrator.id,
+      headers: c.req.raw.headers,
+      query: c.req.valid('query'),
+    });
+    if (outcome.kind === 'forbidden') {
+      return problem(c, 403, 'forbidden', 'Forbidden', 'Administrator access is required.');
+    }
+    if (outcome.kind === 'administrator-disabled') {
+      return problem(c, 403, 'administrator-disabled', 'Administrator disabled');
+    }
+    if (outcome.kind === 'bad-cursor') return problem(c, 400, 'bad-request', 'Bad Request');
+    if (outcome.kind === 'internal-error') {
+      return problem(c, 500, 'internal-error', 'Internal Server Error');
+    }
+    return c.json(outcome.value, 200);
+  });
 
   router.openapi(adminUserDetailRoute, async (c) => {
     const runtime = requestIdentityRuntime(c, override);

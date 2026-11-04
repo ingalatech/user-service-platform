@@ -12,6 +12,8 @@ export {
   AdminAdministratorMessageSchema,
   AdminAdministratorParamsSchema,
   AdminAdministratorSchema,
+  AdminAuditEventsQuerySchema,
+  AdminAuditEventsSchema,
   AdminMeSchema,
   AdminReaderEmailVerificationSchema,
   AdminReaderActivitySchema,

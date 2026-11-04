@@ -8,6 +8,8 @@ import {
   AdminAdministratorListSchema,
   AdminAdministratorMessageSchema,
   AdminAdministratorParamsSchema,
+  AdminAuditEventsQuerySchema,
+  AdminAuditEventsSchema,
   AdminMeSchema,
   AdminReaderEmailVerificationSchema,
   AdminReaderActivitySchema,
@@ -28,6 +30,8 @@ import {
   type AdminAdministratorListQuery,
   type AdminAdministratorMessage,
   type AdminAdministratorParams,
+  type AdminAuditEvents,
+  type AdminAuditEventsQuery,
   type AdminReaderActivity,
   type AdminReaderDetail,
   type AdminReaderEmailVerification,
@@ -228,6 +232,26 @@ export async function adminAdministratorActivity(
       undefined,
       signal,
     ),
+  );
+  if (!parsed.success) throw new ApiError(502);
+  return parsed.data;
+}
+
+export async function adminAuditEvents(
+  query: AdminAuditEventsQuery,
+  signal?: AbortSignal,
+): Promise<AdminAuditEvents> {
+  const input = AdminAuditEventsQuerySchema.safeParse(query);
+  if (!input.success) throw new ApiError(400);
+  const search = new URLSearchParams({ limit: String(input.data.limit) });
+  if (input.data.cursor !== undefined) search.set('cursor', input.data.cursor);
+  if (input.data.actorId !== undefined) search.set('actorId', input.data.actorId);
+  if (input.data.action !== undefined) search.set('action', input.data.action);
+  if (input.data.result !== undefined) search.set('result', input.data.result);
+  if (input.data.from !== undefined) search.set('from', input.data.from);
+  if (input.data.to !== undefined) search.set('to', input.data.to);
+  const parsed = AdminAuditEventsSchema.safeParse(
+    await request(`/v1/admin/audit-events?${search.toString()}`, undefined, signal),
   );
   if (!parsed.success) throw new ApiError(502);
   return parsed.data;
