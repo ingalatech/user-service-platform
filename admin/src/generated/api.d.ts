@@ -138,7 +138,7 @@ export interface paths {
         put?: never;
         /**
          * Complete email verification
-         * @description Marks the email address verified from the token delivered by the verification action. Clients extract the `token` query parameter from the action URL and submit it here. Invalid or expired actions fail safely without revealing token material.
+         * @description Completes either ordinary email verification or an administrative Reader email-change workflow. For email change, the new address is promoted to canonical and verified, all Reader sessions are revoked, and earlier verification, recovery and email-change workflows are invalidated atomically. Clients extract the `token` query parameter from the action URL and submit it here. Invalid or expired actions return the stable `verification-invalid` Problem Details code without revealing token material.
          */
         post: operations["verifyIdentityEmail"];
         delete?: never;
@@ -720,6 +720,66 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/admin/users/{userId}/email-changes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create or replace a pending Reader email change
+         * @description Reserves a normalized email for an active Reader and schedules verification to the new address plus a notice to the current address. The canonical email remains unchanged until the public verification action completes.
+         */
+        post: operations["startAdminReaderEmailChange"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/users/{userId}/email-changes/{emailChangeId}/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resend a pending Reader email-change message
+         * @description Rotates the verification token and schedules the verification and current-address notice for a pending Reader email-change workflow.
+         */
+        post: operations["resendAdminReaderEmailChangeMessage"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/users/{userId}/email-changes/{emailChangeId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Cancel a pending Reader email change
+         * @description Cancels a pending email-change workflow with its workflow revision precondition and releases the email reservation.
+         */
+        delete: operations["cancelAdminReaderEmailChange"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/admin/users/{userId}/account-details": {
         parameters: {
             query?: never;
@@ -1217,7 +1277,7 @@ export interface components {
             metadata: components["schemas"]["AdminAuditMetadata"];
         };
         /** @enum {string|null} */
-        AdminAuditProblemCode: "bad-request" | "conflict" | "payload-too-large" | "service-unavailable" | "not-found" | "internal-error" | "registration-disabled" | "email-password-disabled" | "email-verification-required" | "invalid-credentials" | "verification-invalid" | "reset-invalid" | "unauthenticated" | "forbidden" | "reader-not-found" | "administrator-not-found" | "administrator-disabled" | "self-disable-forbidden" | "last-operational-administrator" | "invalid-transition" | "no-usable-login-method" | "idempotency-key-reused" | "stale-revision" | "precondition-required" | "cooldown-active" | "delivery-scheduling-failed" | "admin-already-bootstrapped" | "admin-bootstrap-in-progress" | "admin-email-conflict" | null;
+        AdminAuditProblemCode: "bad-request" | "conflict" | "payload-too-large" | "service-unavailable" | "not-found" | "internal-error" | "registration-disabled" | "email-password-disabled" | "email-verification-required" | "invalid-credentials" | "verification-invalid" | "reset-invalid" | "unauthenticated" | "forbidden" | "reader-not-found" | "administrator-not-found" | "administrator-disabled" | "self-disable-forbidden" | "last-operational-administrator" | "invalid-transition" | "no-usable-login-method" | "idempotency-key-reused" | "stale-revision" | "precondition-required" | "cooldown-active" | "delivery-scheduling-failed" | "admin-already-bootstrapped" | "admin-bootstrap-in-progress" | "admin-email-conflict" | "same-email" | "email-conflict" | "email-change-not-found" | null;
         AdminAuditMetadata: {
             changed?: boolean;
             operation?: string;
@@ -1225,6 +1285,7 @@ export interface components {
             retryAfterSeconds?: number;
             /** @enum {string} */
             state?: "committed" | "scheduling-failed";
+            supersedesId?: string;
             workflowId?: string;
         } | null;
         AdminReaderDetail: components["schemas"]["AdminUser"] & {
@@ -1240,16 +1301,52 @@ export interface components {
                 provider?: "google" | "facebook" | "apple";
             }[];
             /** @description Only persisted active workflows; never inferred or fabricated. */
-            activeWorkflows: {
+            activeWorkflows: ({
                 id: string;
                 /** @enum {string} */
-                type: "email-change" | "deletion-request" | "email-verification-message" | "password-recovery-message";
+                type: "email-verification-message";
+                state: string;
+                /** Format: date-time */
+                createdAt: string;
+                /** Format: date-time */
+                cooldownUntil: string;
+            } | {
+                id: string;
+                /** @enum {string} */
+                type: "password-recovery-message";
+                state: string;
+                /** Format: date-time */
+                createdAt: string;
+                /** Format: date-time */
+                cooldownUntil: string;
+            } | {
+                id: string;
+                /** @enum {string} */
+                type: "deletion-request";
                 state: string;
                 /** Format: date-time */
                 createdAt: string;
                 /** Format: date-time */
                 cooldownUntil?: string;
-            }[];
+            } | {
+                id: string;
+                /** @enum {string} */
+                type: "email-change";
+                /** @enum {string} */
+                state: "pending";
+                /** Format: date-time */
+                createdAt: string;
+                /**
+                 * Format: email
+                 * @example ada@example.com
+                 */
+                email: string;
+                /** Format: date-time */
+                expiresAt: string;
+                /** Format: date-time */
+                cooldownUntil: string;
+                revision: number;
+            })[];
         };
         AdminReaderSummary: {
             /** Format: date-time */
@@ -1270,7 +1367,7 @@ export interface components {
         AdminReaderActivityEvent: {
             id: string;
             /** @enum {string} */
-            type: "email-verified" | "email-verification-requested" | "password-recovery-requested" | "email-changed" | "social-identity-unlinked" | "sessions-revoked" | "access-disabled" | "access-rehabilitated" | "deletion-requested" | "deletion-approved" | "deletion-rejected" | "deletion-cancelled";
+            type: "email-verified" | "email-verification-requested" | "password-recovery-requested" | "email-change-requested" | "email-change-cancelled" | "email-changed" | "social-identity-unlinked" | "sessions-revoked" | "access-disabled" | "access-rehabilitated" | "deletion-requested" | "deletion-approved" | "deletion-rejected" | "deletion-cancelled";
             /** Format: date-time */
             occurredAt: string;
             actor: {
@@ -1300,6 +1397,50 @@ export interface components {
             revision: number;
         };
         AdminReaderMessageRequest: Record<string, never>;
+        AdminReaderEmailChange: {
+            workflowId: string;
+            /**
+             * Format: email
+             * @example ada@example.com
+             */
+            email: string;
+            /** @enum {string} */
+            state: "pending";
+            changed: boolean;
+            revision: number;
+            accountRevision: number;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            expiresAt: string;
+            /** Format: date-time */
+            cooldownUntil: string;
+        };
+        AdminReaderEmailChangeRequest: {
+            /**
+             * Format: email
+             * @example ada@example.com
+             */
+            email: string;
+        };
+        AdminReaderEmailChangeMessage: {
+            workflowId: string;
+            /** @enum {string} */
+            state: "pending";
+            /** Format: date-time */
+            cooldownUntil: string;
+            /** Format: date-time */
+            expiresAt: string;
+            revision: number;
+        };
+        AdminReaderEmailChangeCommand: Record<string, never>;
+        AdminReaderEmailChangeCancel: {
+            workflowId: string;
+            /** @enum {string} */
+            state: "pending" | "cancelled" | "completed" | "superseded" | "expired";
+            changed: boolean;
+            revision: number;
+        };
         AdminBootstrapResult: {
             /** @example abc123 */
             id: string;
@@ -1611,13 +1752,31 @@ export interface operations {
             };
         };
         responses: {
-            /** @description The email address is verified. */
+            /** @description Ordinary verification completed, or email change atomically promoted and verified the new canonical address while revoking sessions. */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
                     "application/json": components["schemas"]["VerifyEmailResult"];
+                };
+            };
+            /** @description Invalid or expired action; stable code `verification-invalid`. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description Atomic completion failed; no partial email-change effects are committed. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
                 };
             };
             /** @description Verification failure as RFC 9457 Problem Details. */
@@ -3155,6 +3314,370 @@ export interface operations {
                 };
             };
             /** @description Message scheduling failed after the command was committed. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+        };
+    };
+    startAdminReaderEmailChange: {
+        parameters: {
+            query?: never;
+            header?: {
+                "if-match"?: string;
+                "idempotency-key"?: string;
+            };
+            path: {
+                /** @description Opaque administrative User identifier. */
+                userId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["AdminReaderEmailChangeRequest"];
+            };
+        };
+        responses: {
+            /** @description An existing pending email-change workflow was replaced. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminReaderEmailChange"];
+                };
+            };
+            /** @description A new email-change workflow was created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminReaderEmailChange"];
+                };
+            };
+            /** @description Invalid command input. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description No authoritative Administrator session or invalid verification token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The actor is not allowed to perform the command. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description Reader or email-change workflow not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The command conflicts with the canonical email or workflow state. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The supplied revision is stale. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description A required precondition or idempotency key is missing. */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The email-change message cooldown is active. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The command could not be audited or completed. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description Message scheduling failed after the workflow was committed. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+        };
+    };
+    resendAdminReaderEmailChangeMessage: {
+        parameters: {
+            query?: never;
+            header?: {
+                "idempotency-key"?: string;
+            };
+            path: {
+                userId: string;
+                emailChangeId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["AdminReaderEmailChangeCommand"];
+            };
+        };
+        responses: {
+            /** @description The email-change messages were accepted for scheduling. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminReaderEmailChangeMessage"];
+                };
+            };
+            /** @description Invalid command input. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description No authoritative Administrator session or invalid verification token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The actor is not allowed to perform the command. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description Reader or email-change workflow not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The command conflicts with the canonical email or workflow state. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The supplied revision is stale. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description A required precondition or idempotency key is missing. */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The email-change message cooldown is active. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The command could not be audited or completed. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description Message scheduling failed after the workflow was committed. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+        };
+    };
+    cancelAdminReaderEmailChange: {
+        parameters: {
+            query?: never;
+            header?: {
+                "if-match"?: string;
+                "idempotency-key"?: string;
+            };
+            path: {
+                userId: string;
+                emailChangeId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The current or newly cancelled workflow state. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminReaderEmailChangeCancel"];
+                };
+            };
+            /** @description Invalid command input. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description No authoritative Administrator session or invalid verification token. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The actor is not allowed to perform the command. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description Reader or email-change workflow not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The command conflicts with the canonical email or workflow state. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The supplied revision is stale. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description A required precondition or idempotency key is missing. */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The email-change message cooldown is active. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The command could not be audited or completed. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description Message scheduling failed after the workflow was committed. */
             503: {
                 headers: {
                     [name: string]: unknown;

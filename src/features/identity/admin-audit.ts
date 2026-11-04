@@ -23,6 +23,12 @@ const ADMIN_AUDIT_EVENT_ALLOWLIST = [
   { version: 1, type: 'email-verification-attempt' },
   { version: 1, type: 'email-verification-requested' },
   { version: 1, type: 'email-verified' },
+  { version: 1, type: 'email-change-attempt' },
+  { version: 1, type: 'email-change-requested' },
+  { version: 1, type: 'email-change-message-attempt' },
+  { version: 1, type: 'email-change-message-requested' },
+  { version: 1, type: 'email-change-cancelled' },
+  { version: 1, type: 'email-changed' },
   { version: 1, type: 'password-recovery-attempt' },
   { version: 1, type: 'password-recovery-requested' },
 ] as const;
@@ -36,6 +42,12 @@ const METADATA_FIELDS_BY_TYPE: Readonly<Record<string, readonly string[]>> = {
   'email-verification-attempt': ['changed', 'retryAfterSeconds', 'state'],
   'email-verified': ['operation', 'revision'],
   'email-verification-requested': ['workflowId'],
+  'email-change-attempt': ['changed', 'revision', 'state', 'supersedesId'],
+  'email-change-requested': ['workflowId', 'supersedesId'],
+  'email-change-message-attempt': ['retryAfterSeconds', 'state'],
+  'email-change-message-requested': ['workflowId'],
+  'email-change-cancelled': ['changed', 'revision', 'workflowId'],
+  'email-changed': ['revision', 'workflowId'],
   'password-recovery-attempt': ['retryAfterSeconds', 'state'],
   'password-recovery-requested': ['workflowId'],
 };
@@ -139,6 +151,13 @@ function safeMetadata(type: string, serialized: string | null): AdminAuditEvent[
       /^[A-Za-z0-9_-]{1,128}$/.test(value)
     ) {
       safe.workflowId = value;
+    }
+    if (
+      field === 'supersedesId' &&
+      typeof value === 'string' &&
+      /^[A-Za-z0-9_-]{1,128}$/.test(value)
+    ) {
+      safe.supersedesId = value;
     }
     if (
       field === 'operation' &&

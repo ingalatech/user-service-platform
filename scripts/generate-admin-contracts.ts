@@ -151,6 +151,11 @@ export type AdminUser = components['schemas']['AdminUser'];
 export type AdminReaderDetail = components['schemas']['AdminReaderDetail'];
 export type AdminReaderActivity = components['schemas']['AdminReaderActivity'];
 export type AdminReaderEmailVerification = components['schemas']['AdminReaderEmailVerification'];
+export type AdminReaderEmailChange = components['schemas']['AdminReaderEmailChange'];
+export type AdminReaderEmailChangeCancel = components['schemas']['AdminReaderEmailChangeCancel'];
+export type AdminReaderEmailChangeMessage = components['schemas']['AdminReaderEmailChangeMessage'];
+export type AdminReaderEmailChangeRequest = components['schemas']['AdminReaderEmailChangeRequest'];
+export type AdminReaderEmailChangeCommand = components['schemas']['AdminReaderEmailChangeCommand'];
 export type AdminReaderMessage = components['schemas']['AdminReaderMessage'];
 export type AdminReaderMessageRequest = components['schemas']['AdminReaderMessageRequest'];
 export type AdminUserList = components['schemas']['AdminUserList'];
@@ -187,8 +192,14 @@ export type AdminAuditEventsQuery = {
   to?: AdminAuditEventsQueryParameters['to'];
 };
 type AdminUserDetailPathParameters = operations['getAdminUser']['parameters']['path'];
+type AdminReaderEmailChangePathParameters =
+  operations['resendAdminReaderEmailChangeMessage']['parameters']['path'];
 export type AdminUserDetailParams = {
   userId: AdminUserDetailPathParameters['userId'];
+};
+export type AdminReaderEmailChangeParams = {
+  userId: AdminReaderEmailChangePathParameters['userId'];
+  emailChangeId: AdminReaderEmailChangePathParameters['emailChangeId'];
 };
 export type AdminUserListQuery = {
   limit: NonNullable<AdminUserListQueryParameters['limit']>;
@@ -211,6 +222,12 @@ export declare const AdminAdministratorParamsSchema: ZodType<AdminAdministratorP
 export declare const AdminReaderActivitySchema: ZodType<AdminReaderActivity>;
 export declare const AdminReaderDetailSchema: ZodType<AdminReaderDetail>;
 export declare const AdminReaderEmailVerificationSchema: ZodType<AdminReaderEmailVerification>;
+export declare const AdminReaderEmailChangeSchema: ZodType<AdminReaderEmailChange>;
+export declare const AdminReaderEmailChangeCancelSchema: ZodType<AdminReaderEmailChangeCancel>;
+export declare const AdminReaderEmailChangeMessageSchema: ZodType<AdminReaderEmailChangeMessage>;
+export declare const AdminReaderEmailChangeRequestSchema: ZodType<AdminReaderEmailChangeRequest>;
+export declare const AdminReaderEmailChangeCommandSchema: ZodType<AdminReaderEmailChangeCommand>;
+export declare const AdminReaderEmailChangeParamsSchema: ZodType<AdminReaderEmailChangeParams>;
 export declare const AdminReaderMessageSchema: ZodType<AdminReaderMessage>;
 export declare const AdminReaderMessageRequestSchema: ZodType<AdminReaderMessageRequest>;
 export declare const AccountDetailsSchema: ZodType<AccountDetails>;

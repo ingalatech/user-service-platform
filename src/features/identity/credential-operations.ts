@@ -23,7 +23,10 @@ import type { PasswordPolicy, PasswordPolicyViolation } from './password-policy.
 import { isCurrentPasswordResetToken } from './password-reset-token.js';
 import type { IdentityRuntime } from './identity-runtime.js';
 import { toAuthenticatedUser } from './session.js';
-import { consumeLatestVerificationToken } from './verification-token.js';
+import {
+  consumeLatestVerificationToken,
+  normalizeVerificationTarget,
+} from './verification-token.js';
 
 export type CredentialFailure =
   | { readonly kind: 'email-password-disabled' }
@@ -166,6 +169,18 @@ export function createCredentialOperations(input: CredentialOperationsInput): Cr
   const realm = input.realm ?? 'reader';
   const auth = () => (realm === 'reader' ? runtime.authentication() : runtime.administration());
 
+  async function readerEmailIsReserved(email: string): Promise<boolean> {
+    if (realm !== 'reader') return false;
+    const reservation = await db
+      .prepare(
+        `SELECT 1 AS present FROM identity_reservation
+         WHERE kind = 'email' AND normalized_value = ? AND expires_at > ? LIMIT 1`,
+      )
+      .bind(normalizeVerificationTarget(email), Date.now())
+      .first<{ present: number }>();
+    return reservation !== null;
+  }
+
   async function registerIdentity(
     request: Pick<RegisterRequest, 'email' | 'password'>,
     technicalName: string,
@@ -177,6 +192,7 @@ export function createCredentialOperations(input: CredentialOperationsInput): Cr
     if (!policy.registrationEnabled) return failure({ kind: 'registration-disabled' });
     const invalidPassword = passwordPolicyFailure(request.password, policy.passwordPolicy);
     if (invalidPassword !== null) return failure(invalidPassword);
+    if (await readerEmailIsReserved(request.email)) return failure({ kind: 'bad-request' });
 
     const outcome = await callIdentityEngine(() =>
       engine.api.signUpEmail({
@@ -185,7 +201,11 @@ export function createCredentialOperations(input: CredentialOperationsInput): Cr
         asResponse: true,
       }),
     );
-    if (!(outcome instanceof Response)) return failure({ kind: 'internal-error' });
+    if (!(outcome instanceof Response)) {
+      return (await readerEmailIsReserved(request.email))
+        ? failure({ kind: 'bad-request' })
+        : failure({ kind: 'internal-error' });
+    }
     if (!outcome.ok) return failure({ kind: 'bad-request' });
     const user = readUser(await outcome.json().catch(() => null));
     return user === null ? failure({ kind: 'internal-error' }) : success(user);

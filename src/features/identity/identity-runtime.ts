@@ -11,20 +11,26 @@ import {
   createBootstrapIdentityAuth,
   createIdentityAuth,
   createReaderStateAuth,
+  createReaderEmailChangeToken,
+  readReaderEmailChangeToken as readEmailChangeTokenClaims,
 } from './auth.js';
-import type { IdentityAuthInput, ReaderStateOptions } from './auth.js';
+import type {
+  IdentityAuthInput,
+  ReaderEmailChangeTokenClaims,
+  ReaderStateOptions,
+} from './auth.js';
 import { resolveReaderStateConfig } from './reader-state.js';
 import {
   evaluateCookieMutationOrigin,
   resolveConsumerOrigins,
   resolveGatewayOrigins,
 } from './origin-guard.js';
-import type { AuthMailer } from './mailer.js';
-import type { AuthMailTask } from './mailer.js';
+import type { AuthMailer, AuthMailTask } from './mailer.js';
 import { deferredAuthMailer, resolveAuthMailer } from './mailer.js';
 import { resolveAuthPolicy } from './policy.js';
 import type { AuthPolicy } from './policy.js';
 import { resolveAuthSecret } from './secret.js';
+import { VERIFY_EMAIL_ACTION_PATH, buildAuthActionUrl } from './action-urls.js';
 import type {
   AdministratorSessionContext,
   ResolveSessionInput,
@@ -35,6 +41,20 @@ import { toAdministratorSessionContext, toSessionContext } from './session.js';
 import { identitySchema } from './schema.js';
 import { base64url } from 'jose';
 import { z } from 'zod';
+import { digestVerificationToken } from './verification-token.js';
+
+interface PreparedReaderEmailChangeMessages {
+  readonly tokenDigest: string;
+  readonly expiresAt: number;
+  readonly retryPayload: string;
+}
+
+type SealedAuthMailTasks =
+  | AuthMailTask
+  | {
+      readonly kind: 'reader-email-change-workflow';
+      readonly messages: [AuthMailTask, AuthMailTask];
+    };
 
 // A tagged mode describes the behavior the caller needs; mail transport
 // construction and execution-context scheduling remain implementation details.
@@ -67,6 +87,15 @@ export interface IdentityRuntime {
     payload: string,
   ): Promise<'accepted' | 'rejected' | 'invalid-envelope'>;
   retryAdministratorMessageScheduling(
+    payload: string,
+  ): Promise<'accepted' | 'rejected' | 'invalid-envelope'>;
+  prepareReaderEmailChangeMessages(input: {
+    readonly currentEmail: string;
+    readonly newEmail: string;
+    readonly workflowId: string;
+  }): Promise<PreparedReaderEmailChangeMessages | null>;
+  readReaderEmailChangeToken(token: string): Promise<ReaderEmailChangeTokenClaims | null>;
+  retryReaderEmailChangeScheduling(
     payload: string,
   ): Promise<'accepted' | 'rejected' | 'invalid-envelope'>;
   bootstrapAdministrator(userId: string): ReturnType<typeof createBootstrapIdentityAuth>;
@@ -149,7 +178,7 @@ function createBackgroundScheduler(input: IdentityRuntimeInput): (task: Promise<
   };
 }
 
-const sealedAuthMailTaskSchema = z.discriminatedUnion('kind', [
+const singleAuthMailTaskSchema = z.discriminatedUnion('kind', [
   z.object({
     kind: z.literal('email-verification'),
     message: z.object({ to: z.string(), url: z.string(), token: z.string() }),
@@ -158,6 +187,18 @@ const sealedAuthMailTaskSchema = z.discriminatedUnion('kind', [
     kind: z.literal('password-recovery'),
     message: z.object({ to: z.string(), url: z.string(), token: z.string() }),
   }),
+  z.object({
+    kind: z.literal('email-change-notice'),
+    message: z.object({ to: z.string(), previousEmail: z.string(), newEmail: z.string() }),
+  }),
+]);
+
+const sealedAuthMailTaskSchema = z.union([
+  singleAuthMailTaskSchema,
+  z.object({
+    kind: z.literal('reader-email-change-workflow'),
+    messages: z.tuple([singleAuthMailTaskSchema, singleAuthMailTaskSchema]),
+  }),
 ]);
 
 async function authMailEncryptionKey(secret: string) {
@@ -165,7 +206,7 @@ async function authMailEncryptionKey(secret: string) {
   return crypto.subtle.importKey('raw', digest, 'AES-GCM', false, ['encrypt', 'decrypt']);
 }
 
-async function sealAuthMailTask(task: AuthMailTask, secret: string): Promise<string> {
+async function sealAuthMailTask(task: SealedAuthMailTasks, secret: string): Promise<string> {
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const plaintext = new TextEncoder().encode(JSON.stringify(task));
   const ciphertext = await crypto.subtle.encrypt(
@@ -176,7 +217,7 @@ async function sealAuthMailTask(task: AuthMailTask, secret: string): Promise<str
   return `v1.${base64url.encode(iv)}.${base64url.encode(new Uint8Array(ciphertext))}`;
 }
 
-async function openAuthMailTask(payload: string, secret: string): Promise<AuthMailTask> {
+async function openAuthMailTask(payload: string, secret: string): Promise<SealedAuthMailTasks> {
   const [version, encodedIv, encodedCiphertext, extra] = payload.split('.');
   if (version !== 'v1' || encodedIv === undefined || encodedCiphertext === undefined || extra) {
     throw new Error('Invalid sealed auth mail task.');
@@ -191,7 +232,7 @@ async function openAuthMailTask(payload: string, secret: string): Promise<AuthMa
 }
 
 function createAcceptedScheduler(input: IdentityRuntimeInput) {
-  return (mailer: AuthMailer, task: AuthMailTask): Promise<void> => {
+  return (mailer: AuthMailer, envelope: SealedAuthMailTasks): Promise<void> => {
     let resolveTask!: () => void;
     let rejectTask!: (reason: unknown) => void;
     const deferred = new Promise<void>((resolve, reject) => {
@@ -209,11 +250,16 @@ function createAcceptedScheduler(input: IdentityRuntimeInput) {
       throw error;
     }
     try {
-      const delivery =
-        task.kind === 'email-verification'
-          ? mailer.sendVerificationEmail(task.message)
-          : mailer.sendPasswordResetEmail(task.message);
-      delivery.then(resolveTask, rejectTask);
+      const tasks =
+        envelope.kind === 'reader-email-change-workflow' ? envelope.messages : [envelope];
+      const deliveries = tasks.map((task) => {
+        if (task.kind === 'email-verification') return mailer.sendVerificationEmail(task.message);
+        if (task.kind === 'password-recovery') return mailer.sendPasswordResetEmail(task.message);
+        return mailer.sendEmailChangeNotice(task.message);
+      });
+      Promise.all(deliveries).then(() => {
+        resolveTask();
+      }, rejectTask);
     } catch (error) {
       rejectTask(error);
     }
@@ -487,7 +533,7 @@ export function createIdentityRuntime(input: IdentityRuntimeInput) {
     payload: string,
   ): Promise<'accepted' | 'rejected' | 'invalid-envelope'> {
     const authInput = resolveAuthInput(realm, 'synchronous');
-    let task: AuthMailTask;
+    let task: SealedAuthMailTasks;
     try {
       task = await openAuthMailTask(payload, authInput.secret);
     } catch {
@@ -498,6 +544,70 @@ export function createIdentityRuntime(input: IdentityRuntimeInput) {
       return 'accepted';
     } catch {
       return 'rejected';
+    }
+  }
+
+  async function prepareReaderEmailChangeMessages(input: {
+    readonly currentEmail: string;
+    readonly newEmail: string;
+    readonly workflowId: string;
+  }): Promise<PreparedReaderEmailChangeMessages | null> {
+    try {
+      const authInput = resolveAuthInput('reader', 'synchronous');
+      const expiresAt = Date.now() + authInput.policy.emailVerificationTTLSeconds * 1_000;
+      const token = await createReaderEmailChangeToken({
+        secret: authInput.secret,
+        currentEmail: input.currentEmail,
+        newEmail: input.newEmail,
+        workflowId: input.workflowId,
+        expiresInSeconds: authInput.policy.emailVerificationTTLSeconds,
+      });
+      const verificationMessage = {
+        to: input.newEmail,
+        token,
+        url: buildAuthActionUrl({
+          varName: 'AUTH_VERIFY_EMAIL_ACTION_URL',
+          configured: authInput.verifyEmailActionURL ?? '',
+          requestOrigin: authInput.baseURL,
+          fallbackPath: VERIFY_EMAIL_ACTION_PATH,
+          token,
+        }),
+      };
+      const retryPayload = await sealAuthMailTask(
+        {
+          kind: 'reader-email-change-workflow',
+          messages: [
+            { kind: 'email-verification', message: verificationMessage },
+            {
+              kind: 'email-change-notice',
+              message: {
+                to: input.currentEmail,
+                previousEmail: input.currentEmail,
+                newEmail: input.newEmail,
+              },
+            },
+          ],
+        },
+        authInput.secret,
+      );
+      return {
+        tokenDigest: await digestVerificationToken(token),
+        expiresAt,
+        retryPayload,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  async function readReaderEmailChangeToken(
+    token: string,
+  ): Promise<ReaderEmailChangeTokenClaims | null> {
+    try {
+      const authInput = resolveAuthInput('reader', 'deferred');
+      return await readEmailChangeTokenClaims({ secret: authInput.secret, token });
+    } catch {
+      return null;
     }
   }
 
@@ -513,6 +623,9 @@ export function createIdentityRuntime(input: IdentityRuntimeInput) {
     retryReaderMessageScheduling: (payload) => retryMessageScheduling('reader', payload),
     retryAdministratorMessageScheduling: (payload) =>
       retryMessageScheduling('administrator', payload),
+    prepareReaderEmailChangeMessages,
+    readReaderEmailChangeToken,
+    retryReaderEmailChangeScheduling: (payload) => retryMessageScheduling('reader', payload),
     administration: () => adminAuth('deferred'),
     bootstrapAdministrator: createBootstrapAuth,
     readerState: readerStateAuth,

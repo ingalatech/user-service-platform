@@ -541,6 +541,7 @@ export async function forceReaderEmailVerification(input: {
   const nextRevision = changed ? revision + 1 : revision;
   if (changed) {
     const now = Date.now();
+    const userUpdatedAt = Math.floor(now / 1_000);
     const mutationToken = opaqueId();
     const fenced = (): string =>
       `EXISTS (
@@ -581,7 +582,7 @@ export async function forceReaderEmailVerification(input: {
             `UPDATE user SET email_verified = 1, updated_at = ?
              WHERE id = ? AND ${fenced()}`,
           )
-          .bind(now, target.id, target.id, nextRevision, mutationToken),
+          .bind(userUpdatedAt, target.id, target.id, nextRevision, mutationToken),
         input.db
           .prepare(
             `DELETE FROM email_verification_token

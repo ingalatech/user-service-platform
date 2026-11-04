@@ -7,6 +7,8 @@ const ACTIVITY_TYPES = [
   'email-verified',
   'email-verification-requested',
   'password-recovery-requested',
+  'email-change-requested',
+  'email-change-cancelled',
   'email-changed',
   'social-identity-unlinked',
   'sessions-revoked',

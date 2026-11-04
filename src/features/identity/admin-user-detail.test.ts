@@ -4,6 +4,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '../../app.js';
 import type { Env } from '../../env.js';
 import { createIdentityRuntime } from './identity-runtime.js';
+import { AdminReaderDetailSchema } from './contract.js';
 import {
   READER_EMAIL_VERIFICATION_MESSAGE_PATH,
   requestReaderMessage,
@@ -595,6 +596,9 @@ describe('Reader verification and recovery commands', () => {
     expect(await forced.json()).toMatchObject({ emailVerified: true, changed: true, revision: 2 });
     const refreshedDetail = await get(`/v1/admin/users/${reader.id}`, { cookie });
     expect(refreshedDetail.status).toBe(200);
+    const refreshedDetailPayload: unknown = await refreshedDetail.json();
+    const refreshedReader = AdminReaderDetailSchema.safeParse(refreshedDetailPayload);
+    expect(refreshedReader.success).toBe(true);
     const invalidated = await workerEnv.DB.prepare(
       `SELECT
           (SELECT COUNT(*) FROM email_verification_token WHERE target_email = ?) AS app_tokens,

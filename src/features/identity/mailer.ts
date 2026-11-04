@@ -20,9 +20,16 @@ export interface PasswordResetMessage {
   readonly expiresAt?: Date;
 }
 
+export interface EmailChangeNoticeMessage {
+  readonly to: string;
+  readonly previousEmail: string;
+  readonly newEmail: string;
+}
+
 export type AuthMailTask =
   | { readonly kind: 'email-verification'; readonly message: VerificationMessage }
-  | { readonly kind: 'password-recovery'; readonly message: PasswordResetMessage };
+  | { readonly kind: 'password-recovery'; readonly message: PasswordResetMessage }
+  | { readonly kind: 'email-change-notice'; readonly message: EmailChangeNoticeMessage };
 
 export type AuthMailDeliveryResult =
   { readonly status: 'sent' } | { readonly status: 'skipped' } | { readonly status: 'failed' };
@@ -33,6 +40,7 @@ export interface AuthMailer {
   // application mailers remain source-compatible and resolve as sent.
   sendVerificationEmailWithResult?(message: VerificationMessage): Promise<AuthMailDeliveryResult>;
   sendPasswordResetEmail(message: PasswordResetMessage): Promise<void>;
+  sendEmailChangeNotice(message: EmailChangeNoticeMessage): Promise<void>;
 }
 
 interface CapturedMessage extends VerificationMessage {
@@ -46,6 +54,7 @@ interface CapturedMessage extends VerificationMessage {
 export class InMemoryAuthMailer implements AuthMailer {
   private readonly messages: CapturedMessage[] = [];
   private readonly resetMessages: CapturedMessage[] = [];
+  private readonly emailChangeNotices: EmailChangeNoticeMessage[] = [];
 
   get sent(): readonly CapturedMessage[] {
     return this.messages;
@@ -53,6 +62,10 @@ export class InMemoryAuthMailer implements AuthMailer {
 
   get passwordResets(): readonly CapturedMessage[] {
     return this.resetMessages;
+  }
+
+  get emailChangeMessages(): readonly EmailChangeNoticeMessage[] {
+    return this.emailChangeNotices;
   }
 
   sendVerificationEmail(message: VerificationMessage): Promise<void> {
@@ -69,9 +82,15 @@ export class InMemoryAuthMailer implements AuthMailer {
     return Promise.resolve();
   }
 
+  sendEmailChangeNotice(message: EmailChangeNoticeMessage): Promise<void> {
+    this.emailChangeNotices.push({ ...message });
+    return Promise.resolve();
+  }
+
   clear(): void {
     this.messages.length = 0;
     this.resetMessages.length = 0;
+    this.emailChangeNotices.length = 0;
   }
 }
 
@@ -104,6 +123,19 @@ export class DevelopmentAuthMailer implements AuthMailer {
         level: 'info',
         event: 'auth-mail.scheduled',
         purpose: 'password-reset',
+        recipientDomain: domain,
+      }),
+    );
+    return Promise.resolve();
+  }
+
+  sendEmailChangeNotice(message: EmailChangeNoticeMessage): Promise<void> {
+    const domain = message.to.split('@')[1] ?? 'invalid';
+    console.log(
+      JSON.stringify({
+        level: 'info',
+        event: 'auth-mail.scheduled',
+        purpose: 'email-change-notice',
         recipientDomain: domain,
       }),
     );
@@ -178,6 +210,7 @@ export function deferredAuthMailer(
       return { status: 'sent' };
     },
     sendPasswordResetEmail: (message) => current().sendPasswordResetEmail(message),
+    sendEmailChangeNotice: (message) => current().sendEmailChangeNotice(message),
   };
 }
 

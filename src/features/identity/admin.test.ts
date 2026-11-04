@@ -136,6 +136,10 @@ class FailOnceAuthMailer implements AuthMailer {
   sendPasswordResetEmail(): Promise<void> {
     return Promise.resolve();
   }
+
+  sendEmailChangeNotice(): Promise<void> {
+    return Promise.resolve();
+  }
 }
 
 const ADMIN_BOOTSTRAP_PATH = '/v1/admin/auth/bootstrap';

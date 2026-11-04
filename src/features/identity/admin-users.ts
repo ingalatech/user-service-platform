@@ -1,5 +1,5 @@
 import type { D1Database } from '@cloudflare/workers-types';
-import { and, asc, count, eq, isNull, or, sql } from 'drizzle-orm';
+import { and, asc, count, eq, gt, isNull, or, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/d1';
 import type { createAdministrationAuth } from './auth.js';
 import type { AdminMe, AdminReaderDetail, AdminUser, AdminUserList } from './contract.js';
@@ -7,6 +7,7 @@ import { authorizeAdministrator } from './admin-authorization.js';
 import {
   account,
   identitySchema,
+  readerEmailChangeWorkflow,
   readerAccessState,
   readerMessageWorkflow,
   user,
@@ -164,6 +165,24 @@ export async function getAdminUserById(
     .from(readerMessageWorkflow)
     .where(eq(readerMessageWorkflow.userId, row.id))
     .orderBy(asc(readerMessageWorkflow.createdAt));
+  const emailChangeRows = await database
+    .select({
+      id: readerEmailChangeWorkflow.id,
+      email: readerEmailChangeWorkflow.newEmail,
+      revision: readerEmailChangeWorkflow.revision,
+      createdAt: readerEmailChangeWorkflow.createdAt,
+      expiresAt: readerEmailChangeWorkflow.expiresAt,
+      cooldownUntil: readerEmailChangeWorkflow.cooldownUntil,
+    })
+    .from(readerEmailChangeWorkflow)
+    .where(
+      and(
+        eq(readerEmailChangeWorkflow.userId, row.id),
+        eq(readerEmailChangeWorkflow.state, 'pending'),
+        gt(readerEmailChangeWorkflow.expiresAt, Date.now()),
+      ),
+    )
+    .orderBy(asc(readerEmailChangeWorkflow.createdAt));
   const methods: AdminReaderDetail['methods'] = [];
   const seen = new Set<string>();
   for (const method of methodRows) {
@@ -195,6 +214,18 @@ export async function getAdminUserById(
       createdAt: new Date(message.createdAt).toISOString(),
       cooldownUntil: new Date(message.cooldownUntil).toISOString(),
     }));
+  const emailChangeWorkflows: AdminReaderDetail['activeWorkflows'] = emailChangeRows.map(
+    (workflow) => ({
+      id: workflow.id,
+      type: 'email-change',
+      state: 'pending',
+      createdAt: new Date(workflow.createdAt).toISOString(),
+      email: workflow.email,
+      expiresAt: new Date(workflow.expiresAt).toISOString(),
+      cooldownUntil: new Date(workflow.cooldownUntil).toISOString(),
+      revision: workflow.revision,
+    }),
+  );
   return {
     ...legacy,
     revision: row.revision ?? 1,
@@ -204,7 +235,7 @@ export async function getAdminUserById(
     },
     access: { state, effectiveState: state },
     methods,
-    activeWorkflows: messageWorkflows,
+    activeWorkflows: [...messageWorkflows, ...emailChangeWorkflows],
   };
 }
 // Lists administrative Users with deterministic ascending-email pagination.

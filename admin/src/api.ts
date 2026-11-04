@@ -14,6 +14,12 @@ import {
   AdminReaderEmailVerificationSchema,
   AdminReaderActivitySchema,
   AdminReaderDetailSchema,
+  AdminReaderEmailChangeCancelSchema,
+  AdminReaderEmailChangeCommandSchema,
+  AdminReaderEmailChangeMessageSchema,
+  AdminReaderEmailChangeParamsSchema,
+  AdminReaderEmailChangeRequestSchema,
+  AdminReaderEmailChangeSchema,
   AdminReaderMessageSchema,
   AdminUserDetailParamsSchema,
   AdminUserListQuerySchema,
@@ -34,6 +40,9 @@ import {
   type AdminAuditEventsQuery,
   type AdminReaderActivity,
   type AdminReaderDetail,
+  type AdminReaderEmailChange,
+  type AdminReaderEmailChangeCancel,
+  type AdminReaderEmailChangeMessage,
   type AdminReaderEmailVerification,
   type AdminReaderMessage,
   type AdminUserDetailParams,
@@ -76,7 +85,7 @@ async function request(
   path: string,
   body?: unknown,
   signal?: AbortSignal,
-  method?: 'POST' | 'PATCH' | 'PUT',
+  method?: 'POST' | 'PATCH' | 'PUT' | 'DELETE',
   extraHeaders?: Record<string, string>,
 ): Promise<unknown> {
   let response: Response;
@@ -329,6 +338,70 @@ export async function adminReaderActivity(
       `/v1/admin/users/${encodeURIComponent(params.data.userId)}/activity?${search.toString()}`,
       undefined,
       signal,
+    ),
+  );
+  if (!parsed.success) throw new ApiError(502);
+  return parsed.data;
+}
+
+export async function adminStartReaderEmailChange(
+  id: AdminUserDetailParams['userId'],
+  email: string,
+  accountRevision: number,
+  idempotencyKey: string,
+): Promise<AdminReaderEmailChange> {
+  const params = AdminUserDetailParamsSchema.safeParse({ userId: id });
+  const body = AdminReaderEmailChangeRequestSchema.safeParse({ email });
+  if (!params.success || !body.success) throw new ApiError(400);
+  const parsed = AdminReaderEmailChangeSchema.safeParse(
+    await request(
+      `/v1/admin/users/${encodeURIComponent(params.data.userId)}/email-changes`,
+      body.data,
+      undefined,
+      'POST',
+      { 'if-match': `"${String(accountRevision)}"`, 'idempotency-key': idempotencyKey },
+    ),
+  );
+  if (!parsed.success) throw new ApiError(502);
+  return parsed.data;
+}
+
+export async function adminResendReaderEmailChangeMessage(
+  id: AdminUserDetailParams['userId'],
+  emailChangeId: string,
+  idempotencyKey: string,
+): Promise<AdminReaderEmailChangeMessage> {
+  const params = AdminReaderEmailChangeParamsSchema.safeParse({ userId: id, emailChangeId });
+  const body = AdminReaderEmailChangeCommandSchema.safeParse({});
+  if (!params.success || !body.success) throw new ApiError(400);
+  const parsed = AdminReaderEmailChangeMessageSchema.safeParse(
+    await request(
+      `/v1/admin/users/${encodeURIComponent(params.data.userId)}/email-changes/${encodeURIComponent(params.data.emailChangeId)}/messages`,
+      body.data,
+      undefined,
+      'POST',
+      { 'idempotency-key': idempotencyKey },
+    ),
+  );
+  if (!parsed.success) throw new ApiError(502);
+  return parsed.data;
+}
+
+export async function adminCancelReaderEmailChange(
+  id: AdminUserDetailParams['userId'],
+  emailChangeId: string,
+  workflowRevision: number,
+  idempotencyKey: string,
+): Promise<AdminReaderEmailChangeCancel> {
+  const params = AdminReaderEmailChangeParamsSchema.safeParse({ userId: id, emailChangeId });
+  if (!params.success) throw new ApiError(400);
+  const parsed = AdminReaderEmailChangeCancelSchema.safeParse(
+    await request(
+      `/v1/admin/users/${encodeURIComponent(params.data.userId)}/email-changes/${encodeURIComponent(params.data.emailChangeId)}`,
+      undefined,
+      undefined,
+      'DELETE',
+      { 'if-match': `"${String(workflowRevision)}"`, 'idempotency-key': idempotencyKey },
     ),
   );
   if (!parsed.success) throw new ApiError(502);

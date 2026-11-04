@@ -1242,6 +1242,9 @@
           "admin-already-bootstrapped",
           "admin-bootstrap-in-progress",
           "admin-email-conflict",
+          "same-email",
+          "email-conflict",
+          "email-change-not-found",
           null
         ]
       },
@@ -1275,6 +1278,12 @@
               "committed",
               "scheduling-failed"
             ]
+          },
+          "supersedesId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$"
           },
           "workflowId": {
             "type": "string",
@@ -1334,37 +1343,154 @@
               "activeWorkflows": {
                 "type": "array",
                 "items": {
-                  "type": "object",
-                  "properties": {
-                    "id": {
-                      "type": "string"
-                    },
-                    "type": {
-                      "type": "string",
-                      "enum": [
-                        "email-change",
-                        "deletion-request",
-                        "email-verification-message",
-                        "password-recovery-message"
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "email-verification-message"
+                          ]
+                        },
+                        "state": {
+                          "type": "string"
+                        },
+                        "createdAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "cooldownUntil": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "type",
+                        "state",
+                        "createdAt",
+                        "cooldownUntil"
                       ]
                     },
-                    "state": {
-                      "type": "string"
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "password-recovery-message"
+                          ]
+                        },
+                        "state": {
+                          "type": "string"
+                        },
+                        "createdAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "cooldownUntil": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "type",
+                        "state",
+                        "createdAt",
+                        "cooldownUntil"
+                      ]
                     },
-                    "createdAt": {
-                      "type": "string",
-                      "format": "date-time"
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "deletion-request"
+                          ]
+                        },
+                        "state": {
+                          "type": "string"
+                        },
+                        "createdAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "cooldownUntil": {
+                          "type": "string",
+                          "format": "date-time"
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "type",
+                        "state",
+                        "createdAt"
+                      ]
                     },
-                    "cooldownUntil": {
-                      "type": "string",
-                      "format": "date-time"
+                    {
+                      "type": "object",
+                      "properties": {
+                        "id": {
+                          "type": "string"
+                        },
+                        "type": {
+                          "type": "string",
+                          "enum": [
+                            "email-change"
+                          ]
+                        },
+                        "state": {
+                          "type": "string",
+                          "enum": [
+                            "pending"
+                          ]
+                        },
+                        "createdAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "email": {
+                          "type": "string",
+                          "maxLength": 254,
+                          "format": "email",
+                          "example": "ada@example.com"
+                        },
+                        "expiresAt": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "cooldownUntil": {
+                          "type": "string",
+                          "format": "date-time"
+                        },
+                        "revision": {
+                          "type": "integer",
+                          "minimum": 1
+                        }
+                      },
+                      "required": [
+                        "id",
+                        "type",
+                        "state",
+                        "createdAt",
+                        "email",
+                        "expiresAt",
+                        "cooldownUntil",
+                        "revision"
+                      ]
                     }
-                  },
-                  "required": [
-                    "id",
-                    "type",
-                    "state",
-                    "createdAt"
                   ]
                 },
                 "description": "Only persisted active workflows; never inferred or fabricated."
@@ -1454,6 +1580,8 @@
               "email-verified",
               "email-verification-requested",
               "password-recovery-requested",
+              "email-change-requested",
+              "email-change-cancelled",
               "email-changed",
               "social-identity-unlinked",
               "sessions-revoked",
@@ -1561,6 +1689,153 @@
       "AdminReaderMessageRequest": {
         "type": "object",
         "properties": {},
+        "additionalProperties": false
+      },
+      "AdminReaderEmailChange": {
+        "type": "object",
+        "properties": {
+          "workflowId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "email": {
+            "type": "string",
+            "maxLength": 254,
+            "format": "email",
+            "example": "ada@example.com"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending"
+            ]
+          },
+          "changed": {
+            "type": "boolean"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "accountRevision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "cooldownUntil": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "workflowId",
+          "email",
+          "state",
+          "changed",
+          "revision",
+          "accountRevision",
+          "createdAt",
+          "expiresAt",
+          "cooldownUntil"
+        ],
+        "additionalProperties": false
+      },
+      "AdminReaderEmailChangeRequest": {
+        "type": "object",
+        "properties": {
+          "email": {
+            "type": "string",
+            "maxLength": 254,
+            "format": "email",
+            "example": "ada@example.com"
+          }
+        },
+        "required": [
+          "email"
+        ],
+        "additionalProperties": false
+      },
+      "AdminReaderEmailChangeMessage": {
+        "type": "object",
+        "properties": {
+          "workflowId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending"
+            ]
+          },
+          "cooldownUntil": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "workflowId",
+          "state",
+          "cooldownUntil",
+          "expiresAt",
+          "revision"
+        ],
+        "additionalProperties": false
+      },
+      "AdminReaderEmailChangeCommand": {
+        "type": "object",
+        "properties": {},
+        "additionalProperties": false
+      },
+      "AdminReaderEmailChangeCancel": {
+        "type": "object",
+        "properties": {
+          "workflowId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "cancelled",
+              "completed",
+              "superseded",
+              "expired"
+            ]
+          },
+          "changed": {
+            "type": "boolean"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "workflowId",
+          "state",
+          "changed",
+          "revision"
+        ],
         "additionalProperties": false
       },
       "AdminBootstrapResult": {
@@ -1966,7 +2241,7 @@
       "post": {
         "operationId": "verifyIdentityEmail",
         "summary": "Complete email verification",
-        "description": "Marks the email address verified from the token delivered by the verification action. Clients extract the `token` query parameter from the action URL and submit it here. Invalid or expired actions fail safely without revealing token material.",
+        "description": "Completes either ordinary email verification or an administrative Reader email-change workflow. For email change, the new address is promoted to canonical and verified, all Reader sessions are revoked, and earlier verification, recovery and email-change workflows are invalidated atomically. Clients extract the `token` query parameter from the action URL and submit it here. Invalid or expired actions return the stable `verification-invalid` Problem Details code without revealing token material.",
         "tags": [
           "identity"
         ],
@@ -1981,11 +2256,31 @@
         },
         "responses": {
           "200": {
-            "description": "The email address is verified.",
+            "description": "Ordinary verification completed, or email change atomically promoted and verified the new canonical address while revoking sessions.",
             "content": {
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/VerifyEmailResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid or expired action; stable code `verification-invalid`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Atomic completion failed; no partial email-change effects are committed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
                 }
               }
             }
@@ -4073,6 +4368,509 @@
           },
           "503": {
             "description": "Message scheduling failed after the command was committed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/users/{userId}/email-changes": {
+      "post": {
+        "operationId": "startAdminReaderEmailChange",
+        "summary": "Create or replace a pending Reader email change",
+        "description": "Reserves a normalized email for an active Reader and schedules verification to the new address plus a notice to the current address. The canonical email remains unchanged until the public verification action completes.",
+        "tags": [
+          "admin"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "Opaque administrative User identifier.",
+              "example": "abc123"
+            },
+            "required": true,
+            "description": "Opaque administrative User identifier.",
+            "name": "userId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "required": false,
+            "name": "if-match",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "required": false,
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminReaderEmailChangeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "An existing pending email-change workflow was replaced.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminReaderEmailChange"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "A new email-change workflow was created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminReaderEmailChange"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid command input.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No authoritative Administrator session or invalid verification token.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The actor is not allowed to perform the command.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Reader or email-change workflow not found.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The command conflicts with the canonical email or workflow state.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The supplied revision is stale.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "A required precondition or idempotency key is missing.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The email-change message cooldown is active.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The command could not be audited or completed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Message scheduling failed after the workflow was committed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/users/{userId}/email-changes/{emailChangeId}/messages": {
+      "post": {
+        "operationId": "resendAdminReaderEmailChangeMessage",
+        "summary": "Resend a pending Reader email-change message",
+        "description": "Rotates the verification token and schedules the verification and current-address notice for a pending Reader email-change workflow.",
+        "tags": [
+          "admin"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "required": true,
+            "name": "userId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "required": true,
+            "name": "emailChangeId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "required": false,
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminReaderEmailChangeCommand"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "The email-change messages were accepted for scheduling.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminReaderEmailChangeMessage"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid command input.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No authoritative Administrator session or invalid verification token.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The actor is not allowed to perform the command.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Reader or email-change workflow not found.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The command conflicts with the canonical email or workflow state.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The supplied revision is stale.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "A required precondition or idempotency key is missing.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The email-change message cooldown is active.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The command could not be audited or completed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Message scheduling failed after the workflow was committed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/users/{userId}/email-changes/{emailChangeId}": {
+      "delete": {
+        "operationId": "cancelAdminReaderEmailChange",
+        "summary": "Cancel a pending Reader email change",
+        "description": "Cancels a pending email-change workflow with its workflow revision precondition and releases the email reservation.",
+        "tags": [
+          "admin"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "required": true,
+            "name": "userId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "required": true,
+            "name": "emailChangeId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "required": false,
+            "name": "if-match",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "required": false,
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The current or newly cancelled workflow state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminReaderEmailChangeCancel"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid command input.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No authoritative Administrator session or invalid verification token.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The actor is not allowed to perform the command.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Reader or email-change workflow not found.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The command conflicts with the canonical email or workflow state.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The supplied revision is stale.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "A required precondition or idempotency key is missing.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The email-change message cooldown is active.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The command could not be audited or completed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Message scheduling failed after the workflow was committed.",
             "content": {
               "application/problem+json": {
                 "schema": {

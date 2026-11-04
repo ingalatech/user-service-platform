@@ -204,4 +204,26 @@ describe('generated OpenAPI artifact', () => {
 
     expect(regenerated).toBe(raw);
   });
+
+  it('documents atomic Reader email-change completion outcomes and stable problems', async () => {
+    const raw = await readFile(artifactPath, 'utf8');
+    const document = JSON.parse(raw) as {
+      paths: Record<
+        string,
+        Record<
+          string,
+          {
+            description?: string;
+            responses?: Record<string, { description?: string }>;
+          }
+        >
+      >;
+    };
+    const operation = document.paths['/v1/auth/verify-email']?.post;
+    expect(operation?.description).toContain('administrative Reader email-change');
+    expect(operation?.description).toContain('revoked');
+    expect(operation?.responses?.['200']?.description).toContain('atomically');
+    expect(operation?.responses?.['400']?.description).toContain('verification-invalid');
+    expect(operation?.responses?.['500']?.description).toContain('no partial');
+  });
 });
