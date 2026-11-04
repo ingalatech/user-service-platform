@@ -9,6 +9,8 @@ export type AdminAdministratorAccessRequest = components['schemas']['AdminAdmini
 export type AdminAdministratorAccessResult = components['schemas']['AdminAdministratorAccessResult'];
 export type AdminAdministratorList = components['schemas']['AdminAdministratorList'];
 export type AdminAdministratorMessage = components['schemas']['AdminAdministratorMessage'];
+export type AdminAuditEvent = components['schemas']['AdminAuditEvent'];
+export type AdminAuditEvents = components['schemas']['AdminAuditEvents'];
 export type AdminUser = components['schemas']['AdminUser'];
 export type AdminReaderDetail = components['schemas']['AdminReaderDetail'];
 export type AdminReaderActivity = components['schemas']['AdminReaderActivity'];
@@ -36,6 +38,18 @@ export type AdminAdministratorListQuery = {
   offset: NonNullable<AdminAdministratorListQueryParameters['offset']>;
   email?: AdminAdministratorListQueryParameters['email'];
 };
+type AdminAuditEventsQueryParameters = NonNullable<
+  operations['listAdminAuditEvents']['parameters']['query']
+>;
+export type AdminAuditEventsQuery = {
+  limit: NonNullable<AdminAuditEventsQueryParameters['limit']>;
+  cursor?: AdminAuditEventsQueryParameters['cursor'];
+  actorId?: AdminAuditEventsQueryParameters['actorId'];
+  action?: AdminAuditEventsQueryParameters['action'];
+  result?: AdminAuditEventsQueryParameters['result'];
+  from?: AdminAuditEventsQueryParameters['from'];
+  to?: AdminAuditEventsQueryParameters['to'];
+};
 type AdminUserDetailPathParameters = operations['getAdminUser']['parameters']['path'];
 export type AdminUserDetailParams = {
   userId: AdminUserDetailPathParameters['userId'];
@@ -54,6 +68,8 @@ export declare const AdminAdministratorAccessRequestSchema: ZodType<AdminAdminis
 export declare const AdminAdministratorAccessResultSchema: ZodType<AdminAdministratorAccessResult>;
 export declare const AdminAdministratorListSchema: ZodType<AdminAdministratorList>;
 export declare const AdminAdministratorMessageSchema: ZodType<AdminAdministratorMessage>;
+export declare const AdminAuditEventsQuerySchema: ZodType<AdminAuditEventsQuery>;
+export declare const AdminAuditEventsSchema: ZodType<AdminAuditEvents>;
 export declare const AdminAdministratorListQuerySchema: ZodType<AdminAdministratorListQuery>;
 export declare const AdminAdministratorParamsSchema: ZodType<AdminAdministratorParams>;
 export declare const AdminReaderActivitySchema: ZodType<AdminReaderActivity>;

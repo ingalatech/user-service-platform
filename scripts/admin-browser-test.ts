@@ -345,6 +345,16 @@ export async function runAdminBrowserTest(): Promise<void> {
       `INSERT INTO administrator_access_state (user_id, state, revision, updated_at)
        VALUES ('qa-no-password-admin', 'disabled', 4, 1700000000000)`,
     );
+    const auditOccurredAt = Date.now();
+    await sql(
+      `INSERT INTO identity_event
+       (id, version, type, occurred_at, actor_realm, actor_id, subject_realm, subject_id,
+        result, request_id, problem_code, metadata)
+       VALUES ('browser-audit-safe', 1, 'access-attempt', ${String(auditOccurredAt)},
+        'administrator', 'qa-disabled-admin', 'reader', 'opaque-reader-subject', 'failure',
+        'browser-audit-request', 'stale-revision',
+        '{"changed":false,"token":"browser-secret-token","email":"browser-secret@example.com","emailBody":"private body"}')`,
+    );
     phase = 'Administrator verification and recovery actions';
     await page.goto(`${base}/admin/administrators/qa-disabled-admin`);
     await visible(page, 'Detalle de administrador');
@@ -450,11 +460,175 @@ export async function runAdminBrowserTest(): Promise<void> {
     );
     await page.getByRole('link', { name: 'Auditoría administrativa', exact: true }).click();
     await visible(page, 'Auditoría administrativa');
+    phase = 'global Administrative Audit filter controls';
+    const auditActorFilter = page.getByRole('textbox', {
+      name: 'Administrator actor ID',
+      exact: true,
+    });
+    await auditActorFilter.fill('qa-disabled-admin');
     await page
-      .getByText('Esta sección se habilitará con sus contratos productivos.', {
+      .getByRole('textbox', { name: 'Acción (tipo exacto)', exact: true })
+      .fill('access-attempt');
+    await page.getByRole('combobox', { name: 'Resultado', exact: true }).selectOption('failure');
+    await page.getByLabel('Desde', { exact: true }).fill('2000-01-01T00:00');
+    await page.getByLabel('Hasta', { exact: true }).fill('2099-01-01T00:00');
+    let releaseAuditRequest: (() => void) | undefined;
+    const auditRequestGate = new Promise<void>((resolve) => {
+      releaseAuditRequest = resolve;
+    });
+    await page.route('**/v1/admin/audit-events*', async (route) => {
+      await auditRequestGate;
+      await route.continue();
+    });
+    phase = 'global Administrative Audit apply filters';
+    const filteredAuditResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'GET' &&
+        response.url().startsWith(`${base}/v1/admin/audit-events?`),
+    );
+    await page.getByRole('button', { name: 'Aplicar filtros', exact: true }).click();
+    phase = 'global Administrative Audit loading announcement';
+    await page.getByText('Cargando auditoría…', { exact: true }).waitFor();
+    releaseAuditRequest?.();
+    phase = 'global Administrative Audit response arrival';
+    const filteredResponse = await filteredAuditResponse;
+    phase = 'global Administrative Audit response status';
+    assert(filteredResponse.status() === 200, 'approved audit filters return 200');
+    phase = 'global Administrative Audit response projection';
+    const filteredAudit = (await filteredResponse.json()) as { items: { id: string }[] };
+    phase = 'global Administrative Audit fixture selection';
+    assert(
+      filteredAudit.items.some((event) => event.id === 'browser-audit-safe'),
+      'actor, action, result, and time filters select the fixture row',
+    );
+    phase = 'global Administrative Audit filtered request row';
+    await page.getByText('browser-audit-request', { exact: true }).waitFor();
+    await page.unroute('**/v1/admin/audit-events*');
+    phase = 'global Administrative Audit actor lookup';
+    await page.getByText('qa-disabled-admin@example.com', { exact: true }).waitFor();
+    const auditText = await page.locator('body').innerText();
+    for (const secret of [
+      'browser-secret-token',
+      'browser-secret@example.com',
+      'private body',
+      'browser-audit-safe',
+    ]) {
+      assert(!auditText.includes(secret), 'Audit UI renders only the safe projection');
+    }
+    await auditActorFilter.fill('actor-with-no-audit-events');
+    await page.getByRole('button', { name: 'Aplicar filtros', exact: true }).click();
+    await page
+      .getByText('No hay eventos de auditoría para estos filtros.', { exact: true })
+      .waitFor();
+    await page.route('**/v1/admin/audit-events*', async (route) => {
+      await route.fulfill({
+        status: 500,
+        contentType: 'application/problem+json',
+        body: JSON.stringify({
+          type: 'urn:problem:internal-error',
+          title: 'Internal Server Error',
+          status: 500,
+          code: 'internal-error',
+          detail: 'private backend diagnostic',
+        }),
+      });
+    });
+    await auditActorFilter.fill('trigger-audit-error');
+    await page.getByRole('button', { name: 'Aplicar filtros', exact: true }).click();
+    await page
+      .getByText('No pudimos completar la consulta. Tu sesión se conserva.', { exact: true })
+      .waitFor();
+    assert(
+      !(await page.locator('body').innerText()).includes('private backend diagnostic'),
+      'audit UI never renders Problem Details detail text',
+    );
+    await page.unroute('**/v1/admin/audit-events*');
+    const cursorAuditEvent = {
+      id: 'browser-cursor-event',
+      version: 1,
+      type: 'access-attempt',
+      occurredAt: new Date(auditOccurredAt).toISOString(),
+      actor: { id: 'qa-disabled-admin', realm: 'administrator' },
+      subject: null,
+      result: 'success',
+      requestId: 'browser-cursor-request',
+      problemCode: null,
+      metadata: null,
+    };
+    await page.route('**/v1/admin/audit-events*', async (route) => {
+      const url = new URL(route.request().url());
+      const cursorPage = url.searchParams.has('cursor');
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify(
+          cursorPage
+            ? { items: [cursorAuditEvent], nextCursor: null }
+            : { items: [], nextCursor: 'opaque-cursor-next' },
+        ),
+      });
+    });
+    await auditActorFilter.fill('cursor-empty-page');
+    await page.getByRole('button', { name: 'Aplicar filtros', exact: true }).click();
+    await page
+      .getByText(
+        'No hay eventos visibles en esta página. Continúa para consultar los siguientes.',
+        {
+          exact: true,
+        },
+      )
+      .waitFor();
+    await page.getByRole('button', { name: 'Cargar más', exact: true }).click();
+    await page.getByText('browser-cursor-request', { exact: true }).waitFor();
+    await page.unroute('**/v1/admin/audit-events*');
+
+    await page.route('**/v1/admin/audit-events*', async (route) => {
+      await route.fulfill({
+        status: 401,
+        contentType: 'application/problem+json',
+        body: JSON.stringify({
+          type: 'urn:problem:unauthenticated',
+          title: 'Unauthenticated',
+          status: 401,
+          code: 'unauthenticated',
+          detail: 'private 401 detail',
+        }),
+      });
+    });
+    await auditActorFilter.fill('unauthenticated-audit-query');
+    await page.getByRole('button', { name: 'Aplicar filtros', exact: true }).click();
+    await page
+      .getByText('La sesión terminó. Inicia sesión de nuevo para consultar la auditoría.', {
         exact: true,
       })
       .waitFor();
+    assert(
+      !(await page.locator('body').innerText()).includes('private 401 detail'),
+      'unauthenticated audit error uses status/code, not detail',
+    );
+    await page.unroute('**/v1/admin/audit-events*');
+
+    await page.route('**/v1/admin/audit-events*', async (route) => {
+      await route.fulfill({
+        status: 403,
+        contentType: 'application/problem+json',
+        body: JSON.stringify({
+          type: 'urn:problem:administrator-disabled',
+          title: 'Administrator disabled',
+          status: 403,
+          code: 'administrator-disabled',
+          detail: 'private 403 detail',
+        }),
+      });
+    });
+    await auditActorFilter.fill('disabled-audit-query');
+    await page.getByRole('button', { name: 'Aplicar filtros', exact: true }).click();
+    await page.getByText('La cuenta Administrator está deshabilitada.', { exact: true }).waitFor();
+    assert(
+      !(await page.locator('body').innerText()).includes('private 403 detail'),
+      'disabled Administrator audit error uses status/code, not detail',
+    );
+    await page.unroute('**/v1/admin/audit-events*');
     phase = 'user list, search and pagination';
     for (let i = 0; i < 12; i++) {
       const email = `qa-list-${String(i).padStart(2, '0')}@example.com`;

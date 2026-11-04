@@ -26,6 +26,7 @@ import { UsersShow } from './users-show.js';
 import { UsersEdit } from './users-edit.js';
 import { AdministratorsList } from './administrators-list.js';
 import { AdministratorsShow } from './administrators-show.js';
+import { AuditList } from './audit-list.js';
 
 const store = memoryStore();
 
@@ -171,17 +172,6 @@ function ProtectedLayout({ children }: CoreLayoutProps) {
   return <ProtectedView>{children}</ProtectedView>;
 }
 
-function PlannedSection({ title }: { title: string }) {
-  return (
-    <section className="space-y-3 py-4" aria-labelledby="planned-section-title">
-      <h1 id="planned-section-title" className="text-2xl font-bold tracking-tight">
-        {title}
-      </h1>
-      <p>Esta sección se habilitará con sus contratos productivos.</p>
-    </section>
-  );
-}
-
 export function App() {
   return (
     <Admin
@@ -206,11 +196,7 @@ export function App() {
         show={AdministratorsShow}
         options={{ label: 'Administradores' }}
       />
-      <Resource
-        name="audit"
-        list={() => <PlannedSection title="Auditoría administrativa" />}
-        options={{ label: 'Auditoría administrativa' }}
-      />
+      <Resource name="audit" list={AuditList} options={{ label: 'Auditoría administrativa' }} />
       <CustomRoutes noLayout>
         <Route
           path="/administrators/:id"

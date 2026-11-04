@@ -1085,6 +1085,206 @@
         "properties": {},
         "additionalProperties": false
       },
+      "AdminAuditEvents": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminAuditEvent"
+            }
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "nextCursor"
+        ],
+        "additionalProperties": false
+      },
+      "AdminAuditEvent": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "version": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "type": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "occurredAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "actor": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "realm": {
+                "type": "string",
+                "enum": [
+                  "administrator"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "realm"
+            ],
+            "additionalProperties": false
+          },
+          "subject": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "properties": {
+              "id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              "realm": {
+                "type": "string",
+                "enum": [
+                  "reader",
+                  "administrator"
+                ]
+              }
+            },
+            "required": [
+              "id",
+              "realm"
+            ],
+            "additionalProperties": false
+          },
+          "result": {
+            "type": "string",
+            "enum": [
+              "success",
+              "failure"
+            ]
+          },
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "problemCode": {
+            "$ref": "#/components/schemas/AdminAuditProblemCode"
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/AdminAuditMetadata"
+          }
+        },
+        "required": [
+          "id",
+          "version",
+          "type",
+          "occurredAt",
+          "actor",
+          "subject",
+          "result",
+          "requestId",
+          "problemCode",
+          "metadata"
+        ],
+        "additionalProperties": false
+      },
+      "AdminAuditProblemCode": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "enum": [
+          "bad-request",
+          "conflict",
+          "payload-too-large",
+          "service-unavailable",
+          "not-found",
+          "internal-error",
+          "registration-disabled",
+          "email-password-disabled",
+          "email-verification-required",
+          "invalid-credentials",
+          "verification-invalid",
+          "reset-invalid",
+          "unauthenticated",
+          "forbidden",
+          "reader-not-found",
+          "administrator-not-found",
+          "administrator-disabled",
+          "self-disable-forbidden",
+          "last-operational-administrator",
+          "invalid-transition",
+          "no-usable-login-method",
+          "idempotency-key-reused",
+          "stale-revision",
+          "precondition-required",
+          "cooldown-active",
+          "delivery-scheduling-failed",
+          "admin-already-bootstrapped",
+          "admin-bootstrap-in-progress",
+          "admin-email-conflict",
+          null
+        ]
+      },
+      "AdminAuditMetadata": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "properties": {
+          "changed": {
+            "type": "boolean"
+          },
+          "operation": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64,
+            "pattern": "^[a-z][a-z0-9-]*$"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "retryAfterSeconds": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 86400
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "committed",
+              "scheduling-failed"
+            ]
+          },
+          "workflowId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          }
+        },
+        "additionalProperties": false
+      },
       "AdminReaderDetail": {
         "allOf": [
           {
@@ -3106,6 +3306,159 @@
           },
           "503": {
             "description": "Message scheduling failed after the command was committed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/audit-events": {
+      "get": {
+        "operationId": "listAdminAuditEvents",
+        "summary": "Read global Administrative Audit",
+        "description": "Returns allowlisted authenticated Administrator commands newest-first from the Event Ledger. It is distinct from Reader Account Activity and never returns personal or secret data.",
+        "tags": [
+          "admin"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50,
+              "default": 25
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "required": false,
+            "name": "cursor",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "Filter by opaque Administrator actor ID."
+            },
+            "required": false,
+            "description": "Filter by opaque Administrator actor ID.",
+            "name": "actorId",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "Filter by versioned Event Ledger type."
+            },
+            "required": false,
+            "description": "Filter by versioned Event Ledger type.",
+            "name": "action",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "enum": [
+                "success",
+                "failure"
+              ]
+            },
+            "required": false,
+            "name": "result",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "description": "Inclusive lower bound for event occurrence time."
+            },
+            "required": false,
+            "description": "Inclusive lower bound for event occurrence time.",
+            "name": "from",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "description": "Inclusive upper bound for event occurrence time."
+            },
+            "required": false,
+            "description": "Inclusive upper bound for event occurrence time.",
+            "name": "to",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The filtered Administrative Audit page.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminAuditEvents"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid filters or cursor.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No authoritative Administrator session.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The actor is disabled or lacks Administrator authority.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The audit projection could not be completed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Authorization failure as RFC 9457 Problem Details.",
             "content": {
               "application/problem+json": {
                 "schema": {

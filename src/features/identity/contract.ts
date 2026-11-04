@@ -316,6 +316,134 @@ export const AdminAdministratorActivitySchema = z
   })
   .openapi('AdminAdministratorActivity');
 
+export const AdminAuditMetadataSchema = z
+  .object({
+    changed: z.boolean().optional(),
+    operation: z
+      .string()
+      .min(1)
+      .max(64)
+      .regex(/^[a-z][a-z0-9-]*$/)
+      .optional(),
+    revision: z.number().int().min(1).optional(),
+    retryAfterSeconds: z.number().int().min(1).max(86_400).optional(),
+    state: z.enum(['committed', 'scheduling-failed']).optional(),
+    workflowId: z
+      .string()
+      .min(1)
+      .max(128)
+      .regex(/^[A-Za-z0-9_-]+$/)
+      .optional(),
+  })
+  .strict()
+  .openapi('AdminAuditMetadata');
+
+export const AdminAuditProblemCodeSchema = z
+  .enum([
+    'bad-request',
+    'conflict',
+    'payload-too-large',
+    'service-unavailable',
+    'not-found',
+    'internal-error',
+    'registration-disabled',
+    'email-password-disabled',
+    'email-verification-required',
+    'invalid-credentials',
+    'verification-invalid',
+    'reset-invalid',
+    'unauthenticated',
+    'forbidden',
+    'reader-not-found',
+    'administrator-not-found',
+    'administrator-disabled',
+    'self-disable-forbidden',
+    'last-operational-administrator',
+    'invalid-transition',
+    'no-usable-login-method',
+    'idempotency-key-reused',
+    'stale-revision',
+    'precondition-required',
+    'cooldown-active',
+    'delivery-scheduling-failed',
+    'admin-already-bootstrapped',
+    'admin-bootstrap-in-progress',
+    'admin-email-conflict',
+  ])
+  .openapi('AdminAuditProblemCode');
+
+export const AdminAuditEventsQuerySchema = z
+  .object({
+    limit: z.coerce.number().int().min(1).max(50).default(25),
+    cursor: z.string().min(1).max(512).optional(),
+    actorId: z
+      .string()
+      .min(1)
+      .max(128)
+      .optional()
+      .openapi({ description: 'Filter by opaque Administrator actor ID.' }),
+    action: z
+      .string()
+      .trim()
+      .min(1)
+      .max(128)
+      .optional()
+      .openapi({ description: 'Filter by versioned Event Ledger type.' }),
+    result: z.enum(['success', 'failure']).optional(),
+    from: z.iso
+      .datetime()
+      .optional()
+      .openapi({ description: 'Inclusive lower bound for event occurrence time.' }),
+    to: z.iso
+      .datetime()
+      .optional()
+      .openapi({ description: 'Inclusive upper bound for event occurrence time.' }),
+  })
+  .superRefine((query, context) => {
+    if (
+      query.from !== undefined &&
+      query.to !== undefined &&
+      Date.parse(query.from) > Date.parse(query.to)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        path: ['to'],
+        message: 'The end time must not precede the start time.',
+      });
+    }
+  })
+  .openapi('AdminAuditEventsQuery');
+
+export const AdminAuditEventSchema = z
+  .object({
+    id: z.string().min(1).max(128),
+    version: z.number().int().min(1),
+    type: z.string().min(1).max(128),
+    occurredAt: z.iso.datetime(),
+    actor: z.object({ id: z.string().min(1).max(128), realm: z.literal('administrator') }).strict(),
+    subject: z
+      .object({
+        id: z.string().min(1).max(128),
+        realm: z.enum(['reader', 'administrator']),
+      })
+      .strict()
+      .nullable(),
+    result: z.enum(['success', 'failure']),
+    requestId: z.string().min(1).max(128),
+    problemCode: AdminAuditProblemCodeSchema.nullable(),
+    metadata: AdminAuditMetadataSchema.nullable(),
+  })
+  .strict()
+  .openapi('AdminAuditEvent');
+
+export const AdminAuditEventsSchema = z
+  .object({
+    items: z.array(AdminAuditEventSchema),
+    nextCursor: z.string().nullable(),
+  })
+  .strict()
+  .openapi('AdminAuditEvents');
+
 export const AdminAdministratorAccessRequestSchema = z
   .object({ state: z.enum(['active', 'disabled']) })
   .strict()
@@ -589,6 +717,11 @@ export type AdminAdministratorList = z.infer<typeof AdminAdministratorListSchema
 export type AdminAdministratorListQuery = z.infer<typeof AdminAdministratorListQuerySchema>;
 export type AdminAdministratorDetail = z.infer<typeof AdminAdministratorDetailSchema>;
 export type AdminAdministratorActivity = z.infer<typeof AdminAdministratorActivitySchema>;
+export type AdminAuditMetadata = z.infer<typeof AdminAuditMetadataSchema>;
+export type AdminAuditProblemCode = z.infer<typeof AdminAuditProblemCodeSchema>;
+export type AdminAuditEventsQuery = z.infer<typeof AdminAuditEventsQuerySchema>;
+export type AdminAuditEvent = z.infer<typeof AdminAuditEventSchema>;
+export type AdminAuditEvents = z.infer<typeof AdminAuditEventsSchema>;
 export type AdminAdministratorAccessRequest = z.infer<typeof AdminAdministratorAccessRequestSchema>;
 export type AdminAdministratorAccessResult = z.infer<typeof AdminAdministratorAccessResultSchema>;
 export type AdminAdministratorMessageRequest = z.infer<
