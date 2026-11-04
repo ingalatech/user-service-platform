@@ -3,6 +3,15 @@
 // schema implementations remain owned by Identity/Problem Details.
 export {
   AccountDetailsSchema,
+  AdminAdministratorAccessRequestSchema,
+  AdminAdministratorAccessResultSchema,
+  AdminAdministratorActivitySchema,
+  AdminAdministratorDetailSchema,
+  AdminAdministratorListQuerySchema,
+  AdminAdministratorListSchema,
+  AdminAdministratorMessageSchema,
+  AdminAdministratorParamsSchema,
+  AdminAdministratorSchema,
   AdminMeSchema,
   AdminReaderEmailVerificationSchema,
   AdminReaderActivitySchema,

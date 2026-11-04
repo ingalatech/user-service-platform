@@ -1,5 +1,13 @@
 import {
   AccountDetailsSchema,
+  AdminAdministratorAccessRequestSchema,
+  AdminAdministratorAccessResultSchema,
+  AdminAdministratorActivitySchema,
+  AdminAdministratorDetailSchema,
+  AdminAdministratorListQuerySchema,
+  AdminAdministratorListSchema,
+  AdminAdministratorMessageSchema,
+  AdminAdministratorParamsSchema,
   AdminMeSchema,
   AdminReaderEmailVerificationSchema,
   AdminReaderActivitySchema,
@@ -12,6 +20,14 @@ import {
   ProblemDetailsSchema,
   UpdateAccountDetailsSchema,
   type AdminMe,
+  type AdminAdministratorAccessRequest,
+  type AdminAdministratorAccessResult,
+  type AdminAdministratorActivity,
+  type AdminAdministratorDetail,
+  type AdminAdministratorList,
+  type AdminAdministratorListQuery,
+  type AdminAdministratorMessage,
+  type AdminAdministratorParams,
   type AdminReaderActivity,
   type AdminReaderDetail,
   type AdminReaderEmailVerification,
@@ -157,6 +173,102 @@ export async function adminUsers(
   if (input.data.email !== undefined) search.set('email', input.data.email);
   const parsed = AdminUserListSchema.safeParse(
     await request(`/v1/admin/users?${search.toString()}`, undefined, signal),
+  );
+  if (!parsed.success) throw new ApiError(502);
+  return parsed.data;
+}
+
+export async function adminAdministrators(
+  query: AdminAdministratorListQuery,
+  signal?: AbortSignal,
+): Promise<AdminAdministratorList> {
+  const input = AdminAdministratorListQuerySchema.safeParse(query);
+  if (!input.success) throw new ApiError(400);
+  const search = new URLSearchParams({
+    limit: String(input.data.limit),
+    offset: String(input.data.offset),
+  });
+  if (input.data.email !== undefined) search.set('email', input.data.email);
+  const parsed = AdminAdministratorListSchema.safeParse(
+    await request(`/v1/admin/administrators?${search.toString()}`, undefined, signal),
+  );
+  if (!parsed.success) throw new ApiError(502);
+  return parsed.data;
+}
+
+export async function adminAdministratorDetail(
+  id: AdminAdministratorParams['administratorId'],
+  signal?: AbortSignal,
+): Promise<AdminAdministratorDetail> {
+  const params = AdminAdministratorParamsSchema.safeParse({ administratorId: id });
+  if (!params.success) throw new ApiError(400);
+  const parsed = AdminAdministratorDetailSchema.safeParse(
+    await request(
+      `/v1/admin/administrators/${encodeURIComponent(params.data.administratorId)}`,
+      undefined,
+      signal,
+    ),
+  );
+  if (!parsed.success) throw new ApiError(502);
+  return parsed.data;
+}
+
+export async function adminAdministratorActivity(
+  id: AdminAdministratorParams['administratorId'],
+  cursor?: string,
+  signal?: AbortSignal,
+): Promise<AdminAdministratorActivity> {
+  const params = AdminAdministratorParamsSchema.safeParse({ administratorId: id });
+  if (!params.success) throw new ApiError(400);
+  const search = new URLSearchParams({ limit: '25' });
+  if (cursor !== undefined) search.set('cursor', cursor);
+  const parsed = AdminAdministratorActivitySchema.safeParse(
+    await request(
+      `/v1/admin/administrators/${encodeURIComponent(params.data.administratorId)}/activity?${search.toString()}`,
+      undefined,
+      signal,
+    ),
+  );
+  if (!parsed.success) throw new ApiError(502);
+  return parsed.data;
+}
+
+export async function setAdminAdministratorAccess(
+  id: AdminAdministratorParams['administratorId'],
+  state: AdminAdministratorAccessRequest['state'],
+  revision: number,
+): Promise<AdminAdministratorAccessResult> {
+  const params = AdminAdministratorParamsSchema.safeParse({ administratorId: id });
+  const body = AdminAdministratorAccessRequestSchema.safeParse({ state });
+  if (!params.success || !body.success) throw new ApiError(400);
+  const parsed = AdminAdministratorAccessResultSchema.safeParse(
+    await request(
+      `/v1/admin/administrators/${encodeURIComponent(params.data.administratorId)}/access`,
+      body.data,
+      undefined,
+      'PUT',
+      { 'if-match': `"${String(revision)}"` },
+    ),
+  );
+  if (!parsed.success) throw new ApiError(502);
+  return parsed.data;
+}
+
+export async function adminRequestAdministratorMessage(
+  id: AdminAdministratorParams['administratorId'],
+  kind: 'email-verification' | 'password-recovery',
+  idempotencyKey: string,
+): Promise<AdminAdministratorMessage> {
+  const params = AdminAdministratorParamsSchema.safeParse({ administratorId: id });
+  if (!params.success) throw new ApiError(400);
+  const parsed = AdminAdministratorMessageSchema.safeParse(
+    await request(
+      `/v1/admin/administrators/${encodeURIComponent(params.data.administratorId)}/${kind === 'email-verification' ? 'email-verification' : 'password-recovery'}/messages`,
+      {},
+      undefined,
+      'POST',
+      { 'idempotency-key': idempotencyKey },
+    ),
   );
   if (!parsed.success) throw new ApiError(502);
   return parsed.data;

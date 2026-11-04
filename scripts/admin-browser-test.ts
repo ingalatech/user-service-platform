@@ -311,11 +311,143 @@ export async function runAdminBrowserTest(): Promise<void> {
     phase = 'canonical administration hierarchy';
     await page.getByRole('link', { name: 'Administradores', exact: true }).click();
     await visible(page, 'Administradores');
+    await page.getByText('1 administrador en total', { exact: true }).waitFor();
+    await visible(page, 'Activos');
+    await page.getByText(admin, { exact: true }).waitFor();
+    await page.getByRole('link', { name: 'Ver detalle', exact: true }).click();
+    await visible(page, 'Detalle de administrador');
     await page
-      .getByText('Esta sección se habilitará con sus contratos productivos.', {
-        exact: true,
-      })
+      .getByText('Esta es tu cuenta. La autodeshabilitación no está disponible.', { exact: true })
       .waitFor();
+    assert(
+      (await page
+        .getByRole('button', { name: /Deshabilitar acceso|Rehabilitar acceso/ })
+        .count()) === 0,
+      'own access mutation remains hidden',
+    );
+    await sql(
+      `INSERT INTO admin_user (id, name, email, email_verified, created_at, updated_at, role, banned)
+       VALUES ('qa-disabled-admin', 'QA Disabled Administrator', 'qa-disabled-admin@example.com', 0, 1700000000, 1700000000, 'admin', 0)`,
+    );
+    await sql(
+      `INSERT INTO admin_account (id, account_id, provider_id, user_id, password, created_at, updated_at)
+       VALUES ('qa-disabled-account', 'qa-disabled-admin', 'credential', 'qa-disabled-admin', 'fixture-password-hash', 1700000000, 1700000000)`,
+    );
+    await sql(
+      `INSERT INTO administrator_access_state (user_id, state, revision, updated_at)
+       VALUES ('qa-disabled-admin', 'disabled', 4, 1700000000000)`,
+    );
+    await sql(
+      `INSERT INTO admin_user (id, name, email, email_verified, created_at, updated_at, role, banned)
+       VALUES ('qa-no-password-admin', 'QA No Password Administrator', 'qa-no-password-admin@example.com', 1, 1700000000, 1700000000, 'admin', 0)`,
+    );
+    await sql(
+      `INSERT INTO administrator_access_state (user_id, state, revision, updated_at)
+       VALUES ('qa-no-password-admin', 'disabled', 4, 1700000000000)`,
+    );
+    phase = 'Administrator verification and recovery actions';
+    await page.goto(`${base}/admin/administrators/qa-disabled-admin`);
+    await visible(page, 'Detalle de administrador');
+    await page.getByText('Deshabilitado', { exact: true }).waitFor();
+    const adminVerificationButton = page.getByRole('button', {
+      name: 'Reenviar verificación',
+      exact: true,
+    });
+    const adminRecoveryButton = page.getByRole('button', {
+      name: 'Enviar recuperación',
+      exact: true,
+    });
+    assert(
+      !(await adminVerificationButton.isDisabled()),
+      'disabled unverified Admin can request verification',
+    );
+    assert(
+      !(await adminRecoveryButton.isDisabled()),
+      'disabled credentialed Admin can request recovery',
+    );
+    const administratorVerificationKeys: string[] = [];
+    let rejectAdministratorVerification = true;
+    await page.route(
+      '**/v1/admin/administrators/qa-disabled-admin/email-verification/messages',
+      async (route) => {
+        administratorVerificationKeys.push(route.request().headers()['idempotency-key'] ?? '');
+        if (rejectAdministratorVerification) {
+          rejectAdministratorVerification = false;
+          await route.fulfill({
+            status: 503,
+            contentType: 'application/problem+json',
+            body: JSON.stringify({
+              type: 'urn:problem:delivery-scheduling-failed',
+              title: 'Delivery scheduling failed',
+              status: 503,
+              code: 'delivery-scheduling-failed',
+            }),
+          });
+          return;
+        }
+        await route.continue();
+      },
+    );
+    await adminVerificationButton.click();
+    await page
+      .getByText('No pudimos programar el envío. Reintenta con el mismo intento.', { exact: true })
+      .waitFor();
+    const administratorVerificationRetry = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'POST' &&
+        response
+          .url()
+          .endsWith('/v1/admin/administrators/qa-disabled-admin/email-verification/messages'),
+    );
+    await adminVerificationButton.click();
+    assert(
+      (await administratorVerificationRetry).status() === 202,
+      'Admin verification retry accepted',
+    );
+    assert(
+      administratorVerificationKeys.length === 2 &&
+        administratorVerificationKeys[0] !== '' &&
+        administratorVerificationKeys[0] === administratorVerificationKeys[1],
+      'Admin verification retry preserves its idempotency key',
+    );
+    assert(
+      await adminVerificationButton.isDisabled(),
+      'verification cooldown disables repeat action',
+    );
+    await page.unroute('**/v1/admin/administrators/qa-disabled-admin/email-verification/messages');
+    const administratorRecoveryResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'POST' &&
+        response
+          .url()
+          .endsWith('/v1/admin/administrators/qa-disabled-admin/password-recovery/messages'),
+    );
+    await adminRecoveryButton.click();
+    assert((await administratorRecoveryResponse).status() === 202, 'Admin recovery accepted');
+    assert(await adminRecoveryButton.isDisabled(), 'recovery cooldown disables repeat action');
+    const disabledAdministratorDetail = await http('/v1/admin/administrators/qa-disabled-admin', {
+      headers: { cookie: cookieHeader },
+    });
+    assert(disabledAdministratorDetail.status === 200, 'disabled Administrator remains readable');
+    const disabledAdministrator = (await disabledAdministratorDetail.json()) as {
+      access?: { state?: unknown };
+      emailVerified?: unknown;
+    };
+    assert(
+      disabledAdministrator.access?.state === 'disabled' &&
+        disabledAdministrator.emailVerified === false,
+      'message actions neither rehabilitate nor verify the Administrator',
+    );
+    await page.goto(`${base}/admin/administrators/qa-no-password-admin`);
+    await visible(page, 'Detalle de administrador');
+    assert(
+      await page.getByRole('button', { name: 'Reenviar verificación', exact: true }).isDisabled(),
+      'verified Administrator cannot request verification again',
+    );
+    assert(
+      await page.getByRole('button', { name: 'Enviar recuperación', exact: true }).isDisabled(),
+      'Administrator without password cannot request recovery',
+    );
     await page.getByRole('link', { name: 'Auditoría administrativa', exact: true }).click();
     await visible(page, 'Auditoría administrativa');
     await page

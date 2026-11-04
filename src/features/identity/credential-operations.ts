@@ -32,6 +32,7 @@ export type CredentialFailure =
   | { readonly kind: 'bad-request' }
   | { readonly kind: 'email-verification-required' }
   | { readonly kind: 'invalid-credentials' }
+  | { readonly kind: 'administrator-disabled' }
   | { readonly kind: 'verification-invalid' }
   | { readonly kind: 'reset-invalid' }
   | { readonly kind: 'internal-error' };
@@ -230,12 +231,39 @@ export function createCredentialOperations(input: CredentialOperationsInput): Cr
       if (!outcome.ok) {
         const engineFailure = await readIdentityEngineFailure(outcome);
         if (engineFailure.status === 403 && engineFailure.code === 'EMAIL_NOT_VERIFIED') {
+          if (realm === 'administrator') {
+            const disabled = await db
+              .prepare(
+                `SELECT au.id, aas.state FROM admin_user AS au
+                 LEFT JOIN administrator_access_state AS aas ON aas.user_id = au.id
+                 WHERE lower(au.email) = lower(?) AND au.role = 'admin' LIMIT 1`,
+              )
+              .bind(request.email)
+              .first<{ id: string; state: string | null }>();
+            if (disabled?.state === 'disabled') {
+              await db
+                .prepare('DELETE FROM admin_session WHERE user_id = ?')
+                .bind(disabled.id)
+                .run();
+              return failure({ kind: 'administrator-disabled' });
+            }
+          }
           return failure({ kind: 'email-verification-required' });
         }
         if (engineFailure.status === 401) return failure({ kind: 'invalid-credentials' });
         return failure({ kind: 'bad-request' });
       }
       const user = readLoginIdentity(await outcome.json().catch(() => null), realm);
+      if (user !== null && realm === 'administrator') {
+        const access = await db
+          .prepare('SELECT state FROM administrator_access_state WHERE user_id = ?')
+          .bind(user.id)
+          .first<{ state: string }>();
+        if (access?.state === 'disabled') {
+          await db.prepare('DELETE FROM admin_session WHERE user_id = ?').bind(user.id).run();
+          return failure({ kind: 'administrator-disabled' });
+        }
+      }
       return user === null
         ? failure({ kind: 'internal-error' })
         : success(user, responseCookies(outcome));

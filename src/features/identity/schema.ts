@@ -274,8 +274,31 @@ export const administratorAccessState = sqliteTable('administrator_access_state'
     .references(() => adminUser.id, { onDelete: 'cascade' }),
   state: text('state').notNull().default('active'),
   revision: integer('revision').notNull().default(1),
+  mutationToken: text('mutation_token'),
   updatedAt: integer('updated_at').notNull(),
 });
+
+export const administratorMessageWorkflow = sqliteTable(
+  'administrator_message_workflow',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => adminUser.id, { onDelete: 'cascade' }),
+    kind: text('kind').notNull(),
+    state: text('state').notNull(),
+    cooldownUntil: integer('cooldown_until').notNull(),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+    lastScheduledAt: integer('last_scheduled_at'),
+    claimToken: text('claim_token'),
+    claimedAt: integer('claimed_at'),
+  },
+  (table) => [
+    uniqueIndex('administrator_message_workflow_user_kind_idx').on(table.userId, table.kind),
+    index('administrator_message_workflow_cooldown_idx').on(table.cooldownUntil),
+  ],
+);
 
 // Application-owned append-only ledger. Feature code only projects explicitly
 // allowlisted event types and metadata; raw rows are never an HTTP contract.

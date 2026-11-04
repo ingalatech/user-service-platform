@@ -2,6 +2,13 @@ import type { ZodType } from 'zod';
 import type { components, operations } from './api.js';
 
 export type AdminMe = components['schemas']['AdminMe'];
+export type AdminAdministrator = components['schemas']['AdminAdministrator'];
+export type AdminAdministratorDetail = components['schemas']['AdminAdministratorDetail'];
+export type AdminAdministratorActivity = components['schemas']['AdminAdministratorActivity'];
+export type AdminAdministratorAccessRequest = components['schemas']['AdminAdministratorAccessRequest'];
+export type AdminAdministratorAccessResult = components['schemas']['AdminAdministratorAccessResult'];
+export type AdminAdministratorList = components['schemas']['AdminAdministratorList'];
+export type AdminAdministratorMessage = components['schemas']['AdminAdministratorMessage'];
 export type AdminUser = components['schemas']['AdminUser'];
 export type AdminReaderDetail = components['schemas']['AdminReaderDetail'];
 export type AdminReaderActivity = components['schemas']['AdminReaderActivity'];
@@ -17,6 +24,18 @@ export type ProblemDetails = components['schemas']['ProblemDetails'];
 type AdminUserListQueryParameters = NonNullable<
   operations['listAdminUsers']['parameters']['query']
 >;
+type AdminAdministratorListQueryParameters = NonNullable<
+  operations['listAdminAdministrators']['parameters']['query']
+>;
+type AdminAdministratorPathParameters = operations['getAdminAdministrator']['parameters']['path'];
+export type AdminAdministratorParams = {
+  administratorId: AdminAdministratorPathParameters['administratorId'];
+};
+export type AdminAdministratorListQuery = {
+  limit: NonNullable<AdminAdministratorListQueryParameters['limit']>;
+  offset: NonNullable<AdminAdministratorListQueryParameters['offset']>;
+  email?: AdminAdministratorListQueryParameters['email'];
+};
 type AdminUserDetailPathParameters = operations['getAdminUser']['parameters']['path'];
 export type AdminUserDetailParams = {
   userId: AdminUserDetailPathParameters['userId'];
@@ -28,6 +47,15 @@ export type AdminUserListQuery = {
 };
 
 export declare const AdminMeSchema: ZodType<AdminMe>;
+export declare const AdminAdministratorSchema: ZodType<AdminAdministrator>;
+export declare const AdminAdministratorDetailSchema: ZodType<AdminAdministratorDetail>;
+export declare const AdminAdministratorActivitySchema: ZodType<AdminAdministratorActivity>;
+export declare const AdminAdministratorAccessRequestSchema: ZodType<AdminAdministratorAccessRequest>;
+export declare const AdminAdministratorAccessResultSchema: ZodType<AdminAdministratorAccessResult>;
+export declare const AdminAdministratorListSchema: ZodType<AdminAdministratorList>;
+export declare const AdminAdministratorMessageSchema: ZodType<AdminAdministratorMessage>;
+export declare const AdminAdministratorListQuerySchema: ZodType<AdminAdministratorListQuery>;
+export declare const AdminAdministratorParamsSchema: ZodType<AdminAdministratorParams>;
 export declare const AdminReaderActivitySchema: ZodType<AdminReaderActivity>;
 export declare const AdminReaderDetailSchema: ZodType<AdminReaderDetail>;
 export declare const AdminReaderEmailVerificationSchema: ZodType<AdminReaderEmailVerification>;
