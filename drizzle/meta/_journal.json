@@ -155,6 +155,13 @@
       "when": 1793819412084,
       "tag": "0021_steep_the_executioner",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "6",
+      "when": 1793834075155,
+      "tag": "0022_third_freak",
+      "breakpoints": true
     }
   ]
 }

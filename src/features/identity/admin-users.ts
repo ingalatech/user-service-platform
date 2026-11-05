@@ -1,5 +1,5 @@
 import type { D1Database } from '@cloudflare/workers-types';
-import { and, asc, count, eq, gt, isNull, or, sql } from 'drizzle-orm';
+import { and, asc, count, eq, gt, inArray, isNull, or, sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/d1';
 import type { createAdministrationAuth } from './auth.js';
 import type { AdminMe, AdminReaderDetail, AdminUser, AdminUserList } from './contract.js';
@@ -7,6 +7,7 @@ import { authorizeAdministrator } from './admin-authorization.js';
 import {
   account,
   identitySchema,
+  readerDeletionRequest,
   readerEmailChangeWorkflow,
   readerAccessState,
   readerMessageWorkflow,
@@ -183,6 +184,23 @@ export async function getAdminUserById(
       ),
     )
     .orderBy(asc(readerEmailChangeWorkflow.createdAt));
+  const deletionRows = await database
+    .select({
+      id: readerDeletionRequest.id,
+      state: readerDeletionRequest.state,
+      revision: readerDeletionRequest.revision,
+      previousAccessState: readerDeletionRequest.previousAccessState,
+      createdAt: readerDeletionRequest.createdAt,
+    })
+    .from(readerDeletionRequest)
+    .where(
+      and(
+        eq(readerDeletionRequest.userId, row.id),
+        inArray(readerDeletionRequest.state, ['pending_review', 'approved']),
+      ),
+    )
+    .orderBy(asc(readerDeletionRequest.createdAt))
+    .limit(1);
   const methods: AdminReaderDetail['methods'] = [];
   const seen = new Set<string>();
   for (const method of methodRows) {
@@ -201,6 +219,14 @@ export async function getAdminUserById(
   }
   const legacy = toAdminUser(row);
   const state = row.accessState === 'disabled' ? 'disabled' : 'active';
+  const deletionRequest = deletionRows[0];
+  const deletionState =
+    deletionRequest?.state === 'pending_review'
+      ? 'pending_review'
+      : deletionRequest?.state === 'approved'
+        ? 'approved'
+        : null;
+  const effectiveState = deletionState === null ? state : 'suspended';
   const now = Date.now();
   const messageWorkflows: AdminReaderDetail['activeWorkflows'] = messageRows
     .filter((message) => message.state !== 'scheduled' || message.cooldownUntil > now)
@@ -226,6 +252,20 @@ export async function getAdminUserById(
       revision: workflow.revision,
     }),
   );
+  const deletionWorkflows: AdminReaderDetail['activeWorkflows'] =
+    deletionRequest === undefined
+      ? []
+      : [
+          {
+            id: deletionRequest.id,
+            type: 'deletion-request',
+            state: deletionState ?? 'pending_review',
+            createdAt: new Date(deletionRequest.createdAt).toISOString(),
+            revision: deletionRequest.revision,
+            previousAccessState:
+              deletionRequest.previousAccessState === 'disabled' ? 'disabled' : 'active',
+          },
+        ];
   return {
     ...legacy,
     revision: row.revision ?? 1,
@@ -233,9 +273,10 @@ export async function getAdminUserById(
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
     },
-    access: { state, effectiveState: state },
+    access: { state, effectiveState },
+    deletionState,
     methods,
-    activeWorkflows: [...messageWorkflows, ...emailChangeWorkflows],
+    activeWorkflows: [...messageWorkflows, ...emailChangeWorkflows, ...deletionWorkflows],
   };
 }
 // Lists administrative Users with deterministic ascending-email pagination.

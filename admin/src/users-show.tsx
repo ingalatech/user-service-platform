@@ -6,6 +6,7 @@ import { Link, Navigate, useLocation, useParams } from 'react-router';
 import type { AdminReaderDetail } from './generated/contracts.js';
 import {
   adminForceReaderEmailVerification,
+  adminSetReaderAccess,
   adminReaderActivity,
   adminRequestReaderMessage,
   ApiError,
@@ -13,6 +14,7 @@ import {
 import { RecordField } from './kit/components/admin/record-field.js';
 import { Show } from './kit/components/admin/show.js';
 import { EmailChangeActions } from './email-change-actions.js';
+import { DeletionRequestActions } from './deletion-request-actions.js';
 import { Button } from './kit/components/ui/button.js';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './kit/components/ui/tabs.js';
 
@@ -218,6 +220,30 @@ function AccessActions({ record, refresh }: { record: AdminReaderDetail; refresh
     });
   };
   const hasPassword = record.methods.some((method) => method.type === 'password');
+  const deletionSuspended = record.deletionState !== null;
+  const updateAccess = async (state: 'active' | 'disabled') => {
+    setBusy(true);
+    setStatus(null);
+    try {
+      await adminSetReaderAccess(record.id, state, record.revision);
+      setStatus(state === 'disabled' ? 'Acceso deshabilitado.' : 'Acceso rehabilitado.');
+      refresh();
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 412 && error.code === 'stale-revision') {
+        setStatus('El usuario cambió. Actualiza los datos antes de reintentar.');
+      } else if (
+        error instanceof ApiError &&
+        error.status === 409 &&
+        error.code === 'active-deletion-request'
+      ) {
+        setStatus('El acceso no puede cambiar durante una solicitud de eliminación activa.');
+      } else {
+        setStatus('No pudimos cambiar el acceso. Inténtalo de nuevo.');
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
   const verificationWorkflow = messageWorkflow(record, 'email-verification');
   const recoveryWorkflow = messageWorkflow(record, 'password-recovery');
   const verificationCooldown = cooldownSeconds(record, 'email-verification', now);
@@ -228,11 +254,45 @@ function AccessActions({ record, refresh }: { record: AdminReaderDetail; refresh
     recoveryWorkflow?.state !== 'scheduling-failed' && recoveryCooldown !== null;
   return (
     <div className="space-y-3 rounded-md border p-4">
+      <h3 className="font-semibold">Estado de acceso</h3>
+      <p>Estado de acceso: {record.access.state === 'active' ? 'Activo' : 'Deshabilitado'}</p>
+      <p>
+        Acceso efectivo:{' '}
+        {record.access.effectiveState === 'active'
+          ? 'Permitido'
+          : record.access.effectiveState === 'suspended'
+            ? 'Suspendido'
+            : 'Bloqueado'}
+      </p>
+      <div className="flex flex-wrap gap-2">
+        {record.access.state === 'active' ? (
+          <Button
+            variant="outline"
+            disabled={busy || deletionSuspended}
+            onClick={() => void updateAccess('disabled')}
+          >
+            Deshabilitar acceso
+          </Button>
+        ) : (
+          <Button
+            variant="outline"
+            disabled={busy || deletionSuspended}
+            onClick={() => void updateAccess('active')}
+          >
+            Rehabilitar acceso
+          </Button>
+        )}
+      </div>
+      {deletionSuspended ? (
+        <p role="status">
+          Los cambios de acceso están bloqueados mientras la solicitud esté activa.
+        </p>
+      ) : null}
       <h3 className="font-semibold">Acciones de correo</h3>
       <div className="flex flex-wrap gap-2">
         {!record.emailVerified ? (
           <Button
-            disabled={busy}
+            disabled={busy || deletionSuspended}
             onClick={() =>
               void run(
                 () => adminForceReaderEmailVerification(record.id, record.revision),
@@ -245,7 +305,7 @@ function AccessActions({ record, refresh }: { record: AdminReaderDetail; refresh
         ) : null}
         <Button
           variant="outline"
-          disabled={busy || record.emailVerified || verificationLocked}
+          disabled={busy || deletionSuspended || record.emailVerified || verificationLocked}
           onClick={() => {
             requestMessage('email-verification', 'Correo de verificación programado.');
           }}
@@ -254,7 +314,7 @@ function AccessActions({ record, refresh }: { record: AdminReaderDetail; refresh
         </Button>
         <Button
           variant="outline"
-          disabled={busy || !hasPassword || recoveryLocked}
+          disabled={busy || deletionSuspended || !hasPassword || recoveryLocked}
           onClick={() => {
             requestMessage('password-recovery', 'Correo de recuperación programado.');
           }}
@@ -265,6 +325,11 @@ function AccessActions({ record, refresh }: { record: AdminReaderDetail; refresh
       {!hasPassword ? (
         <p className="text-muted-foreground">
           La recuperación requiere un método de acceso con contraseña.
+        </p>
+      ) : null}
+      {deletionSuspended ? (
+        <p role="status">
+          Las acciones de acceso y correo están bloqueadas durante la suspensión por eliminación.
         </p>
       ) : null}
       {verificationWorkflow !== undefined ? (
@@ -284,14 +349,8 @@ export function UsersShow() {
   const search = listSearch(location.state);
   const navigationState = search.length > 0 ? { fromList: search } : undefined;
   const validId = id !== undefined && id.length > 0 && id.length <= 128;
-  const [lifecycleVisited, setLifecycleVisited] = useState(false);
   const [activeTab, setActiveTab] = useState('summary');
   const [emailChangeTerminalState, setEmailChangeTerminalState] = useState<string | null>(null);
-  useEffect(() => {
-    setLifecycleVisited(false);
-    setActiveTab('summary');
-    setEmailChangeTerminalState(null);
-  }, [id]);
   const query = useGetOne<AdminReaderDetail>(
     'users',
     { id: id ?? '' },
@@ -376,7 +435,6 @@ export function UsersShow() {
           onValueChange={(value) => {
             if (typeof value === 'string') {
               setActiveTab(value);
-              if (value === 'lifecycle') setLifecycleVisited(true);
             }
           }}
           className="min-w-0 max-w-full overflow-hidden"
@@ -458,14 +516,18 @@ export function UsersShow() {
                 Estado terminal de la solicitud anterior: {emailChangeTerminalState}.
               </p>
             ) : null}
-            {lifecycleVisited ? (
-              <EmailChangeActions
-                key={query.data.id}
-                record={query.data}
-                refresh={() => query.refetch()}
-                onTerminalState={setEmailChangeTerminalState}
-              />
-            ) : null}
+            <p>Estado de eliminación: {query.data.deletionState ?? 'Sin solicitud activa'}</p>
+            <DeletionRequestActions
+              key={`deletion-${query.data.id}`}
+              record={query.data}
+              refresh={() => query.refetch()}
+            />
+            <EmailChangeActions
+              key={query.data.id}
+              record={query.data}
+              refresh={() => query.refetch()}
+              onTerminalState={setEmailChangeTerminalState}
+            />
           </TabsContent>
           <TabsContent value="activity" className="pt-4">
             <Activity userId={id} />

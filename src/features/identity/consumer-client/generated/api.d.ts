@@ -660,6 +660,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/admin/users/{userId}/access": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Disable or rehabilitate Reader access
+         * @description Changes the Reader access state with its account revision precondition. Disabling revokes all Reader sessions; rehabilitation permits future sign-in but never restores revoked sessions. An active deletion request blocks this independent access transition.
+         */
+        put: operations["updateAdminReaderAccess"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/admin/users/{userId}/email-verification": {
         parameters: {
             query?: never;
@@ -775,6 +795,46 @@ export interface paths {
          * @description Cancels a pending email-change workflow with its workflow revision precondition and releases the email reservation.
          */
         delete: operations["cancelAdminReaderEmailChange"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/users/{userId}/deletion-requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create a Reader deletion request for review
+         * @description Snapshots the Reader access state, immediately suspends effective access, revokes Reader sessions and atomically records the request, Event Ledger lifecycle event, audit event and idempotency result. The optional note is stored only on the request, never in ledger metadata. No email is sent.
+         */
+        post: operations["createAdminReaderDeletionRequest"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/users/{userId}/deletion-requests/{requestId}/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /**
+         * Review or cancel a Reader deletion request
+         * @description Transitions pending_review to approved, rejected or cancelled, and permits approved to be cancelled while no material deletion exists. Rejecting or cancelling restores the exact snapshotted access state. Approval/rejection require an administrative note; notes are stored only on the request and never copied to the Event Ledger.
+         */
+        put: operations["transitionAdminReaderDeletionRequest"];
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -1277,14 +1337,16 @@ export interface components {
             metadata: components["schemas"]["AdminAuditMetadata"];
         };
         /** @enum {string|null} */
-        AdminAuditProblemCode: "bad-request" | "conflict" | "payload-too-large" | "service-unavailable" | "not-found" | "internal-error" | "registration-disabled" | "email-password-disabled" | "email-verification-required" | "invalid-credentials" | "verification-invalid" | "reset-invalid" | "unauthenticated" | "forbidden" | "reader-not-found" | "administrator-not-found" | "administrator-disabled" | "self-disable-forbidden" | "last-operational-administrator" | "invalid-transition" | "no-usable-login-method" | "idempotency-key-reused" | "stale-revision" | "precondition-required" | "cooldown-active" | "delivery-scheduling-failed" | "admin-already-bootstrapped" | "admin-bootstrap-in-progress" | "admin-email-conflict" | "same-email" | "email-conflict" | "email-change-not-found" | null;
+        AdminAuditProblemCode: "bad-request" | "conflict" | "payload-too-large" | "service-unavailable" | "not-found" | "internal-error" | "registration-disabled" | "email-password-disabled" | "email-verification-required" | "invalid-credentials" | "verification-invalid" | "reset-invalid" | "unauthenticated" | "forbidden" | "reader-not-found" | "administrator-not-found" | "administrator-disabled" | "self-disable-forbidden" | "last-operational-administrator" | "invalid-transition" | "no-usable-login-method" | "idempotency-key-reused" | "stale-revision" | "precondition-required" | "cooldown-active" | "delivery-scheduling-failed" | "admin-already-bootstrapped" | "admin-bootstrap-in-progress" | "admin-email-conflict" | "same-email" | "email-conflict" | "email-change-not-found" | "active-deletion-request" | "deletion-request-not-found" | null;
         AdminAuditMetadata: {
             changed?: boolean;
             operation?: string;
             revision?: number;
+            /** @enum {string} */
+            previousAccessState?: "active" | "disabled";
             retryAfterSeconds?: number;
             /** @enum {string} */
-            state?: "committed" | "scheduling-failed";
+            state?: "committed" | "scheduling-failed" | "pending_review" | "approved" | "rejected" | "cancelled";
             supersedesId?: string;
             workflowId?: string;
         } | null;
@@ -1293,6 +1355,8 @@ export interface components {
             revision: number;
             summary: components["schemas"]["AdminReaderSummary"];
             access: components["schemas"]["AdminReaderAccess"];
+            /** @enum {string|null} */
+            deletionState: "pending_review" | "approved" | null;
             /** @description Safe locally usable login methods without provider identifiers. */
             methods: {
                 /** @enum {string} */
@@ -1323,11 +1387,15 @@ export interface components {
                 id: string;
                 /** @enum {string} */
                 type: "deletion-request";
-                state: string;
+                /** @enum {string} */
+                state: "pending_review" | "approved";
                 /** Format: date-time */
                 createdAt: string;
                 /** Format: date-time */
                 cooldownUntil?: string;
+                revision: number;
+                /** @enum {string} */
+                previousAccessState: "active" | "disabled";
             } | {
                 id: string;
                 /** @enum {string} */
@@ -1375,6 +1443,16 @@ export interface components {
                 /** @enum {string} */
                 realm: "administrator";
             };
+        };
+        AdminReaderAccessResult: {
+            /** @enum {string} */
+            state: "active" | "disabled";
+            changed: boolean;
+            revision: number;
+        };
+        AdminReaderAccessRequest: {
+            /** @enum {string} */
+            state: "active" | "disabled";
         };
         AdminReaderEmailVerification: {
             /**
@@ -1440,6 +1518,57 @@ export interface components {
             state: "pending" | "cancelled" | "completed" | "superseded" | "expired";
             changed: boolean;
             revision: number;
+        };
+        AdminReaderDeletionRequest: {
+            requestId: string;
+            /** @enum {string} */
+            state: "pending_review";
+            /** @enum {string} */
+            previousAccessState: "active" | "disabled";
+            /** @enum {boolean} */
+            changed: true;
+            revision: number;
+            accountRevision: number;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        AdminReaderDeletionRequestCreate: {
+            note?: string;
+        };
+        AdminReaderDeletionRequestTransition: {
+            requestId: string;
+            /** @enum {string} */
+            state: "pending_review" | "approved" | "rejected" | "cancelled";
+            /** @enum {string} */
+            previousAccessState: "active" | "disabled";
+            changed: boolean;
+            revision: number;
+            accountRevision: number;
+            /** Format: date-time */
+            updatedAt: string;
+        };
+        AdminReaderDeletionRequestStatus: {
+            /** @enum {string} */
+            state: "pending_review";
+            /** @description Optional note, trimmed and limited to 2,000 characters by the service. */
+            note?: string;
+        } | {
+            /** @enum {string} */
+            state: "approved";
+            /** @description Required for approval, trimmed and limited to 2,000 characters by the service. */
+            note: string;
+        } | {
+            /** @enum {string} */
+            state: "rejected";
+            /** @description Required for rejection, trimmed and limited to 2,000 characters by the service. */
+            note: string;
+        } | {
+            /** @enum {string} */
+            state: "cancelled";
+            /** @description Optional note, trimmed and limited to 2,000 characters by the service. */
+            note?: string;
         };
         AdminBootstrapResult: {
             /** @example abc123 */
@@ -1763,6 +1892,15 @@ export interface operations {
             };
             /** @description Invalid or expired action; stable code `verification-invalid`. */
             400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description An active Reader deletion request blocks email-change completion; stable code `active-deletion-request`. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2971,6 +3109,125 @@ export interface operations {
             };
         };
     };
+    updateAdminReaderAccess: {
+        parameters: {
+            query?: never;
+            header?: {
+                "if-match"?: string;
+            };
+            path: {
+                /** @description Opaque administrative User identifier. */
+                userId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["AdminReaderAccessRequest"];
+            };
+        };
+        responses: {
+            /** @description The current or changed Reader access state. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminReaderAccessResult"];
+                };
+            };
+            /** @description Invalid command input. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description No authoritative Administrator session. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The actor is not allowed to perform the command. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description Reader not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The command conflicts with current Reader state. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The resource revision is stale. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description A required precondition is missing. */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The message cooldown is active. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The command could not be audited or completed. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description Message scheduling failed after the command was committed. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+        };
+    };
     forceAdminReaderEmailVerification: {
         parameters: {
             query?: never;
@@ -3679,6 +3936,210 @@ export interface operations {
             };
             /** @description Message scheduling failed after the workflow was committed. */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+        };
+    };
+    createAdminReaderDeletionRequest: {
+        parameters: {
+            query?: never;
+            header?: {
+                "if-match"?: string;
+                "idempotency-key"?: string;
+            };
+            path: {
+                /** @description Opaque administrative User identifier. */
+                userId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["AdminReaderDeletionRequestCreate"];
+            };
+        };
+        responses: {
+            /** @description A pending review request was created and effective access suspended. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminReaderDeletionRequest"];
+                };
+            };
+            /** @description Invalid request or note. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description No authoritative Administrator session. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The actor is not authorized or is disabled. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description Reader or deletion request not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description An active request exists or the requested state transition is invalid. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The supplied account or workflow revision is stale. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description A required If-Match or Idempotency-Key header is missing. */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The command could not be audited or completed. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+        };
+    };
+    transitionAdminReaderDeletionRequest: {
+        parameters: {
+            query?: never;
+            header?: {
+                "if-match"?: string;
+                "idempotency-key"?: string;
+            };
+            path: {
+                userId: string;
+                requestId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["AdminReaderDeletionRequestStatus"];
+            };
+        };
+        responses: {
+            /** @description The deletion request transitioned or the current same-state result was replayed. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminReaderDeletionRequestTransition"];
+                };
+            };
+            /** @description Invalid request or note. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description No authoritative Administrator session. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The actor is not authorized or is disabled. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description Reader or deletion request not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description An active request exists or the requested state transition is invalid. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The supplied account or workflow revision is stale. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description A required If-Match or Idempotency-Key header is missing. */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The command could not be audited or completed. */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };

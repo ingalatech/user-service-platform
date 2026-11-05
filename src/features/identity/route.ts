@@ -23,6 +23,8 @@ import {
   AdminReaderActivityQuerySchema,
   AdminReaderActivitySchema,
   AdminReaderEmailVerificationSchema,
+  AdminReaderAccessRequestSchema,
+  AdminReaderAccessResultSchema,
   AdminReaderMessageRequestSchema,
   AdminReaderMessageSchema,
   AdminReaderEmailChangeRequestSchema,
@@ -31,6 +33,11 @@ import {
   AdminReaderEmailChangeSchema,
   AdminReaderEmailChangeCancelSchema,
   AdminReaderEmailChangeMessageSchema,
+  AdminReaderDeletionRequestCreateSchema,
+  AdminReaderDeletionRequestParamsSchema,
+  AdminReaderDeletionRequestSchema,
+  AdminReaderDeletionRequestStatusSchema,
+  AdminReaderDeletionRequestTransitionSchema,
   AuthConfigSchema,
   CheckPasswordResetRequestSchema,
   CheckPasswordResetResultSchema,
@@ -85,6 +92,20 @@ const adminReaderEmailChangeWorkflowHeaders = z
     'idempotency-key': z.string().min(1).max(128).optional(),
   })
   .openapi('AdminReaderEmailChangeWorkflowHeaders');
+
+const adminReaderDeletionCreateHeaders = z
+  .object({
+    'if-match': z.string().min(1).max(128).optional(),
+    'idempotency-key': z.string().min(1).max(128).optional(),
+  })
+  .openapi('AdminReaderDeletionCreateHeaders');
+
+const adminReaderDeletionTransitionHeaders = z
+  .object({
+    'if-match': z.string().min(1).max(128).optional(),
+    'idempotency-key': z.string().min(1).max(128).optional(),
+  })
+  .openapi('AdminReaderDeletionTransitionHeaders');
 
 const adminReaderCommandResponses = {
   400: {
@@ -321,6 +342,11 @@ export const verifyEmailRoute = createRoute({
     400: {
       content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
       description: 'Invalid or expired action; stable code `verification-invalid`.',
+    },
+    409: {
+      content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+      description:
+        'An active Reader deletion request blocks email-change completion; stable code `active-deletion-request`.',
     },
     500: {
       content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
@@ -888,6 +914,30 @@ export const adminReaderActivityRoute = createRoute({
   },
 });
 
+export const adminReaderAccessRoute = createRoute({
+  method: 'put',
+  path: '/admin/users/{userId}/access',
+  operationId: 'updateAdminReaderAccess',
+  summary: 'Disable or rehabilitate Reader access',
+  description:
+    'Changes the Reader access state with its account revision precondition. Disabling revokes all ' +
+    'Reader sessions; rehabilitation permits future sign-in but never restores revoked sessions. ' +
+    'An active deletion request blocks this independent access transition.',
+  tags: ['admin'],
+  request: {
+    params: AdminUserDetailParamsSchema,
+    headers: adminReaderIfMatchHeaders,
+    body: { content: { 'application/json': { schema: AdminReaderAccessRequestSchema } } },
+  },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: AdminReaderAccessResultSchema } },
+      description: 'The current or changed Reader access state.',
+    },
+    ...adminReaderCommandResponses,
+  },
+});
+
 export const adminReaderEmailVerificationRoute = createRoute({
   method: 'put',
   path: '/admin/users/{userId}/email-verification',
@@ -1026,6 +1076,92 @@ export const adminReaderEmailChangeCancelRoute = createRoute({
       description: 'The current or newly cancelled workflow state.',
     },
     ...adminReaderEmailChangeResponses,
+  },
+});
+
+const adminReaderDeletionRequestResponses = {
+  400: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'Invalid request or note.',
+  },
+  401: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'No authoritative Administrator session.',
+  },
+  403: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'The actor is not authorized or is disabled.',
+  },
+  404: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'Reader or deletion request not found.',
+  },
+  409: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'An active request exists or the requested state transition is invalid.',
+  },
+  412: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'The supplied account or workflow revision is stale.',
+  },
+  428: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'A required If-Match or Idempotency-Key header is missing.',
+  },
+  500: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'The command could not be audited or completed.',
+  },
+} as const;
+
+export const adminReaderDeletionRequestRoute = createRoute({
+  method: 'post',
+  path: '/admin/users/{userId}/deletion-requests',
+  operationId: 'createAdminReaderDeletionRequest',
+  summary: 'Create a Reader deletion request for review',
+  description:
+    'Snapshots the Reader access state, immediately suspends effective access, revokes Reader ' +
+    'sessions and atomically records the request, Event Ledger lifecycle event, audit event and ' +
+    'idempotency result. The optional note is stored only on the request, never in ledger ' +
+    'metadata. No email is sent.',
+  tags: ['admin'],
+  request: {
+    params: AdminUserDetailParamsSchema,
+    headers: adminReaderDeletionCreateHeaders,
+    body: { content: { 'application/json': { schema: AdminReaderDeletionRequestCreateSchema } } },
+  },
+  responses: {
+    201: {
+      content: { 'application/json': { schema: AdminReaderDeletionRequestSchema } },
+      description: 'A pending review request was created and effective access suspended.',
+    },
+    ...adminReaderDeletionRequestResponses,
+  },
+});
+
+export const adminReaderDeletionRequestStatusRoute = createRoute({
+  method: 'put',
+  path: '/admin/users/{userId}/deletion-requests/{requestId}/status',
+  operationId: 'transitionAdminReaderDeletionRequest',
+  summary: 'Review or cancel a Reader deletion request',
+  description:
+    'Transitions pending_review to approved, rejected or cancelled, and permits approved to be ' +
+    'cancelled while no material deletion exists. Rejecting or cancelling restores the exact ' +
+    'snapshotted access state. Approval/rejection require an administrative note; notes are ' +
+    'stored only on the request and never copied to the Event Ledger.',
+  tags: ['admin'],
+  request: {
+    params: AdminReaderDeletionRequestParamsSchema,
+    headers: adminReaderDeletionTransitionHeaders,
+    body: { content: { 'application/json': { schema: AdminReaderDeletionRequestStatusSchema } } },
+  },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: AdminReaderDeletionRequestTransitionSchema } },
+      description:
+        'The deletion request transitioned or the current same-state result was replayed.',
+    },
+    ...adminReaderDeletionRequestResponses,
   },
 });
 

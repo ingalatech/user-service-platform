@@ -320,6 +320,7 @@ describe('GET /v1/admin/users/{userId}', () => {
     expect(Object.keys(body).sort()).toEqual([
       'access',
       'activeWorkflows',
+      'deletionState',
       'email',
       'emailVerified',
       'id',

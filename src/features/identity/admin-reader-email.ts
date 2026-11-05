@@ -30,6 +30,7 @@ interface ReaderTarget {
   readonly email_verified: number;
   readonly revision: number | null;
   readonly access_state: string | null;
+  readonly deletion_active: number;
 }
 
 interface MessageWorkflow {
@@ -52,6 +53,7 @@ type CommonFailure =
   | { readonly kind: 'forbidden' }
   | { readonly kind: 'administrator-disabled' }
   | { readonly kind: 'reader-not-found' }
+  | { readonly kind: 'active-deletion-request' }
   | { readonly kind: 'internal-error' };
 
 export type ForceReaderEmailVerificationOutcome =
@@ -138,7 +140,12 @@ function problemBody(input: {
 async function readTarget(db: D1Database, userId: string): Promise<ReaderTarget | null> {
   const row = await db
     .prepare(
-      `SELECT u.id, u.email, u.email_verified, ras.revision, ras.state AS access_state
+      `SELECT u.id, u.email, u.email_verified, ras.revision, ras.state AS access_state,
+              EXISTS (
+                SELECT 1 FROM reader_deletion_request AS deletion
+                WHERE deletion.user_id = u.id
+                  AND deletion.state IN ('pending_review', 'approved')
+              ) AS deletion_active
        FROM user AS u
        LEFT JOIN reader_access_state AS ras ON ras.user_id = u.id
        WHERE u.id = ? AND (u.role IS NULL OR u.role <> 'admin')
@@ -513,6 +520,17 @@ export async function forceReaderEmailVerification(input: {
       code: 'reader-not-found',
     });
   }
+  if (target.deletion_active === 1) {
+    return await auditedFailure({
+      db: input.db,
+      actorId: input.administratorId,
+      subjectId: target.id,
+      requestId: input.requestId,
+      type: 'email-verification-attempt',
+      kind: 'active-deletion-request',
+      code: 'active-deletion-request',
+    });
+  }
   const expected = parseIfMatch(input.ifMatch);
   if (expected === null) {
     return auditedFailure({
@@ -562,7 +580,11 @@ export async function forceReaderEmailVerification(input: {
             `UPDATE reader_access_state
              SET revision = ?, mutation_token = ?, updated_at = ?
              WHERE user_id = ? AND revision = ?
-               AND NOT EXISTS (
+                AND NOT EXISTS (
+                  SELECT 1 FROM reader_deletion_request AS deletion
+                  WHERE deletion.user_id = ? AND deletion.state IN ('pending_review', 'approved')
+                )
+                AND NOT EXISTS (
                  SELECT 1 FROM reader_message_workflow
                  WHERE user_id = ? AND kind = 'email-verification' AND state = 'pending'
                    AND COALESCE(claimed_at, updated_at) > ?
@@ -574,6 +596,7 @@ export async function forceReaderEmailVerification(input: {
             now,
             target.id,
             revision,
+            target.id,
             target.id,
             now - CLAIM_LEASE_MS,
           ),
@@ -662,6 +685,18 @@ export async function forceReaderEmailVerification(input: {
           ),
       ]);
       if (results[1]?.meta.changes !== 1) {
+        const latestTarget = await readTarget(input.db, target.id);
+        if (latestTarget?.deletion_active === 1) {
+          return await auditedFailure({
+            db: input.db,
+            actorId: input.administratorId,
+            subjectId: target.id,
+            requestId: input.requestId,
+            type: 'email-verification-attempt',
+            kind: 'active-deletion-request',
+            code: 'active-deletion-request',
+          });
+        }
         return await auditedFailure({
           db: input.db,
           actorId: input.administratorId,
@@ -791,6 +826,17 @@ export async function requestReaderMessage(input: {
       type: `${input.kind}-attempt`,
       kind: 'reader-not-found',
       code: 'reader-not-found',
+    });
+  }
+  if (target.deletion_active === 1) {
+    return await auditedFailure({
+      db: input.db,
+      actorId: input.administratorId,
+      subjectId: target.id,
+      requestId: input.requestId,
+      type: `${input.kind}-attempt`,
+      kind: 'active-deletion-request',
+      code: 'active-deletion-request',
     });
   }
 
@@ -935,6 +981,9 @@ export async function requestReaderMessage(input: {
                   WHERE user_id = ? AND provider_id = 'credential' AND password IS NOT NULL
                 )
               )
+          ) AND NOT EXISTS (
+            SELECT 1 FROM reader_deletion_request AS deletion
+            WHERE deletion.user_id = ? AND deletion.state IN ('pending_review', 'approved')
           )
           ON CONFLICT(user_id, kind) DO UPDATE SET
             state = 'pending',
@@ -963,6 +1012,7 @@ export async function requestReaderMessage(input: {
         currentRevision(target),
         input.kind,
         input.kind,
+        target.id,
         target.id,
         now - CLAIM_LEASE_MS,
       ),
@@ -1104,6 +1154,17 @@ export async function requestReaderMessage(input: {
           type: attemptType,
           kind: 'reader-not-found',
           code: 'reader-not-found',
+        });
+      }
+      if (latestTarget.deletion_active === 1) {
+        return await auditedFailure({
+          db: input.db,
+          actorId: input.administratorId,
+          subjectId: target.id,
+          requestId: input.requestId,
+          type: attemptType,
+          kind: 'active-deletion-request',
+          code: 'active-deletion-request',
         });
       }
       if (input.kind === 'email-verification' && latestTarget.email_verified === 1) {

@@ -29,6 +29,11 @@ const ADMIN_AUDIT_EVENT_ALLOWLIST = [
   { version: 1, type: 'email-change-message-requested' },
   { version: 1, type: 'email-change-cancelled' },
   { version: 1, type: 'email-changed' },
+  { version: 1, type: 'deletion-request-attempt' },
+  { version: 1, type: 'deletion-requested' },
+  { version: 1, type: 'deletion-approved' },
+  { version: 1, type: 'deletion-rejected' },
+  { version: 1, type: 'deletion-cancelled' },
   { version: 1, type: 'password-recovery-attempt' },
   { version: 1, type: 'password-recovery-requested' },
 ] as const;
@@ -48,6 +53,11 @@ const METADATA_FIELDS_BY_TYPE: Readonly<Record<string, readonly string[]>> = {
   'email-change-message-requested': ['workflowId'],
   'email-change-cancelled': ['changed', 'revision', 'workflowId'],
   'email-changed': ['revision', 'workflowId'],
+  'deletion-request-attempt': ['changed', 'previousAccessState', 'revision', 'state', 'workflowId'],
+  'deletion-requested': ['previousAccessState', 'revision', 'workflowId'],
+  'deletion-approved': ['previousAccessState', 'revision', 'state', 'workflowId'],
+  'deletion-rejected': ['previousAccessState', 'revision', 'state', 'workflowId'],
+  'deletion-cancelled': ['previousAccessState', 'revision', 'state', 'workflowId'],
   'password-recovery-attempt': ['retryAfterSeconds', 'state'],
   'password-recovery-requested': ['workflowId'],
 };
@@ -136,6 +146,9 @@ function safeMetadata(type: string, serialized: string | null): AdminAuditEvent[
     ) {
       safe.revision = value;
     }
+    if (field === 'previousAccessState' && (value === 'active' || value === 'disabled')) {
+      safe.previousAccessState = value;
+    }
     if (
       field === 'retryAfterSeconds' &&
       typeof value === 'number' &&
@@ -167,7 +180,15 @@ function safeMetadata(type: string, serialized: string | null): AdminAuditEvent[
     ) {
       safe.operation = value;
     }
-    if (field === 'state' && (value === 'committed' || value === 'scheduling-failed')) {
+    if (
+      field === 'state' &&
+      (value === 'committed' ||
+        value === 'scheduling-failed' ||
+        value === 'pending_review' ||
+        value === 'approved' ||
+        value === 'rejected' ||
+        value === 'cancelled')
+    ) {
       safe.state = value;
     }
   }
