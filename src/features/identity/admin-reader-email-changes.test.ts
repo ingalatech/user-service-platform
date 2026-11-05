@@ -1110,4 +1110,107 @@ describe('Reader administrative email-change workflow', () => {
     ).toEqual({ state: 'pending' });
     expect((await get('/v1/me', reader.cookie)).status).toBe(200);
   });
+
+  it('fences email promotion against a deletion request committed after preflight', async () => {
+    const administratorCookie = await bootstrapAdministrator();
+    for (const deletionState of ['pending_review', 'approved'] as const) {
+      const reader = await registerVerifiedReader(
+        `completion-deletion-race-${deletionState}@example.com`,
+      );
+      const newEmail = `completion-deletion-race-new-${deletionState}@example.com`;
+      const created = await post(
+        `/v1/admin/users/${reader.id}/email-changes`,
+        { email: newEmail },
+        administratorCookie,
+        {
+          'if-match': '"1"',
+          'idempotency-key': `completion-deletion-race-create-${deletionState}`,
+        },
+      );
+      expect(created.status).toBe(201);
+      const workflow = (await created.json()) as { workflowId: string };
+      const token = mailer.sent.at(-1)?.token;
+      if (token === undefined) throw new Error('Expected the email-change token.');
+      let injectedRequest = false;
+      const racingDatabase = new Proxy(workerEnv.DB, {
+        get(database, property) {
+          if (property === 'batch') {
+            return async (statements: Parameters<Env['DB']['batch']>[0]) => {
+              if (!injectedRequest) {
+                injectedRequest = true;
+                const now = Date.now();
+                await workerEnv.DB.prepare(
+                  `INSERT INTO reader_deletion_request
+                 (id, user_id, state, revision, previous_access_state, decision_note,
+                  created_by, updated_by, created_at, updated_at)
+                 VALUES (?, ?, ?, 1, 'active', ?, 'race-administrator',
+                   'race-administrator', ?, ?)`,
+                )
+                  .bind(
+                    `completion-race-deletion-${deletionState}`,
+                    reader.id,
+                    deletionState,
+                    deletionState === 'approved' ? 'Reviewed for deletion.' : null,
+                    now,
+                    now,
+                  )
+                  .run();
+              }
+              return database.batch(statements);
+            };
+          }
+          const value: unknown = Reflect.get(database, property, database);
+          if (typeof value === 'function') {
+            const bound: unknown = value.bind(database);
+            return bound;
+          }
+          return value;
+        },
+      });
+      const response = await app.request(
+        '/v1/auth/verify-email',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ token }),
+        },
+        testEnv(racingDatabase),
+        executionContext,
+      );
+      expect(injectedRequest).toBe(true);
+      expect(response.status).toBe(409);
+      expect(response.headers.get('cache-control')).toBe('no-store');
+      expect(await response.json()).toMatchObject({ code: 'active-deletion-request' });
+      expect(
+        await workerEnv.DB.prepare('SELECT email, email_verified FROM user WHERE id = ?')
+          .bind(reader.id)
+          .first<{ email: string; email_verified: number }>(),
+      ).toEqual({
+        email: `completion-deletion-race-${deletionState}@example.com`,
+        email_verified: 1,
+      });
+      expect(
+        await workerEnv.DB.prepare('SELECT state FROM reader_email_change_workflow WHERE id = ?')
+          .bind(workflow.workflowId)
+          .first<{ state: string }>(),
+      ).toEqual({ state: 'pending' });
+      expect(
+        await workerEnv.DB.prepare('SELECT count(*) AS count FROM session WHERE user_id = ?')
+          .bind(reader.id)
+          .first<{ count: number }>(),
+      ).toEqual({ count: 1 });
+      const audit = await workerEnv.DB.prepare(
+        `SELECT type, result, problem_code, metadata FROM identity_event
+       WHERE subject_id = ? AND type = 'email-change-attempt' AND result = 'failure'
+         AND problem_code = 'active-deletion-request'`,
+      )
+        .bind(reader.id)
+        .first<{ type: string; result: string; problem_code: string; metadata: string | null }>();
+      expect(audit).toMatchObject({
+        type: 'email-change-attempt',
+        result: 'failure',
+        problem_code: 'active-deletion-request',
+      });
+    }
+  });
 });

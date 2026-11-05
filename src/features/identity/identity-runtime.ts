@@ -4,8 +4,6 @@ import {
   type EffectiveConfig,
 } from '../../config/index.js';
 import type { Env } from '../../env.js';
-import { eq } from 'drizzle-orm';
-import { drizzle } from 'drizzle-orm/d1';
 import {
   createAdministrationAuth,
   createBootstrapIdentityAuth,
@@ -38,7 +36,6 @@ import type {
   SessionResolvePhase,
 } from './session.js';
 import { toAdministratorSessionContext, toSessionContext } from './session.js';
-import { identitySchema } from './schema.js';
 import { base64url } from 'jose';
 import { z } from 'zod';
 import { digestVerificationToken } from './verification-token.js';
@@ -466,12 +463,25 @@ export function createIdentityRuntime(input: IdentityRuntimeInput) {
     const session = toSessionContext(engineSession);
     if (session === null) return null;
     try {
-      const readerRows = await drizzle(input.env.DB, { schema: identitySchema })
-        .select({ role: identitySchema.user.role })
-        .from(identitySchema.user)
-        .where(eq(identitySchema.user.id, session.user.id))
-        .limit(1);
-      return readerRows[0] !== undefined && readerRows[0].role !== 'admin' ? session : null;
+      const reader = await input.env.DB.prepare(
+        `SELECT u.role, ras.state AS access_state,
+                  EXISTS (
+                    SELECT 1 FROM reader_deletion_request AS deletion
+                    WHERE deletion.user_id = u.id
+                      AND deletion.state IN ('pending_review', 'approved')
+                  ) AS deletion_active
+           FROM user AS u
+           LEFT JOIN reader_access_state AS ras ON ras.user_id = u.id
+           WHERE u.id = ? LIMIT 1`,
+      )
+        .bind(session.user.id)
+        .first<{ role: string | null; access_state: string | null; deletion_active: number }>();
+      return reader !== null &&
+        reader.role !== 'admin' &&
+        reader.access_state !== 'disabled' &&
+        reader.deletion_active === 0
+        ? session
+        : null;
     } catch (error) {
       logSessionResolveFailure({
         phase: 'session',

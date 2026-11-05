@@ -49,7 +49,9 @@ export type ProblemCode =
   | 'admin-email-conflict'
   | 'same-email'
   | 'email-conflict'
-  | 'email-change-not-found';
+  | 'email-change-not-found'
+  | 'active-deletion-request'
+  | 'deletion-request-not-found';
 
 export interface CreateProblemInput<TCode extends string = ProblemCode> {
   status: number;

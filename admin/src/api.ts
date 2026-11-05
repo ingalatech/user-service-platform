@@ -13,13 +13,20 @@ import {
   AdminMeSchema,
   AdminReaderEmailVerificationSchema,
   AdminReaderActivitySchema,
+  AdminReaderAccessRequestSchema,
+  AdminReaderAccessResultSchema,
   AdminReaderDetailSchema,
   AdminReaderEmailChangeCancelSchema,
   AdminReaderEmailChangeCommandSchema,
   AdminReaderEmailChangeMessageSchema,
   AdminReaderEmailChangeParamsSchema,
+  AdminReaderDeletionRequestParamsSchema,
   AdminReaderEmailChangeRequestSchema,
   AdminReaderEmailChangeSchema,
+  AdminReaderDeletionRequestSchema,
+  AdminReaderDeletionRequestTransitionSchema,
+  AdminReaderDeletionRequestCreateSchema,
+  AdminReaderDeletionRequestStatusSchema,
   AdminReaderMessageSchema,
   AdminUserDetailParamsSchema,
   AdminUserListQuerySchema,
@@ -39,8 +46,12 @@ import {
   type AdminAuditEvents,
   type AdminAuditEventsQuery,
   type AdminReaderActivity,
+  type AdminReaderAccessRequest,
+  type AdminReaderAccessResult,
   type AdminReaderDetail,
   type AdminReaderEmailChange,
+  type AdminReaderDeletionRequest,
+  type AdminReaderDeletionRequestTransition,
   type AdminReaderEmailChangeCancel,
   type AdminReaderEmailChangeMessage,
   type AdminReaderEmailVerification,
@@ -406,6 +417,75 @@ export async function adminCancelReaderEmailChange(
   );
   if (!parsed.success) throw new ApiError(502);
   return parsed.data;
+}
+
+export async function adminCreateReaderDeletionRequest(
+  id: AdminUserDetailParams['userId'],
+  accountRevision: number,
+  idempotencyKey: string,
+  note?: string,
+): Promise<AdminReaderDeletionRequest> {
+  const params = AdminUserDetailParamsSchema.safeParse({ userId: id });
+  const body = AdminReaderDeletionRequestCreateSchema.safeParse(note === undefined ? {} : { note });
+  if (!params.success || !body.success) throw new ApiError(400, 'bad-request');
+  const parsed = AdminReaderDeletionRequestSchema.safeParse(
+    await request(
+      `/v1/admin/users/${encodeURIComponent(params.data.userId)}/deletion-requests`,
+      body.data,
+      undefined,
+      'POST',
+      { 'if-match': `"${String(accountRevision)}"`, 'idempotency-key': idempotencyKey },
+    ),
+  );
+  if (!parsed.success) throw new ApiError(502);
+  return parsed.data;
+}
+
+export async function adminTransitionReaderDeletionRequest(
+  userId: AdminUserDetailParams['userId'],
+  requestId: string,
+  revision: number,
+  state: 'approved' | 'rejected' | 'cancelled',
+  idempotencyKey: string,
+  note?: string,
+): Promise<AdminReaderDeletionRequestTransition> {
+  const params = AdminReaderDeletionRequestParamsSchema.safeParse({ userId, requestId });
+  const body = AdminReaderDeletionRequestStatusSchema.safeParse(
+    note === undefined ? { state } : { state, note },
+  );
+  if (!params.success || !body.success) throw new ApiError(400, 'bad-request');
+  const parsed = AdminReaderDeletionRequestTransitionSchema.safeParse(
+    await request(
+      `/v1/admin/users/${encodeURIComponent(params.data.userId)}/deletion-requests/${encodeURIComponent(params.data.requestId)}/status`,
+      body.data,
+      undefined,
+      'PUT',
+      { 'if-match': `"${String(revision)}"`, 'idempotency-key': idempotencyKey },
+    ),
+  );
+  if (!parsed.success) throw new ApiError(502);
+  return parsed.data;
+}
+
+export async function adminSetReaderAccess(
+  userId: AdminUserDetailParams['userId'],
+  state: AdminReaderAccessRequest['state'],
+  revision: number,
+): Promise<AdminReaderAccessResult> {
+  const params = AdminUserDetailParamsSchema.safeParse({ userId });
+  const body = AdminReaderAccessRequestSchema.safeParse({ state });
+  if (!params.success || !body.success) throw new ApiError(400, 'bad-request');
+  const result = AdminReaderAccessResultSchema.safeParse(
+    await request(
+      `/v1/admin/users/${encodeURIComponent(params.data.userId)}/access`,
+      body.data,
+      undefined,
+      'PUT',
+      { 'if-match': `"${String(revision)}"` },
+    ),
+  );
+  if (!result.success) throw new ApiError(502);
+  return result.data;
 }
 
 export async function adminUserAccountDetails(

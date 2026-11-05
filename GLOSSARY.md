@@ -63,6 +63,18 @@ revokes Reader sessions, and invalidates earlier verification, recovery and
 email-change workflows. Tokens and action URLs are never exposed by
 administrative projections.
 
+### Reader Deletion Request
+
+An Administrator-owned review workflow for a Reader's requested deletion. Only
+one `pending_review` or `approved` request may be active for a Reader. The
+request snapshots the Reader's prior `active` or `disabled` access state;
+while active, effective access is suspended and Reader sessions are revoked.
+Rejecting or cancelling restores the snapshot exactly, while an approved
+request remains suspended until it is cancelled. A deletion request is not
+material account deletion; material deletion and retention are separate
+operator-controlled concerns. Administrative notes stay with the request and
+are excluded from Event Ledger metadata and public projections.
+
 ### Auth Policy
 
 Deployment-level configuration that controls supported authentication behaviour without exposing Better Auth configuration directly to feature code. It includes capabilities such as registration enablement, email/password enablement, required email verification, password creation requirements, OAuth providers, and auth/session lifetimes. Password creation requirements apply to registration, reset and administrator bootstrap, not login. The initial deployment requires verified email before login succeeds.

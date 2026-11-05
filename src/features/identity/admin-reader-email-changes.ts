@@ -32,6 +32,7 @@ type FailureKind =
   | 'forbidden'
   | 'administrator-disabled'
   | 'reader-not-found'
+  | 'active-deletion-request'
   | 'email-change-not-found'
   | 'bad-request'
   | 'precondition-required'
@@ -50,6 +51,7 @@ interface ReaderTarget {
   readonly email: string;
   readonly email_verified: number;
   readonly access_state: string | null;
+  readonly deletion_state: string | null;
   readonly revision: number | null;
 }
 
@@ -114,6 +116,7 @@ export type ReaderEmailChangeFailure =
 export type CompleteReaderEmailChangeOutcome =
   | { readonly kind: 'not-email-change' }
   | { readonly kind: 'completed' }
+  | { readonly kind: 'active-deletion-request' }
   | { readonly kind: 'verification-invalid' }
   | { readonly kind: 'internal-error' };
 
@@ -144,9 +147,12 @@ async function digestBody(body: unknown): Promise<string> {
 async function readTarget(db: D1Database, userId: string): Promise<ReaderTarget | null> {
   const row = await db
     .prepare(
-      `SELECT u.id, u.email, u.email_verified, ras.state AS access_state, ras.revision
+      `SELECT u.id, u.email, u.email_verified, ras.state AS access_state, ras.revision,
+              deletion.state AS deletion_state
        FROM user AS u
        LEFT JOIN reader_access_state AS ras ON ras.user_id = u.id
+       LEFT JOIN reader_deletion_request AS deletion
+         ON deletion.user_id = u.id AND deletion.state IN ('pending_review', 'approved')
        WHERE u.id = ? AND (u.role IS NULL OR u.role <> 'admin') LIMIT 1`,
     )
     .bind(userId)
@@ -617,13 +623,16 @@ export async function startReaderEmailChange(input: {
       kind: 'reader-not-found',
     });
   }
-  if (target.access_state !== null && target.access_state !== 'active') {
+  if (
+    (target.access_state !== null && target.access_state !== 'active') ||
+    target.deletion_state !== null
+  ) {
     return emailChangeFailure({
       db: input.db,
       actorId: input.administratorId,
       readerId: target.id,
       requestId: input.requestId,
-      kind: 'invalid-transition',
+      kind: target.deletion_state !== null ? 'active-deletion-request' : 'invalid-transition',
     });
   }
 
@@ -835,11 +844,15 @@ export async function startReaderEmailChange(input: {
             `UPDATE reader_access_state
              SET revision = ?, mutation_token = ?, updated_at = ?
              WHERE user_id = ? AND revision = ? AND state = 'active'
-               AND EXISTS (
-                 SELECT 1 FROM user AS current_user
-                 WHERE current_user.id = ? AND current_user.email = ?
-                   AND (current_user.role IS NULL OR current_user.role <> 'admin')
-               )
+                AND EXISTS (
+                  SELECT 1 FROM user AS current_user
+                  WHERE current_user.id = ? AND current_user.email = ?
+                    AND (current_user.role IS NULL OR current_user.role <> 'admin')
+                )
+                AND NOT EXISTS (
+                  SELECT 1 FROM reader_deletion_request AS deletion
+                  WHERE deletion.user_id = ? AND deletion.state IN ('pending_review', 'approved')
+                )
                 AND NOT EXISTS (
                   SELECT 1 FROM user AS other
                   WHERE other.id <> ? AND lower(trim(other.email)) = ?
@@ -865,6 +878,7 @@ export async function startReaderEmailChange(input: {
             revision,
             target.id,
             target.email,
+            target.id,
             target.id,
             normalizedNewEmail,
             normalizedNewEmail,
@@ -924,9 +938,12 @@ export async function startReaderEmailChange(input: {
               supersedes_id, creator_id, creation_key, expires_at, cooldown_until, created_at,
               updated_at, last_scheduled_at, claim_token, claimed_at)
              SELECT ?, ?, ?, ?, ?, 'pending', 1, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?
-             WHERE EXISTS (
-               SELECT 1 FROM reader_access_state
-               WHERE user_id = ? AND revision = ? AND mutation_token = ? AND state = 'active'
+              WHERE EXISTS (
+                SELECT 1 FROM reader_access_state
+                WHERE user_id = ? AND revision = ? AND mutation_token = ? AND state = 'active'
+              ) AND NOT EXISTS (
+                SELECT 1 FROM reader_deletion_request AS deletion
+                WHERE deletion.user_id = ? AND deletion.state IN ('pending_review', 'approved')
               ) AND NOT EXISTS (
                 SELECT 1 FROM user AS other
                 WHERE other.id <> ? AND lower(trim(other.email)) = ?
@@ -960,6 +977,7 @@ export async function startReaderEmailChange(input: {
             target.id,
             nextAccountRevision,
             mutationToken,
+            target.id,
             target.id,
             normalizedNewEmail,
             normalizedNewEmail,
@@ -1160,6 +1178,15 @@ export async function startReaderEmailChange(input: {
       return { kind: 'delivery-scheduling-failed' };
     }
     const latestTarget = await readTarget(input.db, target.id);
+    if (latestTarget !== null && latestTarget.deletion_state !== null) {
+      return emailChangeFailure({
+        db: input.db,
+        actorId: input.administratorId,
+        readerId: target.id,
+        requestId: input.requestId,
+        kind: 'active-deletion-request',
+      });
+    }
     if (latestTarget !== null && currentRevision(latestTarget) !== revision) {
       return emailChangeFailure({
         db: input.db,
@@ -1314,15 +1341,18 @@ export async function resendReaderEmailChangeMessage(input: {
       code: 'reader-not-found',
     });
   }
-  if (target.access_state !== null && target.access_state !== 'active') {
+  if (
+    (target.access_state !== null && target.access_state !== 'active') ||
+    target.deletion_state !== null
+  ) {
     return auditedFailure<ResendReaderEmailChangeOutcome>({
       db: input.db,
       actorId: input.administratorId,
       subjectId: target.id,
       requestId: input.requestId,
       type: 'email-change-message-attempt',
-      kind: 'invalid-transition',
-      code: 'invalid-transition',
+      kind: target.deletion_state !== null ? 'active-deletion-request' : 'invalid-transition',
+      code: target.deletion_state !== null ? 'active-deletion-request' : 'invalid-transition',
     });
   }
   const retrying = existing?.response_status === 102 || existing?.response_status === 503;
@@ -1412,10 +1442,13 @@ export async function resendReaderEmailChangeMessage(input: {
            WHERE id = ? AND user_id = ? AND state = 'pending' AND revision = ?
              AND claim_token IS ? AND (
                (? = 1) OR (cooldown_until <= ? AND (claimed_at IS NULL OR claimed_at <= ?))
-             ) AND EXISTS (
-               SELECT 1 FROM reader_access_state
-               WHERE user_id = ? AND state = 'active'
-             )`,
+              ) AND EXISTS (
+                SELECT 1 FROM reader_access_state
+                WHERE user_id = ? AND state = 'active'
+              ) AND NOT EXISTS (
+                SELECT 1 FROM reader_deletion_request AS deletion
+                WHERE deletion.user_id = ? AND deletion.state IN ('pending_review', 'approved')
+              )`,
         )
         .bind(
           nextRevision,
@@ -1431,6 +1464,7 @@ export async function resendReaderEmailChangeMessage(input: {
           retrying ? 1 : 0,
           now,
           now - CLAIM_LEASE_MS,
+          target.id,
           target.id,
         ),
       input.db
@@ -1584,6 +1618,18 @@ export async function resendReaderEmailChangeMessage(input: {
     }
     if (currentCommand?.response_status === 102 || currentCommand?.response_status === 503) {
       return { kind: 'delivery-scheduling-failed' };
+    }
+    const latestTarget = await readTarget(input.db, target.id);
+    if (latestTarget !== null && latestTarget.deletion_state !== null) {
+      return await auditedFailure<ResendReaderEmailChangeOutcome>({
+        db: input.db,
+        actorId: input.administratorId,
+        subjectId: target.id,
+        requestId: input.requestId,
+        type: 'email-change-message-attempt',
+        kind: 'active-deletion-request',
+        code: 'active-deletion-request',
+      });
     }
     const latest = await readWorkflow({ db: input.db, userId: target.id, workflowId: workflow.id });
     if (latest !== null && latest.cooldown_until > now) {
@@ -1774,6 +1820,17 @@ export async function cancelReaderEmailChange(input: {
       code: 'reader-not-found',
     });
   }
+  if (target.deletion_state !== null) {
+    return auditedFailure<CancelReaderEmailChangeOutcome>({
+      db: input.db,
+      actorId: input.administratorId,
+      subjectId: target.id,
+      requestId: input.requestId,
+      type: 'email-change-attempt',
+      kind: 'active-deletion-request',
+      code: 'active-deletion-request',
+    });
+  }
   const workflow = await readWorkflow({
     db: input.db,
     userId: target.id,
@@ -1854,9 +1911,13 @@ export async function cancelReaderEmailChange(input: {
           .prepare(
             `UPDATE reader_email_change_workflow
              SET state = 'cancelled', revision = ?, claim_token = ?, claimed_at = NULL, updated_at = ?
-             WHERE id = ? AND user_id = ? AND state = 'pending' AND revision = ?`,
+             WHERE id = ? AND user_id = ? AND state = 'pending' AND revision = ?
+               AND NOT EXISTS (
+                 SELECT 1 FROM reader_deletion_request AS deletion
+                 WHERE deletion.user_id = ? AND deletion.state IN ('pending_review', 'approved')
+               )`,
           )
-          .bind(revision, mutationToken, now, workflow.id, target.id, workflow.revision),
+          .bind(revision, mutationToken, now, workflow.id, target.id, workflow.revision, target.id),
         input.db
           .prepare(
             `DELETE FROM email_verification_token
@@ -1993,6 +2054,18 @@ export async function cancelReaderEmailChange(input: {
     }
     const results = await input.db.batch(statements);
     if (changed && results[0]?.meta.changes !== 1) {
+      const latestTarget = await readTarget(input.db, target.id);
+      if (latestTarget !== null && latestTarget.deletion_state !== null) {
+        return await auditedFailure<CancelReaderEmailChangeOutcome>({
+          db: input.db,
+          actorId: input.administratorId,
+          subjectId: target.id,
+          requestId: input.requestId,
+          type: 'email-change-attempt',
+          kind: 'active-deletion-request',
+          code: 'active-deletion-request',
+        });
+      }
       return await auditedFailure<CancelReaderEmailChangeOutcome>({
         db: input.db,
         actorId: input.administratorId,
@@ -2040,6 +2113,28 @@ export async function completeReaderEmailChange(input: {
     normalizeVerificationTarget(target.email) !== oldEmail
   ) {
     return { kind: 'verification-invalid' };
+  }
+  const activeDeletionFailure = async (
+    deletionState: string,
+  ): Promise<CompleteReaderEmailChangeOutcome> => {
+    try {
+      await audit({
+        db: input.db,
+        actorId: workflow.creator_id,
+        subjectId: target.id,
+        requestId: input.requestId,
+        type: 'email-change-attempt',
+        result: 'failure',
+        problemCode: 'active-deletion-request',
+        metadata: { workflowId: workflow.id, state: deletionState },
+      });
+      return { kind: 'active-deletion-request' };
+    } catch {
+      return { kind: 'internal-error' };
+    }
+  };
+  if (target.deletion_state !== null) {
+    return activeDeletionFailure(target.deletion_state);
   }
   if (
     await hasCanonicalEmailConflict({
@@ -2094,9 +2189,12 @@ export async function completeReaderEmailChange(input: {
            WHERE user_id = ? AND revision = ? AND state = 'active'
              AND EXISTS (
                SELECT 1 FROM user AS current_user
-               WHERE current_user.id = ? AND lower(trim(current_user.email)) = ?
-                 AND (current_user.role IS NULL OR current_user.role <> 'admin')
-             ) AND EXISTS (
+              WHERE current_user.id = ? AND lower(trim(current_user.email)) = ?
+                  AND (current_user.role IS NULL OR current_user.role <> 'admin')
+              ) AND NOT EXISTS (
+                SELECT 1 FROM reader_deletion_request AS deletion
+                WHERE deletion.user_id = ? AND deletion.state IN ('pending_review', 'approved')
+              ) AND EXISTS (
                SELECT 1 FROM reader_email_change_workflow AS workflow
                WHERE workflow.id = ? AND workflow.user_id = ? AND workflow.state = 'pending'
                  AND workflow.revision = ? AND workflow.expires_at > ?
@@ -2127,6 +2225,7 @@ export async function completeReaderEmailChange(input: {
           revision,
           target.id,
           oldEmail,
+          target.id,
           workflow.id,
           target.id,
           workflow.revision,
@@ -2305,6 +2404,16 @@ export async function completeReaderEmailChange(input: {
     .prepare(`SELECT 1 AS promoted FROM user WHERE id = ? AND email = ? AND email_verified = 1`)
     .bind(target.id, newEmail)
     .first<{ promoted: number }>();
+  if (completed === null || promotedUser === null) {
+    const activeDeletion = await input.db
+      .prepare(
+        `SELECT state FROM reader_deletion_request
+         WHERE user_id = ? AND state IN ('pending_review', 'approved') LIMIT 1`,
+      )
+      .bind(target.id)
+      .first<{ state: string }>();
+    if (activeDeletion !== null) return activeDeletionFailure(activeDeletion.state);
+  }
   return completed !== null && promotedUser !== null
     ? { kind: 'completed' }
     : { kind: 'verification-invalid' };

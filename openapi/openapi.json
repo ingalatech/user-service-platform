@@ -1245,6 +1245,8 @@
           "same-email",
           "email-conflict",
           "email-change-not-found",
+          "active-deletion-request",
+          "deletion-request-not-found",
           null
         ]
       },
@@ -1267,6 +1269,13 @@
             "type": "integer",
             "minimum": 1
           },
+          "previousAccessState": {
+            "type": "string",
+            "enum": [
+              "active",
+              "disabled"
+            ]
+          },
           "retryAfterSeconds": {
             "type": "integer",
             "minimum": 1,
@@ -1276,7 +1285,11 @@
             "type": "string",
             "enum": [
               "committed",
-              "scheduling-failed"
+              "scheduling-failed",
+              "pending_review",
+              "approved",
+              "rejected",
+              "cancelled"
             ]
           },
           "supersedesId": {
@@ -1312,6 +1325,17 @@
               },
               "access": {
                 "$ref": "#/components/schemas/AdminReaderAccess"
+              },
+              "deletionState": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "enum": [
+                  "pending_review",
+                  "approved",
+                  null
+                ]
               },
               "methods": {
                 "type": "array",
@@ -1421,7 +1445,11 @@
                           ]
                         },
                         "state": {
-                          "type": "string"
+                          "type": "string",
+                          "enum": [
+                            "pending_review",
+                            "approved"
+                          ]
                         },
                         "createdAt": {
                           "type": "string",
@@ -1430,13 +1458,26 @@
                         "cooldownUntil": {
                           "type": "string",
                           "format": "date-time"
+                        },
+                        "revision": {
+                          "type": "integer",
+                          "minimum": 1
+                        },
+                        "previousAccessState": {
+                          "type": "string",
+                          "enum": [
+                            "active",
+                            "disabled"
+                          ]
                         }
                       },
                       "required": [
                         "id",
                         "type",
                         "state",
-                        "createdAt"
+                        "createdAt",
+                        "revision",
+                        "previousAccessState"
                       ]
                     },
                     {
@@ -1500,6 +1541,7 @@
               "revision",
               "summary",
               "access",
+              "deletionState",
               "methods",
               "activeWorkflows"
             ]
@@ -1622,6 +1664,47 @@
           "occurredAt",
           "actor"
         ]
+      },
+      "AdminReaderAccessResult": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "active",
+              "disabled"
+            ]
+          },
+          "changed": {
+            "type": "boolean"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "state",
+          "changed",
+          "revision"
+        ],
+        "additionalProperties": false
+      },
+      "AdminReaderAccessRequest": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "active",
+              "disabled"
+            ]
+          }
+        },
+        "required": [
+          "state"
+        ],
+        "additionalProperties": false
       },
       "AdminReaderEmailVerification": {
         "type": "object",
@@ -1837,6 +1920,214 @@
           "revision"
         ],
         "additionalProperties": false
+      },
+      "AdminReaderDeletionRequest": {
+        "type": "object",
+        "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending_review"
+            ]
+          },
+          "previousAccessState": {
+            "type": "string",
+            "enum": [
+              "active",
+              "disabled"
+            ]
+          },
+          "changed": {
+            "type": "boolean",
+            "enum": [
+              true
+            ]
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "accountRevision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "requestId",
+          "state",
+          "previousAccessState",
+          "changed",
+          "revision",
+          "accountRevision",
+          "createdAt",
+          "updatedAt"
+        ],
+        "additionalProperties": false
+      },
+      "AdminReaderDeletionRequestCreate": {
+        "type": "object",
+        "properties": {
+          "note": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 2000
+          }
+        },
+        "additionalProperties": false
+      },
+      "AdminReaderDeletionRequestTransition": {
+        "type": "object",
+        "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending_review",
+              "approved",
+              "rejected",
+              "cancelled"
+            ]
+          },
+          "previousAccessState": {
+            "type": "string",
+            "enum": [
+              "active",
+              "disabled"
+            ]
+          },
+          "changed": {
+            "type": "boolean"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "accountRevision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "requestId",
+          "state",
+          "previousAccessState",
+          "changed",
+          "revision",
+          "accountRevision",
+          "updatedAt"
+        ],
+        "additionalProperties": false
+      },
+      "AdminReaderDeletionRequestStatus": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "pending_review"
+                ]
+              },
+              "note": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000,
+                "description": "Optional note, trimmed and limited to 2,000 characters by the service."
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "approved"
+                ]
+              },
+              "note": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000,
+                "description": "Required for approval, trimmed and limited to 2,000 characters by the service."
+              }
+            },
+            "required": [
+              "state",
+              "note"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "rejected"
+                ]
+              },
+              "note": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000,
+                "description": "Required for rejection, trimmed and limited to 2,000 characters by the service."
+              }
+            },
+            "required": [
+              "state",
+              "note"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "state": {
+                "type": "string",
+                "enum": [
+                  "cancelled"
+                ]
+              },
+              "note": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2000,
+                "description": "Optional note, trimmed and limited to 2,000 characters by the service."
+              }
+            },
+            "required": [
+              "state"
+            ],
+            "additionalProperties": false
+          }
+        ]
       },
       "AdminBootstrapResult": {
         "type": "object",
@@ -2267,6 +2558,16 @@
           },
           "400": {
             "description": "Invalid or expired action; stable code `verification-invalid`.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An active Reader deletion request blocks email-change completion; stable code `active-deletion-request`.",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -3920,6 +4221,162 @@
         }
       }
     },
+    "/v1/admin/users/{userId}/access": {
+      "put": {
+        "operationId": "updateAdminReaderAccess",
+        "summary": "Disable or rehabilitate Reader access",
+        "description": "Changes the Reader access state with its account revision precondition. Disabling revokes all Reader sessions; rehabilitation permits future sign-in but never restores revoked sessions. An active deletion request blocks this independent access transition.",
+        "tags": [
+          "admin"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "Opaque administrative User identifier.",
+              "example": "abc123"
+            },
+            "required": true,
+            "description": "Opaque administrative User identifier.",
+            "name": "userId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "required": false,
+            "name": "if-match",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminReaderAccessRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The current or changed Reader access state.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminReaderAccessResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid command input.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No authoritative Administrator session.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The actor is not allowed to perform the command.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Reader not found.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The command conflicts with current Reader state.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource revision is stale.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "A required precondition is missing.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The message cooldown is active.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The command could not be audited or completed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Message scheduling failed after the command was committed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/admin/users/{userId}/email-verification": {
       "put": {
         "operationId": "forceAdminReaderEmailVerification",
@@ -4871,6 +5328,305 @@
           },
           "503": {
             "description": "Message scheduling failed after the workflow was committed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/users/{userId}/deletion-requests": {
+      "post": {
+        "operationId": "createAdminReaderDeletionRequest",
+        "summary": "Create a Reader deletion request for review",
+        "description": "Snapshots the Reader access state, immediately suspends effective access, revokes Reader sessions and atomically records the request, Event Ledger lifecycle event, audit event and idempotency result. The optional note is stored only on the request, never in ledger metadata. No email is sent.",
+        "tags": [
+          "admin"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "Opaque administrative User identifier.",
+              "example": "abc123"
+            },
+            "required": true,
+            "description": "Opaque administrative User identifier.",
+            "name": "userId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "required": false,
+            "name": "if-match",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "required": false,
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminReaderDeletionRequestCreate"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "A pending review request was created and effective access suspended.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminReaderDeletionRequest"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or note.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No authoritative Administrator session.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The actor is not authorized or is disabled.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Reader or deletion request not found.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An active request exists or the requested state transition is invalid.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The supplied account or workflow revision is stale.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "A required If-Match or Idempotency-Key header is missing.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The command could not be audited or completed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/users/{userId}/deletion-requests/{requestId}/status": {
+      "put": {
+        "operationId": "transitionAdminReaderDeletionRequest",
+        "summary": "Review or cancel a Reader deletion request",
+        "description": "Transitions pending_review to approved, rejected or cancelled, and permits approved to be cancelled while no material deletion exists. Rejecting or cancelling restores the exact snapshotted access state. Approval/rejection require an administrative note; notes are stored only on the request and never copied to the Event Ledger.",
+        "tags": [
+          "admin"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "required": true,
+            "name": "userId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "required": true,
+            "name": "requestId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "required": false,
+            "name": "if-match",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "required": false,
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdminReaderDeletionRequestStatus"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The deletion request transitioned or the current same-state result was replayed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminReaderDeletionRequestTransition"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid request or note.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No authoritative Administrator session.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The actor is not authorized or is disabled.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Reader or deletion request not found.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An active request exists or the requested state transition is invalid.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The supplied account or workflow revision is stale.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "A required If-Match or Idempotency-Key header is missing.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The command could not be audited or completed.",
             "content": {
               "application/problem+json": {
                 "schema": {

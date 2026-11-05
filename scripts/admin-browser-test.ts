@@ -74,6 +74,16 @@ async function visible(page: Page, name: string): Promise<void> {
   await page.getByRole('heading', { name, exact: true }).waitFor({ timeout: 15_000 });
 }
 
+async function selectTab(page: Page, name: string): Promise<void> {
+  await page.getByRole('tab', { name, exact: true }).click();
+  await page.waitForFunction<boolean>(
+    `(tabName) => [...document.querySelectorAll('[role="tab"]')].some((tab) =>
+      tab.offsetParent !== null && tab.getAttribute('aria-selected') === 'true' &&
+      tab.textContent?.trim() === tabName)`,
+    name,
+  );
+}
+
 async function signIn(page: Page, email: string, password: string): Promise<void> {
   await visible(page, 'Administración');
   await page.getByRole('textbox', { name: 'Correo electrónico', exact: true }).fill(email);
@@ -239,6 +249,9 @@ export async function runAdminBrowserTest(): Promise<void> {
     const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });
     const page = await context.newPage();
     diagnosticPage = page;
+    page.on('pageerror', () => {
+      phase = 'frontend runtime error';
+    });
     page.setDefaultTimeout(15_000);
     phase = 'administrator login';
     await page.goto(`${base}/admin/unknown-route`);
@@ -872,7 +885,7 @@ export async function runAdminBrowserTest(): Promise<void> {
       await route.continue();
     });
     phase = 'Reader email-change lifecycle controls';
-    await page.getByRole('tab', { name: 'Ciclo de vida', exact: true }).click();
+    await selectTab(page, 'Ciclo de vida');
     phase = 'Reader email-change render pending state';
     await page
       .getByText('No hay una solicitud de cambio de correo pendiente.', { exact: true })
@@ -933,7 +946,7 @@ export async function runAdminBrowserTest(): Promise<void> {
       ),
       'committed detail refresh projects the new pending email-change workflow',
     );
-    await page.getByRole('tab', { name: 'Ciclo de vida', exact: true }).click();
+    await selectTab(page, 'Ciclo de vida');
     assert(
       emailChangeKeys.length === 2 &&
         emailChangeKeys[0] !== '' &&
@@ -1008,7 +1021,7 @@ export async function runAdminBrowserTest(): Promise<void> {
         replacementBody.revision === 1,
       'replacement supersedes the prior workflow with a new safe workflow',
     );
-    await page.getByRole('tab', { name: 'Ciclo de vida', exact: true }).click();
+    await selectTab(page, 'Ciclo de vida');
     const canonicalAfterReplace = await http(
       `/v1/admin/users/${encodeURIComponent(emailChangeReaderId)}`,
       {
@@ -1131,7 +1144,7 @@ export async function runAdminBrowserTest(): Promise<void> {
         'Resumen|Acceso|Sesiones|Ciclo de vida|Actividad',
       'Reader detail exposes the approved tab order',
     );
-    await page.getByRole('tab', { name: 'Acceso', exact: true }).click();
+    await selectTab(page, 'Acceso');
     await page.getByText('Permitido', { exact: true }).waitFor();
     await page.getByText('Contraseña', { exact: true }).waitFor();
     await page.getByRole('tab', { name: 'Sesiones', exact: true }).click();
@@ -1140,13 +1153,239 @@ export async function runAdminBrowserTest(): Promise<void> {
         exact: true,
       })
       .waitFor();
+    await selectTab(page, 'Ciclo de vida');
+    phase = 'deletion lifecycle panel visible';
+    await page.getByRole('heading', { name: 'Solicitud de eliminación', exact: true }).waitFor();
+    const deletionNote = 'Browser acceptance private decision note';
+    await page.getByLabel('Nota (opcional)', { exact: true }).fill(deletionNote);
+    const deletionCreateRequest = page.waitForRequest(
+      (request) => request.method() === 'POST' && request.url().endsWith('/deletion-requests'),
+    );
+    const deletionCreateResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'POST' && response.url().endsWith('/deletion-requests'),
+    );
+    await page.getByRole('button', { name: 'Crear solicitud', exact: true }).click();
+    await page.getByRole('alertdialog', { name: 'Confirmar acción' }).waitFor();
+    assert(
+      await page.getByRole('button', { name: 'Confirmar', exact: true }).isVisible(),
+      'create requires accessible confirmation',
+    );
+    await page.getByRole('button', { name: 'Confirmar', exact: true }).click();
+    phase = 'deletion create response';
+    const createRequest = await deletionCreateRequest;
+    const deletionCreatedResponse = await deletionCreateResponse;
+    assert(
+      deletionCreatedResponse.status() === 201,
+      'deletion request is created through real Worker/D1',
+    );
+    assert(
+      (createRequest.headers()['if-match'] ?? '').length > 0 &&
+        (createRequest.headers()['idempotency-key'] ?? '').length > 0,
+      'create uses account ETag and Idempotency-Key',
+    );
+    const createdDeletion = (await deletionCreatedResponse.json()) as {
+      requestId: string;
+      revision: number;
+      previousAccessState: string;
+    };
+    assert(
+      createdDeletion.previousAccessState === 'active' && createdDeletion.revision === 1,
+      'request snapshots prior access',
+    );
+    const createdDeletionDetail = await http(
+      `/v1/admin/users/${encodeURIComponent(regularDetailId)}`,
+      { headers: { cookie: cookieHeader } },
+    );
+    assert(createdDeletionDetail.status === 200, 'created deletion detail remains readable');
+    const createdDeletionProjection = (await createdDeletionDetail.json()) as {
+      deletionState?: unknown;
+      access?: { state?: unknown; effectiveState?: unknown };
+      activeWorkflows?: { type?: unknown; id?: unknown; previousAccessState?: unknown }[];
+    };
+    assert(
+      createdDeletionProjection.deletionState === 'pending_review' &&
+        createdDeletionProjection.access?.effectiveState === 'suspended' &&
+        createdDeletionProjection.activeWorkflows?.some(
+          (workflow) =>
+            workflow.type === 'deletion-request' && workflow.id === createdDeletion.requestId,
+        ),
+      'detail projects the active deletion workflow and suspension after commit',
+    );
+    await page.reload();
+    phase = 'deletion detail reload heading';
+    await visible(page, 'Detalle de usuario');
+    phase = 'deletion lifecycle after reload';
     await page.getByRole('tab', { name: 'Ciclo de vida', exact: true }).click();
-    phase = 'regular Reader lifecycle empty state';
-    await page.getByText('No hay procesos de ciclo de vida activos.', { exact: true }).waitFor();
-    await page.getByRole('tab', { name: 'Actividad', exact: true }).click();
+    phase = 'deletion snapshot after reload';
+    await page.getByText('Acceso previo (snapshot): Activo', { exact: true }).waitFor();
+    assert(
+      await page.getByRole('button', { name: 'Aprobar solicitud', exact: true }).isDisabled(),
+      'approval requires a non-empty note',
+    );
+    phase = 'deletion access control blocking';
+    const accessPage = await page.context().newPage();
+    await accessPage.goto(`${base}/admin/users/${encodeURIComponent(regularDetailId)}`);
+    await visible(accessPage, 'Detalle de usuario');
+    await selectTab(accessPage, 'Acceso');
+    assert(
+      await accessPage
+        .getByRole('button', { name: 'Deshabilitar acceso', exact: true })
+        .isDisabled(),
+      'active deletion blocks access changes',
+    );
+    await accessPage.close();
+    const activeAfterAccessRead = await http(
+      `/v1/admin/users/${encodeURIComponent(regularDetailId)}`,
+      { headers: { cookie: cookieHeader } },
+    );
+    assert(
+      activeAfterAccessRead.status === 200,
+      'Reader detail remains readable after access-control check',
+    );
+    const activeAfterAccessBody = (await activeAfterAccessRead.json()) as {
+      deletionState?: unknown;
+    };
+    assert(
+      activeAfterAccessBody.deletionState === 'pending_review',
+      'access-control check leaves deletion workflow active',
+    );
+    assert(
+      await page.getByRole('button', { name: 'Iniciar cambio', exact: true }).isDisabled(),
+      'active deletion blocks email changes',
+    );
+    phase = 'deletion decision note and transition';
     await page
-      .getByText('No hay actividad de ciclo de vida registrada.', { exact: true })
+      .getByLabel('Nota (obligatoria para aprobar o rechazar)', { exact: true })
+      .fill(deletionNote);
+    await page.getByRole('button', { name: 'Aprobar solicitud', exact: true }).click();
+    await page.getByRole('alertdialog', { name: 'Confirmar acción' }).waitFor();
+    await page.getByRole('button', { name: 'Volver', exact: true }).click();
+    const decisionRequest = page.waitForRequest(
+      (request) =>
+        request.method() === 'PUT' &&
+        request.url().endsWith(`/deletion-requests/${createdDeletion.requestId}/status`),
+    );
+    const decisionKeys: string[] = [];
+    const decisionBodies: string[] = [];
+    let failDecisionOnce = true;
+    await page.route(
+      `**/v1/admin/users/${regularDetailId}/deletion-requests/${createdDeletion.requestId}/status`,
+      async (route) => {
+        decisionKeys.push(route.request().headers()['idempotency-key'] ?? '');
+        decisionBodies.push(JSON.stringify(route.request().postDataJSON()));
+        if (failDecisionOnce) {
+          failDecisionOnce = false;
+          await route.fulfill({
+            status: 503,
+            contentType: 'application/problem+json',
+            body: JSON.stringify({ status: 503, code: 'internal-error' }),
+          });
+        } else {
+          await route.continue();
+        }
+      },
+    );
+    await page.getByRole('button', { name: 'Rechazar solicitud', exact: true }).click();
+    await page.getByRole('alertdialog', { name: 'Confirmar acción' }).waitFor();
+    await page.getByRole('button', { name: 'Confirmar', exact: true }).click();
+    await page
+      .getByText(
+        'No recibimos una respuesta definitiva. Reintenta esta misma acción para comprobar el resultado.',
+        { exact: true },
+      )
       .waitFor();
+    phase = 'deletion retry payload freeze draft edit';
+    await page
+      .locator('#deletion-decision-note')
+      .fill('Changed draft must not alter the pending command');
+    const retryResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'PUT' &&
+        response.url().endsWith(`/deletion-requests/${createdDeletion.requestId}/status`),
+    );
+    phase = 'deletion retry payload freeze response';
+    await page.getByRole('button', { name: 'Reintentar acción pendiente', exact: true }).click();
+    const transitionResponse = await retryResponse;
+    assert(
+      transitionResponse.status() === 200,
+      'ambiguous transition retries to committed Worker response',
+    );
+    assert(
+      decisionKeys.length === 2 && decisionKeys[0] !== '' && decisionKeys[0] === decisionKeys[1],
+      'ambiguous transition retry reuses Idempotency-Key',
+    );
+    assert(
+      decisionBodies.length === 2 &&
+        decisionBodies[0] === decisionBodies[1] &&
+        decisionBodies[0]?.includes(deletionNote) === true &&
+        !decisionBodies[1]?.includes('Changed draft'),
+      'ambiguous transition retry sends the frozen original body despite draft edits',
+    );
+    await page.unroute(
+      `**/v1/admin/users/${regularDetailId}/deletion-requests/${createdDeletion.requestId}/status`,
+    );
+    const transitionRequest = await decisionRequest;
+    assert(transitionResponse.status() === 200, 'review transition commits');
+    assert(
+      transitionRequest.headers()['if-match'] === '"1"' &&
+        (transitionRequest.headers()['idempotency-key'] ?? '').length > 0,
+      'transition uses workflow ETag and Idempotency-Key',
+    );
+    const transitioned = (await transitionResponse.json()) as { state: string; changed: boolean };
+    assert(
+      transitioned.state === 'rejected' && transitioned.changed,
+      'reject is an observable transition',
+    );
+    phase = 'rejection committed detail refresh';
+    await page
+      .getByText(
+        'No hay una solicitud activa. Crear una suspende el acceso y revoca las sesiones.',
+        { exact: true },
+      )
+      .waitFor();
+    const rejectedLedger = await http(
+      `/v1/admin/users/${encodeURIComponent(regularDetailId)}/activity?limit=25`,
+      { headers: { cookie: cookieHeader } },
+    );
+    const rejectedLedgerText = await rejectedLedger.text();
+    assert(
+      !rejectedLedgerText.includes(deletionNote),
+      'decision note is absent from activity projection',
+    );
+    phase = 'rejection reload restoration';
+    await page.reload();
+    await visible(page, 'Detalle de usuario');
+    await page.getByRole('tab', { name: 'Acceso', exact: true }).click();
+    await page.getByText('Permitido', { exact: true }).waitFor();
+    assert(
+      (await page.locator('body').innerText()).includes('Activo'),
+      'rejection restores active access after reload',
+    );
+    phase = 'rejection restored';
+    await page.getByRole('tab', { name: 'Ciclo de vida', exact: true }).click();
+    await page.getByRole('button', { name: 'Crear solicitud', exact: true }).click();
+    await page.getByRole('alertdialog', { name: 'Confirmar acción' }).waitFor();
+    await page.getByRole('button', { name: 'Confirmar', exact: true }).click();
+    await page.getByText('Acceso previo (snapshot): Activo', { exact: true }).waitFor();
+    await page.getByRole('button', { name: 'Cancelar solicitud', exact: true }).click();
+    await page.getByRole('alertdialog', { name: 'Confirmar acción' }).waitFor();
+    await page.getByRole('button', { name: 'Confirmar', exact: true }).click();
+    await page
+      .getByText(
+        'No hay una solicitud activa. Crear una suspende el acceso y revoca las sesiones.',
+        { exact: true },
+      )
+      .waitFor();
+    phase = 'deletion request and rejection activity';
+    await page.getByRole('tab', { name: 'Actividad', exact: true }).click();
+    await page.getByText('deletion-requested', { exact: true }).first().waitFor();
+    await page.getByText('deletion-rejected', { exact: true }).waitFor();
+    phase = 'deletion activity privacy';
+    assert(
+      !(await page.locator('body').innerText()).includes(deletionNote),
+      'activity omits arbitrary decision note',
+    );
     const activityValues = Array.from({ length: 26 }, (_, index) => {
       const number = index + 1;
       const type = number === 26 ? 'email-verified' : 'access-disabled';
@@ -1500,6 +1739,7 @@ export async function runAdminBrowserTest(): Promise<void> {
         path: location.pathname,
         headings: [...document.querySelectorAll('h1')].map(node => node.textContent),
         alerts: [...document.querySelectorAll('[role="alert"]')].map(node => node.textContent),
+        text: document.body.innerText.slice(0, 1200),
       })`,
           )
           .catch(() => 'Page diagnostics unavailable'),
@@ -1509,7 +1749,7 @@ export async function runAdminBrowserTest(): Promise<void> {
       // cookies, storage, response bodies or action URLs are inspected here.
       console.info(
         'Administration browser state:',
-        summary.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[fixture]').slice(0, 1000),
+        summary.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, '[fixture]').slice(0, 1800),
       );
     }
     throw new Error(`Administration browser acceptance failed during ${phase}`, { cause });
@@ -1524,10 +1764,10 @@ export async function runAdminBrowserTest(): Promise<void> {
 }
 
 if (process.argv[1] !== undefined && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  runAdminBrowserTest().catch(() => {
+  runAdminBrowserTest().catch((cause: unknown) => {
     // Raw browser/transport exceptions can carry fixture values; no raw output.
     console.error(
-      'Administration browser acceptance failed. Run the test harness for its bounded stage report.',
+      cause instanceof Error ? cause.message : 'Administration browser acceptance failed.',
     );
     process.exitCode = 1;
   });

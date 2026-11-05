@@ -208,6 +208,18 @@ describe('generated OpenAPI artifact', () => {
   it('documents atomic Reader email-change completion outcomes and stable problems', async () => {
     const raw = await readFile(artifactPath, 'utf8');
     const document = JSON.parse(raw) as {
+      components: {
+        schemas: Record<
+          string,
+          {
+            required?: string[];
+            oneOf?: {
+              required?: string[];
+              properties?: Record<string, { description?: string }>;
+            }[];
+          }
+        >;
+      };
       paths: Record<
         string,
         Record<
@@ -225,5 +237,69 @@ describe('generated OpenAPI artifact', () => {
     expect(operation?.responses?.['200']?.description).toContain('atomically');
     expect(operation?.responses?.['400']?.description).toContain('verification-invalid');
     expect(operation?.responses?.['500']?.description).toContain('no partial');
+  });
+
+  it('publishes the application-owned Reader deletion-request operations', async () => {
+    const raw = await readFile(artifactPath, 'utf8');
+    const document = JSON.parse(raw) as {
+      components: {
+        schemas: Record<
+          string,
+          {
+            required?: string[];
+            oneOf?: {
+              required?: string[];
+              properties?: Record<string, { description?: string }>;
+            }[];
+            allOf?: { properties?: Record<string, unknown> }[];
+          }
+        >;
+      };
+      paths: Record<
+        string,
+        Record<string, { operationId?: string; responses?: Record<string, unknown> }>
+      >;
+    };
+    expect(document.paths['/v1/admin/users/{userId}/deletion-requests']?.post?.operationId).toBe(
+      'createAdminReaderDeletionRequest',
+    );
+    expect(
+      document.paths['/v1/admin/users/{userId}/deletion-requests']?.post?.responses,
+    ).toHaveProperty('201');
+    expect(
+      document.paths['/v1/admin/users/{userId}/deletion-requests/{requestId}/status']?.put
+        ?.operationId,
+    ).toBe('transitionAdminReaderDeletionRequest');
+    expect(
+      document.paths['/v1/admin/users/{userId}/deletion-requests/{requestId}/status']?.put
+        ?.responses,
+    ).toHaveProperty('200');
+    expect(document.components.schemas.AdminReaderDeletionRequest?.required).toEqual(
+      expect.arrayContaining([
+        'requestId',
+        'state',
+        'previousAccessState',
+        'changed',
+        'revision',
+        'accountRevision',
+      ]),
+    );
+    expect(document.components.schemas.AdminReaderDeletionRequestStatus?.oneOf).toHaveLength(4);
+    for (const index of [1, 2]) {
+      expect(
+        document.components.schemas.AdminReaderDeletionRequestStatus?.oneOf?.[index]?.required,
+      ).toContain('note');
+      expect(
+        document.components.schemas.AdminReaderDeletionRequestStatus?.oneOf?.[index]?.properties
+          ?.note?.description,
+      ).toContain('Required for');
+    }
+    expect(document.components.schemas.AdminReaderDetail?.allOf?.[1]?.properties).toHaveProperty(
+      'deletionState',
+    );
+    expect(document.paths['/v1/admin/users/{userId}/access']?.put?.operationId).toBe(
+      'updateAdminReaderAccess',
+    );
+    expect(document.paths['/v1/admin/users/{userId}/access']?.put?.responses).toHaveProperty('200');
   });
 });

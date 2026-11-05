@@ -93,6 +93,7 @@ describe('administration API contract', () => {
     expect(adminReader?.allOf?.[1]?.required?.slice().sort()).toEqual([
       'access',
       'activeWorkflows',
+      'deletionState',
       'methods',
       'revision',
       'summary',

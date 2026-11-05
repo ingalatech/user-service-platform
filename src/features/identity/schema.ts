@@ -1,4 +1,4 @@
-import { index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
+import { check, index, integer, sqliteTable, text, uniqueIndex } from 'drizzle-orm/sqlite-core';
 import { sql } from 'drizzle-orm';
 
 // Identity persistence owned by the identity feature slice (ADR-0002,
@@ -435,6 +435,44 @@ export const readerEmailChangeWorkflow = sqliteTable(
       .where(sql`${table.state} = 'pending'`),
     index('reader_email_change_user_created_idx').on(table.userId, table.createdAt, table.id),
     index('reader_email_change_expiry_idx').on(table.expiresAt),
+  ],
+);
+
+export const readerDeletionRequest = sqliteTable(
+  'reader_deletion_request',
+  {
+    id: text('id').primaryKey(),
+    userId: text('user_id')
+      .notNull()
+      .references(() => user.id, { onDelete: 'cascade' }),
+    state: text('state').notNull(),
+    revision: integer('revision').notNull().default(1),
+    previousAccessState: text('previous_access_state').notNull(),
+    requestNote: text('request_note'),
+    decisionNote: text('decision_note'),
+    cancellationNote: text('cancellation_note'),
+    createdBy: text('created_by').notNull(),
+    updatedBy: text('updated_by').notNull(),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (table) => [
+    check(
+      'reader_deletion_request_state_check',
+      sql`${table.state} IN ('pending_review', 'approved', 'rejected', 'cancelled')`,
+    ),
+    check(
+      'reader_deletion_request_snapshot_check',
+      sql`${table.previousAccessState} IN ('active', 'disabled')`,
+    ),
+    check(
+      'reader_deletion_request_decision_note_check',
+      sql`${table.state} NOT IN ('approved', 'rejected') OR ${table.decisionNote} IS NOT NULL`,
+    ),
+    uniqueIndex('reader_deletion_request_active_user_idx')
+      .on(table.userId)
+      .where(sql`${table.state} IN ('pending_review', 'approved')`),
+    index('reader_deletion_request_user_created_idx').on(table.userId, table.createdAt, table.id),
   ],
 );
 

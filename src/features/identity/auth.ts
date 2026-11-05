@@ -323,7 +323,20 @@ function sharedOptions(
                     .from(identitySchema.user)
                     .where(eq(identitySchema.user.id, session.userId))
                     .limit(1);
-                  return rows[0]?.role === 'admin' ? false : undefined;
+                  if (rows[0]?.role === 'admin') return false;
+                  const blocked = await db
+                    .prepare(
+                      `SELECT CASE WHEN EXISTS (
+                         SELECT 1 FROM reader_access_state
+                         WHERE user_id = ? AND state = 'disabled'
+                       ) OR EXISTS (
+                         SELECT 1 FROM reader_deletion_request
+                         WHERE user_id = ? AND state IN ('pending_review', 'approved')
+                       ) THEN 1 ELSE 0 END AS blocked`,
+                    )
+                    .bind(session.userId, session.userId)
+                    .first<{ blocked: number }>();
+                  return blocked?.blocked === 1 ? false : undefined;
                 },
               },
             },

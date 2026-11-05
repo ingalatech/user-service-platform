@@ -326,8 +326,18 @@ export const AdminAuditMetadataSchema = z
       .regex(/^[a-z][a-z0-9-]*$/)
       .optional(),
     revision: z.number().int().min(1).optional(),
+    previousAccessState: z.enum(['active', 'disabled']).optional(),
     retryAfterSeconds: z.number().int().min(1).max(86_400).optional(),
-    state: z.enum(['committed', 'scheduling-failed']).optional(),
+    state: z
+      .enum([
+        'committed',
+        'scheduling-failed',
+        'pending_review',
+        'approved',
+        'rejected',
+        'cancelled',
+      ])
+      .optional(),
     supersedesId: z
       .string()
       .min(1)
@@ -378,6 +388,8 @@ export const AdminAuditProblemCodeSchema = z
     'same-email',
     'email-conflict',
     'email-change-not-found',
+    'active-deletion-request',
+    'deletion-request-not-found',
   ])
   .openapi('AdminAuditProblemCode');
 
@@ -466,6 +478,20 @@ export const AdminAdministratorAccessResultSchema = z
   })
   .openapi('AdminAdministratorAccessResult');
 
+export const AdminReaderAccessRequestSchema = z
+  .object({ state: z.enum(['active', 'disabled']) })
+  .strict()
+  .openapi('AdminReaderAccessRequest');
+
+export const AdminReaderAccessResultSchema = z
+  .object({
+    state: z.enum(['active', 'disabled']),
+    changed: z.boolean(),
+    revision: z.number().int().min(1),
+  })
+  .strict()
+  .openapi('AdminReaderAccessResult');
+
 export const AdminBootstrapRequestSchema = z
   .object({
     name: z.string().min(1).max(200).openapi({ example: 'Ada Lovelace' }),
@@ -514,6 +540,7 @@ export const AdminReaderDetailSchema = AdminUserSchema.extend({
       effectiveState: z.enum(['active', 'disabled', 'suspended']),
     })
     .openapi('AdminReaderAccess'),
+  deletionState: z.enum(['pending_review', 'approved']).nullable(),
   methods: z
     .array(
       z.object({
@@ -542,9 +569,11 @@ export const AdminReaderDetailSchema = AdminUserSchema.extend({
         z.object({
           id: z.string(),
           type: z.literal('deletion-request'),
-          state: z.string(),
+          state: z.enum(['pending_review', 'approved']),
           createdAt: z.iso.datetime(),
           cooldownUntil: z.iso.datetime().optional(),
+          revision: z.number().int().min(1),
+          previousAccessState: z.enum(['active', 'disabled']),
         }),
         z.object({
           id: z.string(),
@@ -675,6 +704,87 @@ export const AdminReaderEmailChangeMessageSchema = z
   })
   .strict()
   .openapi('AdminReaderEmailChangeMessage');
+
+export const AdminReaderDeletionRequestCreateSchema = z
+  .object({ note: z.string().trim().min(1).max(2_000).optional() })
+  .strict()
+  .openapi('AdminReaderDeletionRequestCreate');
+
+export const AdminReaderDeletionRequestParamsSchema = z
+  .object({
+    userId: z.string().min(1).max(128),
+    requestId: z.string().min(1).max(128),
+  })
+  .strict()
+  .openapi('AdminReaderDeletionRequestParams');
+
+const AdminReaderDeletionNoteSchema = z.string().trim().min(1).max(2_000);
+
+export const AdminReaderDeletionRequestStatusSchema = z
+  .discriminatedUnion('state', [
+    z
+      .object({
+        state: z.literal('pending_review'),
+        note: AdminReaderDeletionNoteSchema.optional().openapi({
+          description: 'Optional note, trimmed and limited to 2,000 characters by the service.',
+        }),
+      })
+      .strict(),
+    z
+      .object({
+        state: z.literal('approved'),
+        note: AdminReaderDeletionNoteSchema.openapi({
+          description:
+            'Required for approval, trimmed and limited to 2,000 characters by the service.',
+        }),
+      })
+      .strict(),
+    z
+      .object({
+        state: z.literal('rejected'),
+        note: AdminReaderDeletionNoteSchema.openapi({
+          description:
+            'Required for rejection, trimmed and limited to 2,000 characters by the service.',
+        }),
+      })
+      .strict(),
+    z
+      .object({
+        state: z.literal('cancelled'),
+        note: AdminReaderDeletionNoteSchema.optional().openapi({
+          description: 'Optional note, trimmed and limited to 2,000 characters by the service.',
+        }),
+      })
+      .strict(),
+  ])
+  .openapi('AdminReaderDeletionRequestStatus');
+
+export const AdminReaderDeletionRequestSchema = z
+  .object({
+    requestId: z.string().min(1).max(128),
+    state: z.literal('pending_review'),
+    previousAccessState: z.enum(['active', 'disabled']),
+    changed: z.literal(true),
+    revision: z.number().int().min(1),
+    accountRevision: z.number().int().min(1),
+    createdAt: z.iso.datetime(),
+    updatedAt: z.iso.datetime(),
+  })
+  .strict()
+  .openapi('AdminReaderDeletionRequest');
+
+export const AdminReaderDeletionRequestTransitionSchema = z
+  .object({
+    requestId: z.string().min(1).max(128),
+    state: z.enum(['pending_review', 'approved', 'rejected', 'cancelled']),
+    previousAccessState: z.enum(['active', 'disabled']),
+    changed: z.boolean(),
+    revision: z.number().int().min(1),
+    accountRevision: z.number().int().min(1),
+    updatedAt: z.iso.datetime(),
+  })
+  .strict()
+  .openapi('AdminReaderDeletionRequestTransition');
 
 export const AdminAdministratorMessageRequestSchema = z
   .object({})
@@ -809,6 +919,8 @@ export type AdminAuditEvent = z.infer<typeof AdminAuditEventSchema>;
 export type AdminAuditEvents = z.infer<typeof AdminAuditEventsSchema>;
 export type AdminAdministratorAccessRequest = z.infer<typeof AdminAdministratorAccessRequestSchema>;
 export type AdminAdministratorAccessResult = z.infer<typeof AdminAdministratorAccessResultSchema>;
+export type AdminReaderAccessRequest = z.infer<typeof AdminReaderAccessRequestSchema>;
+export type AdminReaderAccessResult = z.infer<typeof AdminReaderAccessResultSchema>;
 export type AdminAdministratorMessageRequest = z.infer<
   typeof AdminAdministratorMessageRequestSchema
 >;
@@ -828,6 +940,19 @@ export type AdminReaderEmailChangeCommand = z.infer<typeof AdminReaderEmailChang
 export type AdminReaderEmailChange = z.infer<typeof AdminReaderEmailChangeSchema>;
 export type AdminReaderEmailChangeCancel = z.infer<typeof AdminReaderEmailChangeCancelSchema>;
 export type AdminReaderEmailChangeMessage = z.infer<typeof AdminReaderEmailChangeMessageSchema>;
+export type AdminReaderDeletionRequestCreate = z.infer<
+  typeof AdminReaderDeletionRequestCreateSchema
+>;
+export type AdminReaderDeletionRequestParams = z.infer<
+  typeof AdminReaderDeletionRequestParamsSchema
+>;
+export type AdminReaderDeletionRequestStatus = z.infer<
+  typeof AdminReaderDeletionRequestStatusSchema
+>;
+export type AdminReaderDeletionRequest = z.infer<typeof AdminReaderDeletionRequestSchema>;
+export type AdminReaderDeletionRequestTransition = z.infer<
+  typeof AdminReaderDeletionRequestTransitionSchema
+>;
 export type AdminUserList = z.infer<typeof AdminUserListSchema>;
 export type AdminUserListQuery = z.infer<typeof AdminUserListQuerySchema>;
 export type AdminUserDetailParams = z.infer<typeof AdminUserDetailParamsSchema>;

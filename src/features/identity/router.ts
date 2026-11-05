@@ -10,6 +10,14 @@ import {
   setAdminAdministratorAccess,
 } from './admin-administrators.js';
 import { readAdminAuditEvents } from './admin-audit.js';
+import { setReaderAccess, type SetReaderAccessOutcome } from './admin-reader-access.js';
+import {
+  authorizeReaderDeletionRequestActor,
+  createReaderDeletionRequest,
+  rejectInvalidReaderDeletionNote,
+  transitionReaderDeletionRequest,
+  type ReaderDeletionRequestFailure,
+} from './admin-reader-deletion-requests.js';
 import {
   READER_EMAIL_CHANGE_CANCEL_PATH,
   READER_EMAIL_CHANGE_MESSAGES_PATH,
@@ -65,6 +73,7 @@ import type {
   AdminBootstrapRequest,
   AdminReaderMessageRequest,
 } from './contract.js';
+import { AdminReaderDeletionRequestStatusSchema } from './contract.js';
 import { createIdentityRuntime } from './identity-runtime.js';
 import type { IdentityRuntime } from './identity-runtime.js';
 import { createPasswordPolicyProblemDetails } from './problem.js';
@@ -91,12 +100,15 @@ import {
   adminSignOutRoute,
   adminUserDetailRoute,
   adminReaderActivityRoute,
+  adminReaderAccessRoute,
   adminReaderEmailVerificationRoute,
   adminReaderVerificationMessageRoute,
   adminReaderPasswordRecoveryMessageRoute,
   adminReaderEmailChangeRoute,
   adminReaderEmailChangeMessageRoute,
   adminReaderEmailChangeCancelRoute,
+  adminReaderDeletionRequestRoute,
+  adminReaderDeletionRequestStatusRoute,
   adminUserAccountDetailsRoute,
   adminUsersRoute,
   adminVerifyEmailRoute,
@@ -207,6 +219,8 @@ function readerEmailProblem(
       return problem(c, 403, 'administrator-disabled', 'Administrator disabled');
     case 'reader-not-found':
       return problem(c, 404, 'reader-not-found', 'Reader not found');
+    case 'active-deletion-request':
+      return problem(c, 409, 'active-deletion-request', 'Reader deletion is under review');
     case 'precondition-required':
       return problem(c, 428, 'precondition-required', 'Precondition Required');
     case 'stale-revision':
@@ -274,6 +288,8 @@ function readerEmailChangeProblem(
       return problem(c, 403, 'administrator-disabled', 'Administrator disabled');
     case 'reader-not-found':
       return problem(c, 404, 'reader-not-found', 'Reader not found');
+    case 'active-deletion-request':
+      return problem(c, 409, 'active-deletion-request', 'Reader deletion is under review');
     case 'email-change-not-found':
       return problem(c, 404, 'email-change-not-found', 'Email change not found');
     case 'bad-request':
@@ -297,6 +313,62 @@ function readerEmailChangeProblem(
     }
     case 'delivery-scheduling-failed':
       return problem(c, 503, 'delivery-scheduling-failed', 'Delivery scheduling failed');
+    case 'internal-error':
+      return problem(c, 500, 'internal-error', 'Internal Server Error');
+  }
+}
+
+function readerDeletionRequestProblem(c: IdentityContext, outcome: ReaderDeletionRequestFailure) {
+  switch (outcome.kind) {
+    case 'forbidden':
+      return problem(c, 403, 'forbidden', 'Forbidden', 'Administrator access is required.');
+    case 'administrator-disabled':
+      return problem(c, 403, 'administrator-disabled', 'Administrator disabled');
+    case 'reader-not-found':
+      return problem(c, 404, 'reader-not-found', 'Reader not found');
+    case 'deletion-request-not-found':
+      return problem(c, 404, 'deletion-request-not-found', 'Deletion request not found');
+    case 'bad-request':
+      return problem(c, 400, 'bad-request', 'Bad Request');
+    case 'precondition-required':
+      return problem(c, 428, 'precondition-required', 'Precondition Required');
+    case 'stale-revision':
+      return problem(c, 412, 'stale-revision', 'Precondition Failed');
+    case 'active-deletion-request':
+      return problem(
+        c,
+        409,
+        'active-deletion-request',
+        'An active deletion request already exists',
+      );
+    case 'invalid-transition':
+      return problem(c, 409, 'invalid-transition', 'Invalid deletion-request transition');
+    case 'idempotency-key-reused':
+      return problem(c, 409, 'idempotency-key-reused', 'Idempotency key reused');
+    case 'internal-error':
+      return problem(c, 500, 'internal-error', 'Internal Server Error');
+  }
+}
+
+function readerAccessProblem(
+  c: IdentityContext,
+  outcome: Exclude<SetReaderAccessOutcome, { kind: 'success' }>,
+) {
+  switch (outcome.kind) {
+    case 'forbidden':
+      return problem(c, 403, 'forbidden', 'Forbidden', 'Administrator access is required.');
+    case 'administrator-disabled':
+      return problem(c, 403, 'administrator-disabled', 'Administrator disabled');
+    case 'reader-not-found':
+      return problem(c, 404, 'reader-not-found', 'Reader not found');
+    case 'active-deletion-request':
+      return problem(c, 409, 'active-deletion-request', 'Reader deletion is under review');
+    case 'bad-request':
+      return problem(c, 400, 'bad-request', 'Bad Request');
+    case 'precondition-required':
+      return problem(c, 428, 'precondition-required', 'Precondition Required');
+    case 'stale-revision':
+      return problem(c, 412, 'stale-revision', 'Precondition Failed');
     case 'internal-error':
       return problem(c, 500, 'internal-error', 'Internal Server Error');
   }
@@ -449,6 +521,49 @@ function forwardSessionCookies(c: IdentityContext, cookies: readonly string[]): 
 export function createIdentityRouter(options: IdentityRouterOptions = {}) {
   const router = new OpenAPIHono<{ Bindings: Env; Variables: { requestId: string } }>();
   const override = options.authMailer;
+
+  // The strict Zod deletion status contract runs only after resolving and
+  // authorizing an Administrator. Authenticated request-validation failures
+  // are then written to the Event Ledger by the owning deletion command.
+  router.use('/admin/users/*/deletion-requests/*/status', async (c, next) => {
+    if (c.req.method !== 'PUT') return next();
+    const context = c as unknown as IdentityContext;
+    const runtime = requestIdentityRuntime(context, override);
+    c.header('Cache-Control', 'private, no-store');
+    const rejected = guardCookieMutation(context, runtime, 'private, no-store');
+    if (rejected !== null) return rejected;
+    const session = await runtime.resolveAdministratorSessionContext(
+      c.req.raw.headers,
+      c.get('requestId'),
+    );
+    if (session === null) return administratorSessionProblem(context);
+    const authorizationFailure = await authorizeReaderDeletionRequestActor({
+      db: c.env.DB,
+      runtime,
+      administratorId: session.administrator.id,
+      headers: c.req.raw.headers,
+      requestId: c.get('requestId'),
+    });
+    if (authorizationFailure !== null) {
+      return readerDeletionRequestProblem(context, authorizationFailure);
+    }
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      body = undefined;
+    }
+    const parsed = AdminReaderDeletionRequestStatusSchema.safeParse(body);
+    if (parsed.success) return next();
+    const outcome = await rejectInvalidReaderDeletionNote({
+      db: c.env.DB,
+      runtime,
+      administratorId: session.administrator.id,
+      headers: c.req.raw.headers,
+      requestId: c.get('requestId'),
+    });
+    return readerDeletionRequestProblem(context, outcome);
+  });
 
   // Direct-browser consumer transport (spec #164, ADR-0013): credentialed
   // CORS is applied to the public consumer identity operations only. It is a
@@ -771,6 +886,16 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
       requestId: c.get('requestId'),
     });
     if (emailChange.kind === 'completed') return c.json({ emailVerified: true as const }, 200);
+    if (emailChange.kind === 'active-deletion-request') {
+      return problem(
+        c,
+        409,
+        'active-deletion-request',
+        'Reader deletion is under review',
+        undefined,
+        'no-store',
+      );
+    }
     if (emailChange.kind === 'verification-invalid') {
       return credentialProblem(c, { kind: 'verification-invalid' }, 'no-store');
     }
@@ -1354,6 +1479,31 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     return c.json(outcome.value, 200);
   });
 
+  router.openapi(adminReaderAccessRoute, async (c) => {
+    const runtime = requestIdentityRuntime(c, override);
+    c.header('Cache-Control', 'private, no-store');
+    const rejected = guardCookieMutation(c, runtime, 'private, no-store');
+    if (rejected !== null) return rejected as never;
+    const session = await runtime.resolveAdministratorSessionContext(
+      c.req.raw.headers,
+      c.get('requestId'),
+    );
+    if (session === null) return administratorSessionProblem(c) as never;
+    const outcome = await setReaderAccess({
+      db: c.env.DB,
+      runtime,
+      administratorId: session.administrator.id,
+      readerId: c.req.valid('param').userId,
+      headers: c.req.raw.headers,
+      ifMatch: c.req.header('if-match'),
+      body: c.req.valid('json'),
+      requestId: c.get('requestId'),
+    });
+    if (outcome.kind !== 'success') return readerAccessProblem(c, outcome) as never;
+    c.header('ETag', `"${String(outcome.value.revision)}"`);
+    return c.json(outcome.value, 200);
+  });
+
   router.openapi(adminReaderEmailVerificationRoute, async (c) => {
     const runtime = requestIdentityRuntime(c, override);
     c.header('Cache-Control', 'private, no-store');
@@ -1510,6 +1660,61 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
       requestId: c.get('requestId'),
     });
     if (outcome.kind !== 'success') return readerEmailChangeProblem(c, outcome) as never;
+    c.header('ETag', `"${String(outcome.value.revision)}"`);
+    return c.json(outcome.value, 200);
+  });
+
+  router.openapi(adminReaderDeletionRequestRoute, async (c) => {
+    const runtime = requestIdentityRuntime(c, override);
+    c.header('Cache-Control', 'private, no-store');
+    const rejected = guardCookieMutation(c, runtime, 'private, no-store');
+    if (rejected !== null) return rejected as never;
+    const session = await runtime.resolveAdministratorSessionContext(
+      c.req.raw.headers,
+      c.get('requestId'),
+    );
+    if (session === null) return administratorSessionProblem(c) as never;
+    const params = c.req.valid('param');
+    const outcome = await createReaderDeletionRequest({
+      db: c.env.DB,
+      runtime,
+      administratorId: session.administrator.id,
+      readerId: params.userId,
+      headers: c.req.raw.headers,
+      ifMatch: c.req.header('if-match'),
+      idempotencyKey: c.req.header('idempotency-key'),
+      body: c.req.valid('json'),
+      requestId: c.get('requestId'),
+    });
+    if (outcome.kind !== 'success') return readerDeletionRequestProblem(c, outcome) as never;
+    c.header('ETag', `"${String(outcome.value.accountRevision)}"`);
+    return c.json(outcome.value, 201);
+  });
+
+  router.openapi(adminReaderDeletionRequestStatusRoute, async (c) => {
+    const runtime = requestIdentityRuntime(c, override);
+    c.header('Cache-Control', 'private, no-store');
+    const rejected = guardCookieMutation(c, runtime, 'private, no-store');
+    if (rejected !== null) return rejected as never;
+    const session = await runtime.resolveAdministratorSessionContext(
+      c.req.raw.headers,
+      c.get('requestId'),
+    );
+    if (session === null) return administratorSessionProblem(c) as never;
+    const params = c.req.valid('param');
+    const outcome = await transitionReaderDeletionRequest({
+      db: c.env.DB,
+      runtime,
+      administratorId: session.administrator.id,
+      readerId: params.userId,
+      requestId: params.requestId,
+      headers: c.req.raw.headers,
+      ifMatch: c.req.header('if-match'),
+      idempotencyKey: c.req.header('idempotency-key'),
+      body: c.req.valid('json'),
+      requestIdForAudit: c.get('requestId'),
+    });
+    if (outcome.kind !== 'success') return readerDeletionRequestProblem(c, outcome) as never;
     c.header('ETag', `"${String(outcome.value.revision)}"`);
     return c.json(outcome.value, 200);
   });
