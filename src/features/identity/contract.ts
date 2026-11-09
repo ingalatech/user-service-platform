@@ -280,6 +280,17 @@ export const AdminAdministratorListQuerySchema = z
   })
   .openapi('AdminAdministratorListQuery');
 
+export const AdminAdministratorMessageWorkflowSchema = z
+  .object({
+    kind: z.enum(['email-verification', 'password-recovery']),
+    state: z.enum(['pending', 'scheduled', 'scheduling-failed']),
+    cooldownUntil: z.iso.datetime(),
+    lastScheduledAt: z.iso.datetime().nullable(),
+    updatedAt: z.iso.datetime(),
+  })
+  .strict()
+  .openapi('AdminAdministratorMessageWorkflow');
+
 export const AdminAdministratorDetailSchema = AdminAdministratorSchema.extend({
   summary: z.object({ createdAt: z.iso.datetime(), updatedAt: z.iso.datetime() }),
   methods: z.array(
@@ -288,6 +299,16 @@ export const AdminAdministratorDetailSchema = AdminAdministratorSchema.extend({
       provider: z.enum(['google', 'facebook', 'apple']).optional(),
     }),
   ),
+  messageWorkflows: z
+    .object({
+      emailVerification: AdminAdministratorMessageWorkflowSchema.nullable(),
+      passwordRecovery: AdminAdministratorMessageWorkflowSchema.nullable(),
+    })
+    .strict()
+    .openapi({
+      description:
+        'Latest persisted workflow per message kind. A null value means no workflow has been requested.',
+    }),
 }).openapi('AdminAdministratorDetail');
 
 export const AdminAdministratorParamsSchema = z
@@ -755,6 +776,25 @@ export const ReaderSessionsRevokeAttemptMetadataSchema = z
   .strict()
   .openapi('ReaderSessionsRevokeAttemptMetadata');
 
+export const AdministratorMessageRequestedMetadataSchema = z
+  .object({
+    workflowId: z
+      .string()
+      .min(1)
+      .max(128)
+      .regex(/^[A-Za-z0-9_-]+$/),
+  })
+  .strict()
+  .openapi('AdministratorMessageRequestedMetadata');
+
+export const AdministratorMessageAttemptMetadataSchema = z
+  .union([
+    z.object({ changed: z.boolean() }).strict(),
+    z.object({ retryAfterSeconds: z.number().int().min(1).max(86_400) }).strict(),
+    z.object({ state: z.literal('scheduling-failed') }).strict(),
+  ])
+  .openapi('AdministratorMessageAttemptMetadata');
+
 export const AdminReaderActivityEventSchema = z
   .object({
     id: z.string(),
@@ -960,7 +1000,7 @@ export const AdminAdministratorMessageRequestSchema = z
   .strict()
   .openapi('AdminAdministratorMessageRequest');
 
-export const AdminAdministratorMessageSchema = z
+const AdminAdministratorMessageScheduledSchema = z
   .object({
     workflowId: z.string(),
     kind: z.enum(['email-verification', 'password-recovery']),
@@ -968,6 +1008,22 @@ export const AdminAdministratorMessageSchema = z
     cooldownUntil: z.iso.datetime(),
     revision: z.number().int().min(1),
   })
+  .strict()
+  .openapi('AdminAdministratorMessageScheduled');
+
+export const AdminAdministratorMessageNoOpSchema = z
+  .object({
+    kind: z.literal('email-verification'),
+    state: z.literal('verified'),
+    changed: z.literal(false),
+    cooldownUntil: z.iso.datetime().optional(),
+    revision: z.number().int().min(1),
+  })
+  .strict()
+  .openapi('AdminAdministratorMessageNoOp');
+
+export const AdminAdministratorMessageSchema = z
+  .union([AdminAdministratorMessageScheduledSchema, AdminAdministratorMessageNoOpSchema])
   .openapi('AdminAdministratorMessage');
 
 export const AdminUserListSchema = z

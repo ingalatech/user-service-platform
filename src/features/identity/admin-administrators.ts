@@ -11,7 +11,13 @@ import type {
   AdminAdministratorList,
   AdminAdministratorListQuery,
 } from './contract.js';
-import { adminAccount, administratorAccessState, adminUser, identitySchema } from './schema.js';
+import {
+  adminAccount,
+  administratorAccessState,
+  administratorMessageWorkflow,
+  adminUser,
+  identitySchema,
+} from './schema.js';
 
 function escapeLikeLiteral(value: string): string {
   return value.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_');
@@ -555,6 +561,43 @@ export async function getAdminAdministrator(input: {
     .select({ providerId: adminAccount.providerId, password: adminAccount.password })
     .from(adminAccount)
     .where(eq(adminAccount.userId, row.id));
+  const workflowRows = await database
+    .select({
+      kind: administratorMessageWorkflow.kind,
+      state: administratorMessageWorkflow.state,
+      cooldownUntil: administratorMessageWorkflow.cooldownUntil,
+      lastScheduledAt: administratorMessageWorkflow.lastScheduledAt,
+      updatedAt: administratorMessageWorkflow.updatedAt,
+    })
+    .from(administratorMessageWorkflow)
+    .where(eq(administratorMessageWorkflow.userId, row.id));
+  const messageWorkflows: AdminAdministratorDetail['messageWorkflows'] = {
+    emailVerification: null,
+    passwordRecovery: null,
+  };
+  for (const workflow of workflowRows) {
+    if (
+      (workflow.kind !== 'email-verification' && workflow.kind !== 'password-recovery') ||
+      (workflow.state !== 'pending' &&
+        workflow.state !== 'scheduled' &&
+        workflow.state !== 'scheduling-failed')
+    ) {
+      continue;
+    }
+    const projected = {
+      kind: workflow.kind,
+      state: workflow.state,
+      cooldownUntil: new Date(workflow.cooldownUntil).toISOString(),
+      lastScheduledAt:
+        workflow.lastScheduledAt === null ? null : new Date(workflow.lastScheduledAt).toISOString(),
+      updatedAt: new Date(workflow.updatedAt).toISOString(),
+    } satisfies NonNullable<AdminAdministratorDetail['messageWorkflows']['emailVerification']>;
+    if (workflow.kind === 'email-verification') {
+      messageWorkflows.emailVerification = projected;
+    } else {
+      messageWorkflows.passwordRecovery = projected;
+    }
+  }
   const methods: AdminAdministratorDetail['methods'] = [];
   const providers = new Set<string>();
   for (const account of accounts) {
@@ -590,6 +633,7 @@ export async function getAdminAdministrator(input: {
         updatedAt: row.updatedAt.toISOString(),
       },
       methods,
+      messageWorkflows,
     },
   };
 }

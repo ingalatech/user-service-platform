@@ -17,6 +17,8 @@ import {
   ReaderSessionRevokedMetadataSchema,
   ReaderSessionsRevokedMetadataSchema,
   ReaderSessionsRevokeAttemptMetadataSchema,
+  AdministratorMessageAttemptMetadataSchema,
+  AdministratorMessageRequestedMetadataSchema,
 } from './contract.js';
 import { authorizeAdministrator } from './admin-authorization.js';
 
@@ -159,6 +161,10 @@ function safeMetadata(type: string, serialized: string | null): AdminAuditEvent[
     return safeSocialMetadata.success ? safeSocialMetadata.data : null;
   }
   const canonicalSchemas = {
+    'email-verification-attempt': AdministratorMessageAttemptMetadataSchema,
+    'password-recovery-attempt': AdministratorMessageAttemptMetadataSchema,
+    'email-verification-requested': AdministratorMessageRequestedMetadataSchema,
+    'password-recovery-requested': AdministratorMessageRequestedMetadataSchema,
     'access-disabled': ReaderAccessDisabledMetadataSchema,
     'deletion-requested': ReaderDeletionRequestedMetadataSchema,
     'email-changed': ReaderEmailChangedMetadataSchema,

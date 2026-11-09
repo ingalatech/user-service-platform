@@ -18,6 +18,59 @@ const artifactPath = resolve(
 );
 
 describe('generated OpenAPI artifact', () => {
+  it('publishes Administrator verification and recovery command contracts', async () => {
+    const raw = await readFile(artifactPath, 'utf8');
+    const document = JSON.parse(raw) as {
+      paths: Record<
+        string,
+        Record<
+          string,
+          | undefined
+          | {
+              operationId?: string;
+              parameters?: {
+                name: string;
+                in: string;
+                required?: boolean;
+                schema?: { minLength?: number; maxLength?: number };
+              }[];
+              responses?: Record<
+                string,
+                { headers?: Record<string, { schema?: { type?: string; minimum?: number } }> }
+              >;
+            }
+        >
+      >;
+    };
+    const verification =
+      document.paths['/v1/admin/administrators/{administratorId}/email-verification/messages']
+        ?.post;
+    const recovery =
+      document.paths['/v1/admin/administrators/{administratorId}/password-recovery/messages']?.post;
+    expect(verification?.operationId).toBe('requestAdminAdministratorEmailVerificationMessage');
+    expect(recovery?.operationId).toBe('requestAdminAdministratorPasswordRecoveryMessage');
+    expect(verification?.responses).toHaveProperty('200');
+    expect(recovery?.responses).not.toHaveProperty('200');
+    for (const operation of [verification, recovery]) {
+      expect(operation?.responses).toHaveProperty('202');
+      for (const status of ['400', '401', '403', '404', '409', '428', '429', '500', '503']) {
+        expect(operation?.responses).toHaveProperty(status);
+      }
+      expect(operation?.parameters).toContainEqual(
+        expect.objectContaining({
+          name: 'idempotency-key',
+          in: 'header',
+          required: false,
+          schema: { type: 'string', minLength: 1, maxLength: 128 },
+        }),
+      );
+      expect(operation?.responses?.['429']?.headers?.['Retry-After']?.schema).toEqual({
+        type: 'integer',
+        minimum: 1,
+      });
+    }
+  });
+
   it('describes the health operation', async () => {
     const raw = await readFile(artifactPath, 'utf8');
     const document = JSON.parse(raw) as {

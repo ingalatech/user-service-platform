@@ -145,6 +145,7 @@ export type AdminAdministratorAccessRequest = components['schemas']['AdminAdmini
 export type AdminAdministratorAccessResult = components['schemas']['AdminAdministratorAccessResult'];
 export type AdminAdministratorList = components['schemas']['AdminAdministratorList'];
 export type AdminAdministratorMessage = components['schemas']['AdminAdministratorMessage'];
+export type AdminAdministratorMessageRequest = components['schemas']['AdminAdministratorMessageRequest'];
 export type AdminAuditEvent = components['schemas']['AdminAuditEvent'];
 export type AdminAuditEvents = components['schemas']['AdminAuditEvents'];
 export type AdminUser = components['schemas']['AdminUser'];
@@ -236,6 +237,7 @@ export declare const AdminAdministratorAccessRequestSchema: ZodType<AdminAdminis
 export declare const AdminAdministratorAccessResultSchema: ZodType<AdminAdministratorAccessResult>;
 export declare const AdminAdministratorListSchema: ZodType<AdminAdministratorList>;
 export declare const AdminAdministratorMessageSchema: ZodType<AdminAdministratorMessage>;
+export declare const AdminAdministratorMessageRequestSchema: ZodType<AdminAdministratorMessageRequest>;
 export declare const AdminAuditEventsQuerySchema: ZodType<AdminAuditEventsQuery>;
 export declare const AdminAuditEventsSchema: ZodType<AdminAuditEvents>;
 export declare const AdminAdministratorListQuerySchema: ZodType<AdminAdministratorListQuery>;

@@ -7,6 +7,7 @@ import {
   AdminAdministratorListQuerySchema,
   AdminAdministratorListSchema,
   AdminAdministratorMessageSchema,
+  AdminAdministratorMessageRequestSchema,
   AdminAdministratorParamsSchema,
   AdminAuditEventsQuerySchema,
   AdminAuditEventsSchema,
@@ -313,11 +314,19 @@ export async function adminRequestAdministratorMessage(
   idempotencyKey: string,
 ): Promise<AdminAdministratorMessage> {
   const params = AdminAdministratorParamsSchema.safeParse({ administratorId: id });
-  if (!params.success) throw new ApiError(400);
+  const body = AdminAdministratorMessageRequestSchema.safeParse({});
+  if (
+    !params.success ||
+    !body.success ||
+    idempotencyKey.length < 1 ||
+    idempotencyKey.length > 128
+  ) {
+    throw new ApiError(400, 'bad-request');
+  }
   const parsed = AdminAdministratorMessageSchema.safeParse(
     await request(
       `/v1/admin/administrators/${encodeURIComponent(params.data.administratorId)}/${kind === 'email-verification' ? 'email-verification' : 'password-recovery'}/messages`,
-      {},
+      body.data,
       undefined,
       'POST',
       { 'idempotency-key': idempotencyKey },

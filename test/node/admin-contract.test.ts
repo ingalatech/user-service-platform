@@ -3,6 +3,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
+  AdminAdministratorDetailSchema,
   AdminReaderSessionSchema,
   AdminReaderSessionRevocationSchema,
   AdminReaderSessionsSchema,
@@ -61,6 +62,58 @@ async function document(): Promise<{
 }
 
 describe('administration API contract', () => {
+  it('publishes the additive safe Administrator message workflow detail projection', async () => {
+    const doc = await document();
+    const detail = doc.components.schemas.AdminAdministratorDetail;
+    expect(detail?.allOf?.[1]?.required).toContain('messageWorkflows');
+    expect(detail?.allOf?.[1]?.properties?.messageWorkflows).toMatchObject({
+      type: 'object',
+      required: ['emailVerification', 'passwordRecovery'],
+    });
+
+    const parsed = AdminAdministratorDetailSchema.safeParse({
+      id: 'admin-1',
+      email: 'admin@example.com',
+      emailVerified: false,
+      realm: 'administrator',
+      role: 'admin',
+      access: { state: 'disabled' },
+      revision: 3,
+      summary: {
+        createdAt: '2026-01-01T00:00:00.000Z',
+        updatedAt: '2026-01-02T00:00:00.000Z',
+      },
+      methods: [{ type: 'password' }],
+      messageWorkflows: {
+        emailVerification: {
+          kind: 'email-verification',
+          state: 'pending',
+          cooldownUntil: '2026-01-02T00:01:00.000Z',
+          lastScheduledAt: null,
+          updatedAt: '2026-01-02T00:00:00.000Z',
+        },
+        passwordRecovery: null,
+      },
+    });
+    expect(parsed.success).toBe(true);
+    expect(
+      AdminAdministratorDetailSchema.safeParse({
+        ...(parsed.success ? parsed.data : {}),
+        messageWorkflows: {
+          emailVerification: {
+            kind: 'email-verification',
+            state: 'scheduled',
+            cooldownUntil: '2026-01-02T00:01:00.000Z',
+            lastScheduledAt: null,
+            updatedAt: '2026-01-02T00:00:00.000Z',
+            retryPayload: 'must-not-be-accepted',
+          },
+          passwordRecovery: null,
+        },
+      }).success,
+    ).toBe(false);
+  });
+
   it('publishes GET /v1/admin/me with the exact administrative representation', async () => {
     const doc = await document();
 
