@@ -34,6 +34,7 @@ import {
   ADMINISTRATOR_EMAIL_VERIFICATION_MESSAGE_PATH,
   ADMINISTRATOR_PASSWORD_RECOVERY_MESSAGE_PATH,
   requestAdministratorMessage,
+  type AdministratorMessageSchedulingResult,
   type RequestAdministratorMessageOutcome,
 } from './admin-administrator-email.js';
 import {
@@ -150,6 +151,10 @@ export interface IdentityRouterOptions {
   // Test seam: an explicitly provided mailer (in-memory in tests) takes
   // precedence over environment resolution.
   readonly authMailer?: AuthMailer;
+  // Narrow scheduling-boundary seam for deterministic message-workflow tests.
+  readonly administratorMessageScheduler?: (
+    payload: string,
+  ) => Promise<AdministratorMessageSchedulingResult>;
   // Identity-engine seam for proving post-commit response failures on Account
   // Photo reference writes. Production uses Better Auth directly.
   readonly accountPhotoReferenceWriter?: AccountPhotoReferenceWriter;
@@ -1237,6 +1242,7 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
   });
 
   router.openapi(adminAdministratorDetailRoute, async (c) => {
+    c.header('Cache-Control', 'private, no-store');
     const runtime = requestIdentityRuntime(c, override);
     const session = await runtime.resolveAdministratorSessionContext(
       c.req.raw.headers,
@@ -1374,6 +1380,9 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     const outcome = await requestAdministratorMessage({
       db: c.env.DB,
       runtime,
+      ...(options.administratorMessageScheduler === undefined
+        ? {}
+        : { schedule: options.administratorMessageScheduler }),
       actorId: session.administrator.id,
       administratorId,
       kind,
@@ -1388,7 +1397,7 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
       requestId: c.get('requestId'),
     });
     if (outcome.kind !== 'accepted') return administratorMessageProblem(c, outcome);
-    return c.json(outcome.value, 202);
+    return c.json(outcome.value, outcome.status);
   }
 
   router.openapi(

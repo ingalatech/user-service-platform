@@ -280,6 +280,10 @@ export const administratorAccessState = sqliteTable('administrator_access_state'
 });
 
 export const administratorMessageWorkflow = sqliteTable(
+  // One retained latest workflow per Administrator and message kind. `pending`
+  // is an active scheduling claim; verification-token expiry does not expire
+  // this row, and terminal action-token states are not materialized here. A
+  // later eligible request updates the retained row.
   'administrator_message_workflow',
   {
     id: text('id').primaryKey(),

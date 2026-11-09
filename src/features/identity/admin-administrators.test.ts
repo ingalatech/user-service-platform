@@ -317,9 +317,11 @@ describe('GET /v1/admin/administrators', () => {
     expect(anonymousResponses.map((response) => response.status)).toEqual([401, 401, 401, 401]);
     expect(readerResponses.map((response) => response.status)).toEqual([403, 403, 403, 403]);
     for (const response of anonymousResponses) {
+      expect(response.headers.get('cache-control')).toBe('private, no-store');
       expect(await response.json()).toMatchObject({ code: 'unauthenticated' });
     }
     for (const response of readerResponses) {
+      expect(response.headers.get('cache-control')).toBe('private, no-store');
       expect(await response.json()).toMatchObject({ code: 'forbidden' });
     }
   });
@@ -345,7 +347,100 @@ describe('GET /v1/admin/administrators/{administratorId}', () => {
       revision: 3,
       summary: timestamps,
       methods: [{ type: 'password' }],
+      messageWorkflows: { emailVerification: null, passwordRecovery: null },
     });
+  });
+
+  it('keeps the missing-target problem private and uncached', async () => {
+    const { cookie } = await bootstrapAdministrator();
+    const response = await get('/v1/admin/administrators/missing-target', cookie);
+    expect(response.status).toBe(404);
+    expect(response.headers.get('cache-control')).toBe('private, no-store');
+  });
+
+  it('keeps a disabled-actor detail problem private and uncached', async () => {
+    const { cookie, id } = await bootstrapAdministrator();
+    await seedDisabledAdministrator();
+    await workerEnv.DB.prepare(
+      `INSERT INTO administrator_access_state (user_id, state, revision, updated_at)
+       VALUES (?, 'disabled', 2, ?)
+       ON CONFLICT(user_id) DO UPDATE SET state = 'disabled', revision = 2, updated_at = excluded.updated_at`,
+    )
+      .bind(id, Date.now())
+      .run();
+    const response = await get('/v1/admin/administrators/admin-disabled', cookie);
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ code: 'administrator-disabled' });
+    expect(response.headers.get('cache-control')).toBe('private, no-store');
+  });
+
+  it('projects only safe persisted message workflow state and represents missing kinds as empty', async () => {
+    const { cookie } = await bootstrapAdministrator();
+    await seedDisabledAdministrator();
+    const now = Date.UTC(2026, 2, 4, 5, 6, 7);
+    await workerEnv.DB.prepare(
+      `INSERT INTO administrator_message_workflow
+       (id, user_id, kind, state, cooldown_until, created_at, updated_at, last_scheduled_at,
+        claim_token, claimed_at)
+       VALUES ('workflow-selector-secret', 'admin-disabled', 'email-verification',
+         'scheduling-failed', ?, ?, ?, NULL, 'claim-secret', ?)`,
+    )
+      .bind(now + 60_000, now, now, now)
+      .run();
+    await workerEnv.DB.prepare(
+      `INSERT INTO administrator_message_workflow
+       (id, user_id, kind, state, cooldown_until, created_at, updated_at, last_scheduled_at,
+        claim_token, claimed_at)
+       VALUES ('pending-workflow-selector', 'admin-disabled', 'password-recovery',
+         'pending', ?, ?, ?, NULL, 'pending-claim-secret', ?)`,
+    )
+      .bind(now + 60_000, now, now, now)
+      .run();
+    await workerEnv.DB.prepare(
+      `INSERT INTO admin_idempotency_record
+       (id, actor_id, key, method, normalized_path, target_id, body_hash, response_status,
+        response_body, retry_payload, created_at, expires_at)
+       VALUES ('private-retry', 'admin-actor', 'private-key', 'POST', '/private',
+        'admin-disabled', 'private-hash', 503, '{"providerResponse":"private"}',
+        'sealed-token-action-url-password-email-body', ?, ?)`,
+    )
+      .bind(now, now + 86_400_000)
+      .run();
+
+    const response = await app.request(
+      '/v1/admin/administrators/admin-disabled',
+      { headers: { cookie } },
+      testEnv(),
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe('private, no-store');
+    const detail = (await response.json()) as {
+      access: { state: string };
+      messageWorkflows: {
+        emailVerification: Record<string, unknown> | null;
+        passwordRecovery: Record<string, unknown> | null;
+      };
+    };
+    expect(detail.access).toEqual({ state: 'disabled' });
+    expect(detail.messageWorkflows).toEqual({
+      emailVerification: {
+        kind: 'email-verification',
+        state: 'scheduling-failed',
+        cooldownUntil: new Date(now + 60_000).toISOString(),
+        lastScheduledAt: null,
+        updatedAt: new Date(now).toISOString(),
+      },
+      passwordRecovery: {
+        kind: 'password-recovery',
+        state: 'pending',
+        cooldownUntil: new Date(now + 60_000).toISOString(),
+        lastScheduledAt: null,
+        updatedAt: new Date(now).toISOString(),
+      },
+    });
+    expect(JSON.stringify(detail)).not.toMatch(
+      /workflow-selector-secret|pending-workflow-selector|claim-secret|pending-claim-secret|sealed-token|providerResponse|private-hash|private-key|action-url|email-body/i,
+    );
   });
 });
 

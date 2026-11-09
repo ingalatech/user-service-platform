@@ -234,6 +234,12 @@ const adminAdministratorMessageResponses = {
   429: {
     content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
     description: 'The message cooldown is active.',
+    headers: {
+      'Retry-After': {
+        description: 'Seconds until this message kind can be requested again.',
+        schema: { type: 'integer', minimum: 1 },
+      },
+    },
   },
   500: {
     content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
@@ -768,6 +774,10 @@ export const adminAdministratorVerificationMessageRoute = createRoute({
     },
   },
   responses: {
+    200: {
+      content: { 'application/json': { schema: AdminAdministratorMessageSchema } },
+      description: 'Verification is already complete; no message was sent.',
+    },
     202: {
       content: { 'application/json': { schema: AdminAdministratorMessageSchema } },
       description: 'The verification message was accepted for scheduling.',

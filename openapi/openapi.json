@@ -930,14 +930,78 @@
                     "type"
                   ]
                 }
+              },
+              "messageWorkflows": {
+                "type": "object",
+                "properties": {
+                  "emailVerification": {
+                    "$ref": "#/components/schemas/AdminAdministratorMessageWorkflow"
+                  },
+                  "passwordRecovery": {
+                    "$ref": "#/components/schemas/AdminAdministratorMessageWorkflow"
+                  }
+                },
+                "required": [
+                  "emailVerification",
+                  "passwordRecovery"
+                ],
+                "additionalProperties": false,
+                "description": "Latest persisted workflow per message kind. A null value means no workflow has been requested."
               }
             },
             "required": [
               "summary",
-              "methods"
+              "methods",
+              "messageWorkflows"
             ]
           }
         ]
+      },
+      "AdminAdministratorMessageWorkflow": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "email-verification",
+              "password-recovery"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "scheduled",
+              "scheduling-failed"
+            ]
+          },
+          "cooldownUntil": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "lastScheduledAt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "kind",
+          "state",
+          "cooldownUntil",
+          "lastScheduledAt",
+          "updatedAt"
+        ],
+        "additionalProperties": false
       },
       "AdminAdministratorActivity": {
         "type": "object",
@@ -1045,6 +1109,16 @@
         "additionalProperties": false
       },
       "AdminAdministratorMessage": {
+        "anyOf": [
+          {
+            "$ref": "#/components/schemas/AdminAdministratorMessageScheduled"
+          },
+          {
+            "$ref": "#/components/schemas/AdminAdministratorMessageNoOp"
+          }
+        ]
+      },
+      "AdminAdministratorMessageScheduled": {
         "type": "object",
         "properties": {
           "workflowId": {
@@ -1078,7 +1152,46 @@
           "state",
           "cooldownUntil",
           "revision"
-        ]
+        ],
+        "additionalProperties": false
+      },
+      "AdminAdministratorMessageNoOp": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "email-verification"
+            ]
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "verified"
+            ]
+          },
+          "changed": {
+            "type": "boolean",
+            "enum": [
+              false
+            ]
+          },
+          "cooldownUntil": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "kind",
+          "state",
+          "changed",
+          "revision"
+        ],
+        "additionalProperties": false
       },
       "AdminAdministratorMessageRequest": {
         "type": "object",
@@ -4021,6 +4134,16 @@
           }
         },
         "responses": {
+          "200": {
+            "description": "Verification is already complete; no message was sent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminAdministratorMessage"
+                }
+              }
+            }
+          },
           "202": {
             "description": "The verification message was accepted for scheduling.",
             "content": {
@@ -4093,6 +4216,15 @@
           },
           "429": {
             "description": "The message cooldown is active.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until this message kind can be requested again.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -4236,6 +4368,15 @@
           },
           "429": {
             "description": "The message cooldown is active.",
+            "headers": {
+              "Retry-After": {
+                "description": "Seconds until this message kind can be requested again.",
+                "schema": {
+                  "type": "integer",
+                  "minimum": 1
+                }
+              }
+            },
             "content": {
               "application/problem+json": {
                 "schema": {

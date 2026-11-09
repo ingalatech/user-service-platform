@@ -10,6 +10,8 @@ export {
   AdminAdministratorListQuerySchema,
   AdminAdministratorListSchema,
   AdminAdministratorMessageSchema,
+  AdminAdministratorMessageWorkflowSchema,
+  AdminAdministratorMessageRequestSchema,
   AdminAdministratorParamsSchema,
   AdminAdministratorSchema,
   AdminAuditEventsQuerySchema,

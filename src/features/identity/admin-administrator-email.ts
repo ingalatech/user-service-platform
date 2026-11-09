@@ -18,6 +18,12 @@ export const ADMINISTRATOR_PASSWORD_RECOVERY_MESSAGE_PATH =
   '/v1/admin/administrators/:administratorId/password-recovery/messages';
 
 type AdministratorMessageKind = 'email-verification' | 'password-recovery';
+// Keep realm-specific claim SQL and validation explicit here. The Reader flow
+// has deletion/revision fences and different token lifecycle ownership; sharing
+// the whole state machine would require callback/table-name plumbing that would
+// obscure rather than centralize those invariants. Revisit with a dual-realm
+// extraction plan and contract tests, not a parameterized SQL middle layer.
+export type AdministratorMessageSchedulingResult = 'accepted' | 'rejected' | 'invalid-envelope';
 type FailureKind =
   | 'forbidden'
   | 'administrator-disabled'
@@ -53,7 +59,11 @@ interface IdempotencyRow {
 }
 
 export type RequestAdministratorMessageOutcome =
-  | { readonly kind: 'accepted'; readonly value: AdminAdministratorMessage }
+  | {
+      readonly kind: 'accepted';
+      readonly status: 200 | 202;
+      readonly value: AdminAdministratorMessage;
+    }
   | { readonly kind: Exclude<FailureKind, 'cooldown-active'> }
   | { readonly kind: 'cooldown-active'; readonly retryAfterSeconds: number };
 
@@ -364,9 +374,94 @@ async function finalizeScheduling(input: {
   return results[0]?.meta.changes === 1 && results[1]?.meta.changes === 1;
 }
 
+async function markAcceptedDispatch(input: {
+  readonly db: D1Database;
+  readonly actorId: string;
+  readonly targetId: string;
+  readonly workflowId: string;
+  readonly claimToken: string;
+  readonly key: string;
+  readonly bodyHash: string;
+  readonly path: string;
+  readonly response: AdminAdministratorMessage;
+}): Promise<boolean> {
+  // Persist the no-redispatch fence first. Once 103 is durable, replay returns
+  // the accepted response even if updating the presentation workflow fails.
+  try {
+    const terminal = await input.db
+      .prepare(
+        `UPDATE admin_idempotency_record
+         SET response_status = 103, response_body = ?, retry_payload = NULL
+         WHERE actor_id = ? AND method = 'POST' AND normalized_path = ? AND target_id = ?
+           AND key = ? AND body_hash = ? AND response_status IN (102, 202)
+           AND EXISTS (
+             SELECT 1 FROM administrator_message_workflow
+             WHERE id = ? AND claim_token = ?
+           )`,
+      )
+      .bind(
+        JSON.stringify(input.response),
+        input.actorId,
+        input.path,
+        input.targetId,
+        input.key,
+        input.bodyHash,
+        input.workflowId,
+        input.claimToken,
+      )
+      .run();
+    if (terminal.meta.changes !== 1) {
+      const workflow = await input.db
+        .prepare(
+          `UPDATE administrator_message_workflow
+           SET state = 'scheduled', updated_at = ?, last_scheduled_at = ?,
+             claim_token = NULL, claimed_at = NULL
+           WHERE id = ? AND claim_token = ?`,
+        )
+        .bind(Date.now(), Date.now(), input.workflowId, input.claimToken)
+        .run();
+      return workflow.meta.changes === 1;
+    }
+  } catch {
+    // A second durable fence is the workflow state. If the idempotency marker
+    // is unavailable, scheduled state still prevents this key from dispatching
+    // again; replay repairs the marker when storage is available.
+    try {
+      const workflow = await input.db
+        .prepare(
+          `UPDATE administrator_message_workflow
+           SET state = 'scheduled', updated_at = ?, last_scheduled_at = ?,
+             claim_token = NULL, claimed_at = NULL
+           WHERE id = ? AND claim_token = ?`,
+        )
+        .bind(Date.now(), Date.now(), input.workflowId, input.claimToken)
+        .run();
+      return workflow.meta.changes === 1;
+    } catch {
+      return false;
+    }
+  }
+
+  try {
+    await input.db
+      .prepare(
+        `UPDATE administrator_message_workflow
+         SET state = 'scheduled', updated_at = ?, last_scheduled_at = ?,
+           claim_token = NULL, claimed_at = NULL
+         WHERE id = ? AND claim_token = ?`,
+      )
+      .bind(Date.now(), Date.now(), input.workflowId, input.claimToken)
+      .run();
+  } catch {
+    // The response marker is authoritative for replay and blocks redispatch.
+  }
+  return true;
+}
+
 export async function requestAdministratorMessage(input: {
   readonly db: D1Database;
   readonly runtime: IdentityRuntime;
+  readonly schedule?: (payload: string) => Promise<AdministratorMessageSchedulingResult>;
   readonly actorId: string;
   readonly administratorId: string;
   readonly kind: AdministratorMessageKind;
@@ -437,9 +532,45 @@ export async function requestAdministratorMessage(input: {
       messageKind: input.kind,
     });
   }
-  if (existingIdempotency?.response_status === 202) {
+  if (
+    existingIdempotency?.response_status === 200 ||
+    existingIdempotency?.response_status === 202 ||
+    existingIdempotency?.response_status === 103
+  ) {
     const value = parseCommittedResponse(existingIdempotency.response_body);
-    return value === null ? { kind: 'internal-error' } : { kind: 'accepted', value };
+    return value === null
+      ? { kind: 'internal-error' }
+      : {
+          kind: 'accepted',
+          status: existingIdempotency.response_status === 200 ? 200 : 202,
+          value,
+        };
+  }
+  if (existingIdempotency?.response_status === 102) {
+    const workflow = await readWorkflow(input.db, input.administratorId, input.kind);
+    if (workflow?.state === 'scheduled') {
+      const value = parseCommittedResponse(existingIdempotency.response_body);
+      if (value === null) return { kind: 'internal-error' };
+      try {
+        await input.db
+          .prepare(
+            `UPDATE admin_idempotency_record SET response_status = 103, retry_payload = NULL
+             WHERE actor_id = ? AND method = 'POST' AND normalized_path = ? AND target_id = ?
+               AND key = ? AND body_hash = ? AND response_status = 102`,
+          )
+          .bind(
+            input.actorId,
+            input.normalizedPath,
+            input.administratorId,
+            idempotencyKey,
+            bodyHash,
+          )
+          .run();
+      } catch {
+        // The scheduled workflow row remains a same-key no-redispatch fence.
+      }
+      return { kind: 'accepted', status: 202, value };
+    }
   }
   const target = await readTarget(input.db, input.administratorId);
   if (target === null) {
@@ -453,14 +584,78 @@ export async function requestAdministratorMessage(input: {
     });
   }
   if (input.kind === 'email-verification' && target.email_verified === 1) {
-    return auditedFailure({
-      db: input.db,
-      actorId: input.actorId,
-      subjectId: target.id,
-      requestId: input.requestId,
-      kind: 'invalid-transition',
-      messageKind: input.kind,
-    });
+    const response: AdminAdministratorMessage = {
+      kind: 'email-verification',
+      state: 'verified',
+      changed: false,
+      revision: currentRevision(target),
+    };
+    try {
+      await input.db.batch([
+        input.db
+          .prepare(
+            `INSERT INTO admin_idempotency_record
+             (id, actor_id, key, method, normalized_path, target_id, body_hash, response_status,
+              response_body, retry_payload, created_at, expires_at)
+             VALUES (?, ?, ?, 'POST', ?, ?, ?, 200, ?, NULL, ?, ?)
+             ON CONFLICT(actor_id, method, normalized_path, target_id, key) DO NOTHING`,
+          )
+          .bind(
+            opaqueId(),
+            input.actorId,
+            idempotencyKey,
+            input.normalizedPath,
+            target.id,
+            bodyHash,
+            JSON.stringify(response),
+            now,
+            now + IDEMPOTENCY_RETENTION_MS,
+          ),
+        input.db
+          .prepare(
+            `INSERT INTO identity_event
+             (id, version, type, occurred_at, actor_realm, actor_id, subject_realm, subject_id,
+              result, request_id, problem_code, metadata)
+             SELECT ?, 1, 'email-verification-attempt', ?, 'administrator', ?, 'administrator', ?,
+               'success', ?, NULL, ?
+             WHERE EXISTS (
+               SELECT 1 FROM admin_idempotency_record
+               WHERE actor_id = ? AND method = 'POST' AND normalized_path = ? AND target_id = ?
+                 AND key = ? AND body_hash = ? AND response_status = 200
+             )`,
+          )
+          .bind(
+            opaqueId(),
+            now,
+            input.actorId,
+            target.id,
+            input.requestId,
+            JSON.stringify({ changed: false }),
+            input.actorId,
+            input.normalizedPath,
+            target.id,
+            idempotencyKey,
+            bodyHash,
+          ),
+      ]);
+      const committed = await readCommitted();
+      if (committed?.body_hash !== bodyHash) {
+        return await auditedFailure({
+          db: input.db,
+          actorId: input.actorId,
+          subjectId: target.id,
+          requestId: input.requestId,
+          kind: 'idempotency-key-reused',
+          messageKind: input.kind,
+        });
+      }
+      const committedResponse = parseCommittedResponse(committed.response_body);
+      return committedResponse === null
+        ? { kind: 'internal-error' }
+        : { kind: 'accepted', status: 200, value: committedResponse };
+    } catch {
+      return { kind: 'internal-error' };
+    }
   }
   if (input.kind === 'password-recovery' && !(await hasUsableCredential(input.db, target.id))) {
     return auditedFailure({
@@ -635,9 +830,9 @@ export async function requestAdministratorMessage(input: {
         messageKind: input.kind,
       });
     }
-    if (committedClaim?.response_status === 202) {
+    if (committedClaim?.response_status === 202 || committedClaim?.response_status === 103) {
       const value = parseCommittedResponse(committedClaim.response_body);
-      return value === null ? { kind: 'internal-error' } : { kind: 'accepted', value };
+      return value === null ? { kind: 'internal-error' } : { kind: 'accepted', status: 202, value };
     }
     if (committedClaim?.response_status === 503 || committedClaim?.response_status === 102) {
       return { kind: 'delivery-scheduling-failed' };
@@ -732,7 +927,14 @@ export async function requestAdministratorMessage(input: {
   } catch {
     return { kind: 'internal-error' };
   }
-  const scheduling = await input.runtime.retryAdministratorMessageScheduling(retryPayload);
+  let scheduling: 'accepted' | 'rejected' | 'invalid-envelope';
+  try {
+    scheduling = await (input.schedule === undefined
+      ? input.runtime.retryAdministratorMessageScheduling(retryPayload)
+      : input.schedule(retryPayload));
+  } catch {
+    scheduling = 'rejected';
+  }
   if (scheduling === 'invalid-envelope') {
     try {
       const finalized = await finalizeScheduling({
@@ -773,17 +975,38 @@ export async function requestAdministratorMessage(input: {
       scheduled: scheduling === 'accepted',
     });
   } catch {
-    return { kind: 'internal-error' };
+    applied = false;
   }
   if (!applied) {
-    const committed = await readCommitted();
+    let committed: IdempotencyRow | null = null;
+    try {
+      committed = await readCommitted();
+    } catch {
+      // Continue to the accepted-dispatch fallback rather than returning an
+      // ambiguous server error after the scheduler has accepted the task.
+    }
     if (committed?.response_status === 202) {
       const value = parseCommittedResponse(committed.response_body);
-      return value === null ? { kind: 'internal-error' } : { kind: 'accepted', value };
+      return value === null ? { kind: 'internal-error' } : { kind: 'accepted', status: 202, value };
+    }
+    if (scheduling === 'accepted') {
+      const marked = await markAcceptedDispatch({
+        db: input.db,
+        actorId: input.actorId,
+        targetId: target.id,
+        workflowId,
+        claimToken,
+        key: idempotencyKey,
+        bodyHash,
+        path: input.normalizedPath,
+        response,
+      });
+      if (marked) return { kind: 'accepted', status: 202, value: response };
+      return { kind: 'internal-error' };
     }
     return { kind: 'delivery-scheduling-failed' };
   }
   return scheduling === 'accepted'
-    ? { kind: 'accepted', value: response }
+    ? { kind: 'accepted', status: 202, value: response }
     : { kind: 'delivery-scheduling-failed' };
 }

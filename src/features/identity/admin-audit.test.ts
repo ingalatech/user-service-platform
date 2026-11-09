@@ -384,7 +384,7 @@ describe('GET /v1/admin/audit-events', () => {
       result: 'failure',
       requestId: 'request-audit-failure',
       problemCode: 'stale-revision',
-      metadata: { changed: false },
+      metadata: null,
     });
     expect(Object.keys(audit.items[0] ?? {}).sort()).toEqual([
       'actor',
@@ -550,6 +550,84 @@ describe('GET /v1/admin/audit-events', () => {
         metadata: { changed: true, count: 3, revision: 2 },
       }),
     ]);
+  });
+
+  it('parses Administrator message metadata strictly in the audit projection', async () => {
+    const actor = await bootstrapAdministrator();
+    const occurredAt = Date.UTC(2026, 0, 3);
+    const shared = {
+      actorRealm: 'administrator',
+      actorId: actor.id,
+      subjectRealm: 'administrator',
+      subjectId: actor.id,
+      result: 'success' as const,
+    };
+    await seedEvent({
+      ...shared,
+      id: 'admin-message-attempt-valid',
+      type: 'email-verification-attempt',
+      occurredAt,
+      requestId: 'request-admin-message-attempt-valid',
+      metadata: { changed: false },
+    });
+    await seedEvent({
+      ...shared,
+      id: 'admin-message-attempt-extra',
+      type: 'email-verification-attempt',
+      occurredAt: occurredAt + 1,
+      requestId: 'request-admin-message-attempt-extra',
+      metadata: { changed: false, token: 'must-not-project' },
+    });
+    await seedEvent({
+      ...shared,
+      id: 'admin-message-request-valid',
+      type: 'email-verification-requested',
+      occurredAt: occurredAt + 2,
+      requestId: 'request-admin-message-request-valid',
+      metadata: { workflowId: 'opaque-workflow-2' },
+    });
+    await seedEvent({
+      ...shared,
+      id: 'admin-message-request-extra',
+      type: 'email-verification-requested',
+      occurredAt: occurredAt + 3,
+      requestId: 'request-admin-message-request-extra',
+      metadata: { workflowId: 'opaque-workflow-3', url: 'https://secret.invalid/token' },
+    });
+
+    const response = await get(
+      `/v1/admin/audit-events?actorId=${actor.id}&action=email-verification-attempt`,
+      actor.cookie,
+    );
+    expect(response.status).toBe(200);
+    const audit = (await response.json()) as {
+      items: { id: string; metadata: Record<string, unknown> | null }[];
+    };
+    expect(audit.items).toEqual([
+      expect.objectContaining({ id: 'admin-message-attempt-extra', metadata: null }),
+      expect.objectContaining({
+        id: 'admin-message-attempt-valid',
+        metadata: { changed: false },
+      }),
+    ]);
+
+    const requestedResponse = await get(
+      `/v1/admin/audit-events?actorId=${actor.id}&action=email-verification-requested`,
+      actor.cookie,
+    );
+    expect(requestedResponse.status).toBe(200);
+    const requested = (await requestedResponse.json()) as {
+      items: { id: string; metadata: Record<string, unknown> | null }[];
+    };
+    expect(requested.items).toEqual([
+      expect.objectContaining({ id: 'admin-message-request-extra', metadata: null }),
+      expect.objectContaining({
+        id: 'admin-message-request-valid',
+        metadata: { workflowId: 'opaque-workflow-2' },
+      }),
+    ]);
+    expect(JSON.stringify({ audit, requested })).not.toContain('must-not-project');
+    expect(JSON.stringify(requested)).not.toContain('secret.invalid');
   });
 
   it('paginates newest-first and applies actor, action, result, and time filters', async () => {

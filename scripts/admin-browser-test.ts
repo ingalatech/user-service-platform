@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { chromium, type Browser, type Page, type Request as BrowserRequest } from 'playwright-core';
 import {
+  AdminAdministratorMessageSchema,
   AdminReaderDetailSchema,
   AdminReaderSessionRevocationSchema,
   AdminReaderSessionsSchema,
@@ -393,6 +394,14 @@ export async function runAdminBrowserTest(): Promise<void> {
       `INSERT INTO administrator_access_state (user_id, state, revision, updated_at)
        VALUES ('qa-no-password-admin', 'disabled', 4, 1700000000000)`,
     );
+    await sql(
+      `INSERT INTO admin_user (id, name, email, email_verified, created_at, updated_at, role, banned)
+       VALUES ('qa-verification-noop-admin', 'QA Verification No-op', 'qa-verification-noop@example.com', 0, 1700000000, 1700000000, 'admin', 0)`,
+    );
+    await sql(
+      `INSERT INTO administrator_access_state (user_id, state, revision, updated_at)
+       VALUES ('qa-verification-noop-admin', 'active', 1, 1700000000000)`,
+    );
     const auditOccurredAt = Date.now();
     await sql(
       `INSERT INTO identity_event
@@ -401,7 +410,7 @@ export async function runAdminBrowserTest(): Promise<void> {
        VALUES ('browser-audit-safe', 1, 'access-attempt', ${String(auditOccurredAt)},
         'administrator', 'qa-disabled-admin', 'reader', 'opaque-reader-subject', 'failure',
         'browser-audit-request', 'stale-revision',
-        '{"changed":false,"token":"browser-secret-token","email":"browser-secret@example.com","emailBody":"private body"}')`,
+         '{"changed":false,"token":"browser-secret-token","email":"browser-secret@example.com","emailBody":"browser-private-email-body-secret"}')`,
     );
     phase = 'Administrator verification and recovery actions';
     await page.goto(`${base}/admin/administrators/qa-disabled-admin`);
@@ -424,13 +433,49 @@ export async function runAdminBrowserTest(): Promise<void> {
       'disabled credentialed Admin can request recovery',
     );
     const administratorVerificationKeys: string[] = [];
-    let rejectAdministratorVerification = true;
+    let administratorDetailRefreshes = 0;
+    const countAdministratorDetailRefresh = (request: BrowserRequest) => {
+      const url = new URL(request.url());
+      if (
+        request.method() === 'GET' &&
+        url.pathname === '/v1/admin/administrators/qa-disabled-admin'
+      ) {
+        administratorDetailRefreshes++;
+      }
+    };
+    page.on('request', countAdministratorDetailRefresh);
+    let administratorVerificationRequestCount = 0;
     await page.route(
       '**/v1/admin/administrators/qa-disabled-admin/email-verification/messages',
       async (route) => {
+        administratorVerificationRequestCount++;
         administratorVerificationKeys.push(route.request().headers()['idempotency-key'] ?? '');
-        if (rejectAdministratorVerification) {
-          rejectAdministratorVerification = false;
+        if (administratorVerificationRequestCount === 1) {
+          await route.fulfill({
+            status: 429,
+            headers: { 'retry-after': '1' },
+            contentType: 'application/problem+json',
+            body: JSON.stringify({
+              type: 'urn:problem:cooldown-active',
+              title: 'Cooldown active',
+              status: 429,
+              code: 'cooldown-active',
+              detail: 'private cooldown detail',
+            }),
+          });
+          return;
+        }
+        if (administratorVerificationRequestCount === 2) {
+          const now = Date.now();
+          await sql(
+            `INSERT INTO administrator_message_workflow
+             (id, user_id, kind, state, cooldown_until, created_at, updated_at, last_scheduled_at)
+             VALUES ('qa-admin-verification-workflow', 'qa-disabled-admin', 'email-verification',
+               'scheduling-failed', ${String(now + 60_000)}, ${String(now)}, ${String(now)}, NULL)
+             ON CONFLICT(user_id, kind) DO UPDATE SET state='scheduling-failed',
+               cooldown_until=excluded.cooldown_until, updated_at=excluded.updated_at,
+               last_scheduled_at=NULL`,
+          );
           await route.fulfill({
             status: 503,
             contentType: 'application/problem+json',
@@ -443,13 +488,61 @@ export async function runAdminBrowserTest(): Promise<void> {
           });
           return;
         }
-        await route.continue();
+        const now = Date.now();
+        await sql(
+          `UPDATE administrator_message_workflow SET state='scheduled', cooldown_until=${String(now + 60_000)},
+             updated_at=${String(now)}, last_scheduled_at=${String(now)}
+           WHERE id='qa-admin-verification-workflow'`,
+        );
+        await route.fulfill({
+          status: 202,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            workflowId: 'qa-admin-verification-workflow',
+            kind: 'email-verification',
+            state: 'scheduled',
+            cooldownUntil: new Date(now + 60_000).toISOString(),
+            revision: 4,
+          }),
+        });
       },
     );
     await adminVerificationButton.click();
     await page
-      .getByText('No pudimos programar el envío. Reintenta con el mismo intento.', { exact: true })
+      .getByText('Espera 1 segundo antes de volver a intentarlo.', { exact: true })
       .waitFor();
+    assert(
+      await adminVerificationButton.isDisabled(),
+      'Retry-After cooldown disables verification',
+    );
+    for (
+      let attempt = 0;
+      attempt < 100 && (await adminVerificationButton.isDisabled());
+      attempt++
+    ) {
+      await pause(50);
+    }
+    assert(!(await adminVerificationButton.isDisabled()), 'verification cooldown expires');
+    await adminVerificationButton.click();
+    await page
+      .getByText('Programación fallida. Reintenta con el mismo intento.', { exact: true })
+      .waitFor();
+    await page
+      .getByText('la programación falló; el mensaje no está confirmado.', { exact: false })
+      .waitFor();
+    assert(
+      !(await page.locator('body').innerText()).includes('private cooldown detail'),
+      'cooldown Problem Details are not shown',
+    );
+    await page.reload();
+    await visible(page, 'Detalle de administrador');
+    await page
+      .getByText('la programación falló; el mensaje no está confirmado.', { exact: false })
+      .waitFor();
+    assert(
+      await page.getByText(/Podrás reenviar la verificación en/).isVisible(),
+      'persisted verification cooldown is visible after reload',
+    );
     const administratorVerificationRetry = page.waitForResponse(
       (response) =>
         response.request().method() === 'POST' &&
@@ -457,21 +550,29 @@ export async function runAdminBrowserTest(): Promise<void> {
           .url()
           .endsWith('/v1/admin/administrators/qa-disabled-admin/email-verification/messages'),
     );
-    await adminVerificationButton.click();
+    const adminVerificationRetryButton = page.getByRole('button', {
+      name: 'Reintentar verificación',
+      exact: true,
+    });
+    assert(
+      !(await adminVerificationRetryButton.isDisabled()),
+      'uncertain command can retry in cooldown',
+    );
+    await adminVerificationRetryButton.click();
     assert(
       (await administratorVerificationRetry).status() === 202,
       'Admin verification retry accepted',
     );
     assert(
-      administratorVerificationKeys.length === 2 &&
-        administratorVerificationKeys[0] !== '' &&
-        administratorVerificationKeys[0] === administratorVerificationKeys[1],
+      administratorVerificationKeys.length === 3 &&
+        administratorVerificationKeys[1] !== '' &&
+        administratorVerificationKeys[1] === administratorVerificationKeys[2] &&
+        administratorVerificationKeys[0] !== administratorVerificationKeys[1],
       'Admin verification retry preserves its idempotency key',
     );
-    assert(
-      await adminVerificationButton.isDisabled(),
-      'verification cooldown disables repeat action',
-    );
+    await page
+      .getByText('mensaje aceptado para programación; entrega no confirmada.', { exact: false })
+      .waitFor();
     await page.unroute('**/v1/admin/administrators/qa-disabled-admin/email-verification/messages');
     const administratorRecoveryResponse = page.waitForResponse(
       (response) =>
@@ -482,7 +583,15 @@ export async function runAdminBrowserTest(): Promise<void> {
     );
     await adminRecoveryButton.click();
     assert((await administratorRecoveryResponse).status() === 202, 'Admin recovery accepted');
+    await page
+      .getByText(
+        'Solicitud aceptada para programar el correo de recuperación; la entrega no está confirmada.',
+        { exact: true },
+      )
+      .waitFor();
     assert(await adminRecoveryButton.isDisabled(), 'recovery cooldown disables repeat action');
+    assert(administratorDetailRefreshes >= 2, 'message success refreshes canonical Admin detail');
+    page.off('request', countAdministratorDetailRefresh);
     const disabledAdministratorDetail = await http('/v1/admin/administrators/qa-disabled-admin', {
       headers: { cookie: cookieHeader },
     });
@@ -496,6 +605,128 @@ export async function runAdminBrowserTest(): Promise<void> {
         disabledAdministrator.emailVerified === false,
       'message actions neither rehabilitate nor verify the Administrator',
     );
+    const disabledAdminBody = await page.locator('body').innerText();
+    phase = 'verify persisted Administrator message workflow copy';
+    assert(
+      disabledAdminBody.includes(
+        'Verificación: mensaje aceptado para programación; entrega no confirmada.',
+      ) &&
+        disabledAdminBody.includes(
+          'Recuperación: mensaje aceptado para programación; entrega no confirmada.',
+        ),
+      'authoritative message workflows render as scheduled, not delivered',
+    );
+    phase = 'verify disabled Administrator reassurance copy';
+    assert(
+      disabledAdminBody.includes('deshabilitada ni restaura sesiones'),
+      'message copy does not imply account rehabilitation or session restoration',
+    );
+    phase = 'verify Administrator message privacy';
+    assert(!disabledAdminBody.includes('browser-secret-token'), 'Admin UI hides token material');
+    phase = 'verify Administrator action URL privacy';
+    assert(!disabledAdminBody.includes('actionUrl'), 'Admin UI hides action URL material');
+    phase = 'verify Administrator email body privacy';
+    assert(
+      !disabledAdminBody.includes('browser-private-email-body-secret'),
+      'Admin UI hides email content',
+    );
+    const administratorStoredValues = await page.evaluate<string>(
+      `JSON.stringify([...Object.values(localStorage), ...Object.values(sessionStorage)])`,
+    );
+    phase = 'verify Admin storage privacy';
+    assert(
+      !administratorStoredValues.includes('browser-secret-token') &&
+        !administratorStoredValues.includes('browser-private-email-body-secret') &&
+        !administratorStoredValues.includes('actionUrl'),
+      'message credentials and content are absent from browser storage',
+    );
+    phase = 'seed local pending workflow and serve safe pending detail';
+    const pendingAt = Date.now();
+    await sql(
+      `UPDATE administrator_message_workflow SET state='pending', cooldown_until=${String(pendingAt + 60_000)},
+         updated_at=${String(pendingAt)}, last_scheduled_at=NULL
+       WHERE user_id='qa-disabled-admin' AND kind='email-verification'`,
+    );
+    await page.route('**/v1/admin/administrators/**', async (route) => {
+      if (
+        new URL(route.request().url()).pathname !== '/v1/admin/administrators/qa-disabled-admin'
+      ) {
+        await route.continue();
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          id: 'qa-disabled-admin',
+          email: 'qa-disabled-admin@example.com',
+          emailVerified: false,
+          realm: 'administrator',
+          role: 'admin',
+          access: { state: 'disabled' },
+          revision: 4,
+          summary: {
+            createdAt: new Date(pendingAt).toISOString(),
+            updatedAt: new Date(pendingAt).toISOString(),
+          },
+          methods: [{ type: 'password' }],
+          messageWorkflows: {
+            emailVerification: {
+              kind: 'email-verification',
+              state: 'pending',
+              cooldownUntil: new Date(pendingAt + 60_000).toISOString(),
+              lastScheduledAt: null,
+              updatedAt: new Date(pendingAt).toISOString(),
+            },
+            passwordRecovery: null,
+          },
+        }),
+      });
+    });
+    phase = 'reload pending Administrator detail projection';
+    await page.reload();
+    await visible(page, 'Detalle de administrador');
+    await page
+      .getByText('programación en curso; el resultado aún no está confirmado.', { exact: false })
+      .waitFor();
+    assert(
+      await page.getByText(/Podrás reenviar la verificación en/).isVisible(),
+      'pending verification workflow and cooldown render from reloaded detail',
+    );
+    const pendingVerificationButton = page.getByRole('button', {
+      name: 'Reenviar verificación',
+      exact: true,
+    });
+    assert(
+      await pendingVerificationButton.isDisabled(),
+      'a pending workflow blocks a new scheduling command while its claim may be active',
+    );
+    await pendingVerificationButton.click({ force: true });
+    assert(
+      administratorVerificationRequestCount === 3,
+      'pending-state UI does not dispatch another scheduling request',
+    );
+    const pendingAdminBody = await page.locator('body').innerText();
+    assert(
+      !pendingAdminBody.includes('la programación falló') &&
+        !pendingAdminBody.includes('entrega confirmada') &&
+        !pendingAdminBody.includes('browser-secret-token') &&
+        !pendingAdminBody.includes('actionUrl'),
+      'pending state is neither failure nor delivery and exposes no message secrets',
+    );
+    await page.unroute('**/v1/admin/administrators/**');
+    await page.reload();
+    await visible(page, 'Detalle de administrador');
+    await page
+      .getByText('Recuperación: mensaje aceptado para programación; entrega no confirmada.', {
+        exact: false,
+      })
+      .waitFor();
+    await page.getByText('Deshabilitado', { exact: true }).waitFor();
+    assert(
+      await page.getByText(/Podrás reenviar la recuperación en/).isVisible(),
+      'recovery schedule and cooldown survive reload without changing disabled access',
+    );
     await page.goto(`${base}/admin/administrators/qa-no-password-admin`);
     await visible(page, 'Detalle de administrador');
     assert(
@@ -505,6 +736,43 @@ export async function runAdminBrowserTest(): Promise<void> {
     assert(
       await page.getByRole('button', { name: 'Enviar recuperación', exact: true }).isDisabled(),
       'Administrator without password cannot request recovery',
+    );
+    phase = 'verified Administrator verification no-op';
+    await page.goto(`${base}/admin/administrators/qa-verification-noop-admin`);
+    await visible(page, 'Detalle de administrador');
+    const staleUnverifiedAction = page.getByRole('button', {
+      name: 'Reenviar verificación',
+      exact: true,
+    });
+    assert(
+      !(await staleUnverifiedAction.isDisabled()),
+      'unverified view allows verification request',
+    );
+    await sql(`UPDATE admin_user SET email_verified = 1 WHERE id = 'qa-verification-noop-admin'`);
+    const verifiedNoOpResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'POST' &&
+        response
+          .url()
+          .endsWith(
+            '/v1/admin/administrators/qa-verification-noop-admin/email-verification/messages',
+          ),
+    );
+    await staleUnverifiedAction.click();
+    const verifiedNoOpValue = await verifiedNoOpResponse;
+    assert(verifiedNoOpValue.status() === 200, 'verified target produces the current-state no-op');
+    const verifiedNoOpPayload: unknown = await verifiedNoOpValue.json();
+    const verifiedNoOpContract = AdminAdministratorMessageSchema.safeParse(verifiedNoOpPayload);
+    assert(
+      verifiedNoOpContract.success && verifiedNoOpContract.data.state === 'verified',
+      'verified no-op response is contract-validated and not reported as scheduled',
+    );
+    await page
+      .getByText('El correo ya estaba verificado; no se programó otro mensaje.', { exact: true })
+      .waitFor();
+    assert(
+      (await page.locator('body').innerText()).includes('Correo verificado'),
+      'canonical verification state refreshes after the no-op',
     );
     await page.getByRole('link', { name: 'Auditoría administrativa', exact: true }).click();
     await visible(page, 'Auditoría administrativa');
@@ -558,7 +826,7 @@ export async function runAdminBrowserTest(): Promise<void> {
     for (const secret of [
       'browser-secret-token',
       'browser-secret@example.com',
-      'private body',
+      'browser-private-email-body-secret',
       'browser-audit-safe',
     ]) {
       assert(!auditText.includes(secret), 'Audit UI renders only the safe projection');

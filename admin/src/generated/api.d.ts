@@ -1337,7 +1337,24 @@ export interface components {
                 /** @enum {string} */
                 provider?: "google" | "facebook" | "apple";
             }[];
+            /** @description Latest persisted workflow per message kind. A null value means no workflow has been requested. */
+            messageWorkflows: {
+                emailVerification: components["schemas"]["AdminAdministratorMessageWorkflow"];
+                passwordRecovery: components["schemas"]["AdminAdministratorMessageWorkflow"];
+            };
         };
+        AdminAdministratorMessageWorkflow: {
+            /** @enum {string} */
+            kind: "email-verification" | "password-recovery";
+            /** @enum {string} */
+            state: "pending" | "scheduled" | "scheduling-failed";
+            /** Format: date-time */
+            cooldownUntil: string;
+            /** Format: date-time */
+            lastScheduledAt: string | null;
+            /** Format: date-time */
+            updatedAt: string;
+        } | null;
         AdminAdministratorActivity: {
             items: {
                 id: string;
@@ -1363,7 +1380,8 @@ export interface components {
             /** @enum {string} */
             state: "active" | "disabled";
         };
-        AdminAdministratorMessage: {
+        AdminAdministratorMessage: components["schemas"]["AdminAdministratorMessageScheduled"] | components["schemas"]["AdminAdministratorMessageNoOp"];
+        AdminAdministratorMessageScheduled: {
             workflowId: string;
             /** @enum {string} */
             kind: "email-verification" | "password-recovery";
@@ -1371,6 +1389,17 @@ export interface components {
             state: "scheduled";
             /** Format: date-time */
             cooldownUntil: string;
+            revision: number;
+        };
+        AdminAdministratorMessageNoOp: {
+            /** @enum {string} */
+            kind: "email-verification";
+            /** @enum {string} */
+            state: "verified";
+            /** @enum {boolean} */
+            changed: false;
+            /** Format: date-time */
+            cooldownUntil?: string;
             revision: number;
         };
         AdminAdministratorMessageRequest: Record<string, never>;
@@ -2870,6 +2899,15 @@ export interface operations {
             };
         };
         responses: {
+            /** @description Verification is already complete; no message was sent. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminAdministratorMessage"];
+                };
+            };
             /** @description The verification message was accepted for scheduling. */
             202: {
                 headers: {
@@ -2936,6 +2974,8 @@ export interface operations {
             /** @description The message cooldown is active. */
             429: {
                 headers: {
+                    /** @description Seconds until this message kind can be requested again. */
+                    "Retry-After"?: number;
                     [name: string]: unknown;
                 };
                 content: {
@@ -3045,6 +3085,8 @@ export interface operations {
             /** @description The message cooldown is active. */
             429: {
                 headers: {
+                    /** @description Seconds until this message kind can be requested again. */
+                    "Retry-After"?: number;
                     [name: string]: unknown;
                 };
                 content: {
