@@ -191,6 +191,18 @@ Password-reset mail targets the consumer action page configured by
 `AUTH_RESET_PASSWORD_ACTION_URL`. Local development uses
 `http://localhost:4321/usuario/restablecer`; the versioned sandbox and
 production environment files point to their deployed RCH action page.
+
+`AUTH_SOCIAL_PROVIDERS` is a non-secret comma-separated recognized-provider
+display catalog. The application recognizes `google` and `facebook`; unknown
+or duplicate values fail configuration validation. Catalog membership only
+controls provider recognition/display in administrative projections. It does
+not enable social authentication, provide a local social-login operation, or
+make an associated account usable for login. All social associations are
+currently projected as unavailable. The versioned sandbox and production
+defaults may leave the catalog empty; recognized but unconfigured associations
+use a generic safe display label. Projections never expose provider account
+IDs, scopes, or tokens.
+
 Verification mail follows the same pattern through
 `AUTH_VERIFY_EMAIL_ACTION_URL`, using `http://localhost:4321/usuario/verificar`
 locally and the deployed RCH verification page in sandbox and production.

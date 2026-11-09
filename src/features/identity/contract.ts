@@ -316,6 +316,20 @@ export const AdminAdministratorActivitySchema = z
   })
   .openapi('AdminAdministratorActivity');
 
+export const SocialIdentityUnlinkedMetadataSchema = z
+  .object({
+    associationId: z
+      .string()
+      .min(1)
+      .max(128)
+      .regex(/^[A-Za-z0-9_-]+$/),
+    provider: z.enum(['google', 'facebook']),
+    revision: z.number().int().min(1),
+  })
+  .strict()
+  .openapi('SocialIdentityUnlinkedMetadata');
+export type SocialIdentityUnlinkedMetadata = z.infer<typeof SocialIdentityUnlinkedMetadataSchema>;
+
 export const AdminAuditMetadataSchema = z
   .object({
     changed: z.boolean().optional(),
@@ -325,7 +339,9 @@ export const AdminAuditMetadataSchema = z
       .max(64)
       .regex(/^[a-z][a-z0-9-]*$/)
       .optional(),
-    revision: z.number().int().min(1).optional(),
+    revision: SocialIdentityUnlinkedMetadataSchema.shape.revision.optional(),
+    associationId: SocialIdentityUnlinkedMetadataSchema.shape.associationId.optional(),
+    provider: SocialIdentityUnlinkedMetadataSchema.shape.provider.optional(),
     previousAccessState: z.enum(['active', 'disabled']).optional(),
     retryAfterSeconds: z.number().int().min(1).max(86_400).optional(),
     state: z
@@ -526,6 +542,16 @@ export const AdminUserSchema = z
   })
   .openapi('AdminUser');
 
+export const AdminReaderSocialIdentitySchema = z
+  .object({
+    associationId: z.uuid(),
+    provider: z.enum(['google', 'facebook']),
+    providerDisplayName: z.enum(['Google', 'Facebook', 'Social provider']),
+    linkedAt: z.iso.datetime(),
+    state: z.enum(['available', 'unavailable']),
+  })
+  .openapi('AdminReaderSocialIdentity');
+
 export const AdminReaderDetailSchema = AdminUserSchema.extend({
   revision: z.number().int().min(1).openapi({ example: 1 }),
   summary: z
@@ -549,6 +575,9 @@ export const AdminReaderDetailSchema = AdminUserSchema.extend({
       }),
     )
     .openapi({ description: 'Safe locally usable login methods without provider identifiers.' }),
+  socialIdentities: z
+    .array(AdminReaderSocialIdentitySchema)
+    .openapi('AdminReaderSocialIdentityList'),
   activeWorkflows: z
     .array(
       z.discriminatedUnion('type', [
@@ -590,6 +619,24 @@ export const AdminReaderDetailSchema = AdminUserSchema.extend({
     .openapi({ description: 'Only persisted active workflows; never inferred or fabricated.' }),
 }).openapi('AdminReaderDetail');
 
+export const AdminReaderSocialIdentityParamsSchema = z
+  .object({
+    userId: z.string().min(1).max(128),
+    associationId: z.uuid(),
+  })
+  .strict()
+  .openapi('AdminReaderSocialIdentityParams');
+
+export const AdminReaderSocialIdentityUnlinkSchema = z
+  .object({
+    associationId: z.uuid(),
+    changed: z.boolean(),
+    revision: z.number().int().min(1),
+  })
+  .strict()
+  .openapi('AdminReaderSocialIdentityUnlink');
+export type AdminReaderSocialIdentityUnlink = z.infer<typeof AdminReaderSocialIdentityUnlinkSchema>;
+
 export const AdminReaderActivityQuerySchema = z
   .object({
     limit: z.coerce.number().int().min(1).max(50).default(25),
@@ -618,6 +665,7 @@ export const AdminReaderActivityEventSchema = z
     ]),
     occurredAt: z.iso.datetime(),
     actor: z.object({ id: z.string(), realm: z.literal('administrator') }),
+    metadata: SocialIdentityUnlinkedMetadataSchema.nullable(),
   })
   .openapi('AdminReaderActivityEvent');
 

@@ -4,6 +4,8 @@ import { drizzle } from 'drizzle-orm/d1';
 import type { createAdministrationAuth } from './auth.js';
 import type { AdminMe, AdminReaderDetail, AdminUser, AdminUserList } from './contract.js';
 import { authorizeAdministrator } from './admin-authorization.js';
+import { SOCIAL_PROVIDER_DISPLAY_NAMES } from './policy.js';
+import type { SocialProvider } from './policy.js';
 import {
   account,
   identitySchema,
@@ -59,6 +61,9 @@ export interface GetAdminUserInput {
   readonly db: D1Database;
   // Validated opaque identifier from the public contract (nonempty, <= 128).
   readonly userId: string;
+  readonly emailPasswordEnabled: boolean;
+  readonly requireEmailVerification: boolean;
+  readonly socialProviders: readonly SocialProvider[];
 }
 
 export interface AdminUserReaderInput {
@@ -66,6 +71,9 @@ export interface AdminUserReaderInput {
   readonly db: D1Database;
   readonly userId: string;
   readonly headers: Headers;
+  readonly emailPasswordEnabled: boolean;
+  readonly requireEmailVerification: boolean;
+  readonly socialProviders: readonly SocialProvider[];
 }
 
 export type AdminReadOutcome<T> =
@@ -117,7 +125,13 @@ export function createAdminUserReader(input: AdminUserReaderInput): AdminUserRea
     async get(userId) {
       const authorization = await authorizedAdministrator(input);
       if (authorization.kind !== 'allowed') return authorization;
-      const detail = await getAdminUserById({ db: input.db, userId });
+      const detail = await getAdminUserById({
+        db: input.db,
+        userId,
+        emailPasswordEnabled: input.emailPasswordEnabled,
+        requireEmailVerification: input.requireEmailVerification,
+        socialProviders: input.socialProviders,
+      });
       return detail === null ? { kind: 'not-found' } : { kind: 'allowed', value: detail };
     },
   };
@@ -152,7 +166,12 @@ export async function getAdminUserById(
     return null;
   }
   const methodRows = await database
-    .select({ providerId: account.providerId, password: account.password })
+    .select({
+      id: account.id,
+      providerId: account.providerId,
+      password: account.password,
+      createdAt: account.createdAt,
+    })
     .from(account)
     .where(eq(account.userId, row.id));
   const messageRows = await database
@@ -204,19 +223,31 @@ export async function getAdminUserById(
   const methods: AdminReaderDetail['methods'] = [];
   const seen = new Set<string>();
   for (const method of methodRows) {
-    if (method.providerId === 'credential' && method.password !== null && !seen.has('password')) {
+    if (
+      method.providerId === 'credential' &&
+      method.password !== null &&
+      input.emailPasswordEnabled &&
+      (!input.requireEmailVerification || row.emailVerified) &&
+      !seen.has('password')
+    ) {
       methods.push({ type: 'password' });
       seen.add('password');
-    } else if (
-      (method.providerId === 'google' ||
-        method.providerId === 'facebook' ||
-        method.providerId === 'apple') &&
-      !seen.has(method.providerId)
-    ) {
-      methods.push({ type: 'social', provider: method.providerId });
-      seen.add(method.providerId);
     }
   }
+  const socialIdentities: AdminReaderDetail['socialIdentities'] = methodRows.flatMap((method) => {
+    if (method.providerId !== 'google' && method.providerId !== 'facebook') return [];
+    return [
+      {
+        associationId: method.id,
+        provider: method.providerId,
+        providerDisplayName: input.socialProviders.includes(method.providerId)
+          ? SOCIAL_PROVIDER_DISPLAY_NAMES[method.providerId]
+          : 'Social provider',
+        linkedAt: method.createdAt.toISOString(),
+        state: 'unavailable',
+      },
+    ];
+  });
   const legacy = toAdminUser(row);
   const state = row.accessState === 'disabled' ? 'disabled' : 'active';
   const deletionRequest = deletionRows[0];
@@ -276,6 +307,7 @@ export async function getAdminUserById(
     access: { state, effectiveState },
     deletionState,
     methods,
+    socialIdentities,
     activeWorkflows: [...messageWorkflows, ...emailChangeWorkflows, ...deletionWorkflows],
   };
 }

@@ -26,10 +26,19 @@ export interface EmailChangeNoticeMessage {
   readonly newEmail: string;
 }
 
+export interface SocialIdentityUnlinkNoticeMessage {
+  readonly to: string;
+  readonly providerDisplayName: 'Google' | 'Facebook';
+}
+
 export type AuthMailTask =
   | { readonly kind: 'email-verification'; readonly message: VerificationMessage }
   | { readonly kind: 'password-recovery'; readonly message: PasswordResetMessage }
-  | { readonly kind: 'email-change-notice'; readonly message: EmailChangeNoticeMessage };
+  | { readonly kind: 'email-change-notice'; readonly message: EmailChangeNoticeMessage }
+  | {
+      readonly kind: 'social-identity-unlink-notice';
+      readonly message: SocialIdentityUnlinkNoticeMessage;
+    };
 
 export type AuthMailDeliveryResult =
   { readonly status: 'sent' } | { readonly status: 'skipped' } | { readonly status: 'failed' };
@@ -41,6 +50,7 @@ export interface AuthMailer {
   sendVerificationEmailWithResult?(message: VerificationMessage): Promise<AuthMailDeliveryResult>;
   sendPasswordResetEmail(message: PasswordResetMessage): Promise<void>;
   sendEmailChangeNotice(message: EmailChangeNoticeMessage): Promise<void>;
+  sendSocialIdentityUnlinkNotice(message: SocialIdentityUnlinkNoticeMessage): Promise<void>;
 }
 
 interface CapturedMessage extends VerificationMessage {
@@ -55,6 +65,7 @@ export class InMemoryAuthMailer implements AuthMailer {
   private readonly messages: CapturedMessage[] = [];
   private readonly resetMessages: CapturedMessage[] = [];
   private readonly emailChangeNotices: EmailChangeNoticeMessage[] = [];
+  private readonly socialIdentityUnlinkNoticesCaptured: SocialIdentityUnlinkNoticeMessage[] = [];
 
   get sent(): readonly CapturedMessage[] {
     return this.messages;
@@ -66,6 +77,10 @@ export class InMemoryAuthMailer implements AuthMailer {
 
   get emailChangeMessages(): readonly EmailChangeNoticeMessage[] {
     return this.emailChangeNotices;
+  }
+
+  get socialIdentityUnlinkNotices(): readonly SocialIdentityUnlinkNoticeMessage[] {
+    return this.socialIdentityUnlinkNoticesCaptured;
   }
 
   sendVerificationEmail(message: VerificationMessage): Promise<void> {
@@ -87,10 +102,16 @@ export class InMemoryAuthMailer implements AuthMailer {
     return Promise.resolve();
   }
 
+  sendSocialIdentityUnlinkNotice(message: SocialIdentityUnlinkNoticeMessage): Promise<void> {
+    this.socialIdentityUnlinkNoticesCaptured.push({ ...message });
+    return Promise.resolve();
+  }
+
   clear(): void {
     this.messages.length = 0;
     this.resetMessages.length = 0;
     this.emailChangeNotices.length = 0;
+    this.socialIdentityUnlinkNoticesCaptured.length = 0;
   }
 }
 
@@ -136,6 +157,19 @@ export class DevelopmentAuthMailer implements AuthMailer {
         level: 'info',
         event: 'auth-mail.scheduled',
         purpose: 'email-change-notice',
+        recipientDomain: domain,
+      }),
+    );
+    return Promise.resolve();
+  }
+
+  sendSocialIdentityUnlinkNotice(message: SocialIdentityUnlinkNoticeMessage): Promise<void> {
+    const domain = message.to.split('@')[1] ?? 'invalid';
+    console.log(
+      JSON.stringify({
+        level: 'info',
+        event: 'auth-mail.scheduled',
+        purpose: 'social-identity-unlink-notice',
         recipientDomain: domain,
       }),
     );
@@ -211,6 +245,7 @@ export function deferredAuthMailer(
     },
     sendPasswordResetEmail: (message) => current().sendPasswordResetEmail(message),
     sendEmailChangeNotice: (message) => current().sendEmailChangeNotice(message),
+    sendSocialIdentityUnlinkNotice: (message) => current().sendSocialIdentityUnlinkNotice(message),
   };
 }
 

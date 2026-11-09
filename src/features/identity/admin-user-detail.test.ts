@@ -328,6 +328,7 @@ describe('GET /v1/admin/users/{userId}', () => {
       'realm',
       'revision',
       'role',
+      'socialIdentities',
       'summary',
     ]);
     expect(body.realm).toBe('reader');
@@ -343,6 +344,7 @@ describe('GET /v1/admin/users/{userId}', () => {
         effectiveState: 'active',
       },
       activeWorkflows: [],
+      socialIdentities: [],
     });
     expect(body.methods).toEqual([{ type: 'password' }]);
     expect(res.headers.get('etag')).toBe('"1"');

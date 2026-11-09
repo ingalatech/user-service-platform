@@ -46,6 +46,13 @@ import {
 } from './admin-reader-email.js';
 import { createAdminAccountDetailsOperations } from './admin-account-details.js';
 import { readAdminReaderActivity } from './admin-reader-activity.js';
+import {
+  claimReaderSocialIdentityNotice,
+  markReaderSocialIdentityNoticeDispatched,
+  markReaderSocialIdentityNoticeScheduled,
+  releaseReaderSocialIdentityNoticeClaim,
+  unlinkReaderSocialIdentity,
+} from './admin-reader-social-identities.js';
 import { createAccountDetailsOperations } from './account-details-operations.js';
 import type { AccountDetailsUpdateOutcome } from './account-details-operations.js';
 import { createAccountPhotoOperations } from './account-photo-operations.js';
@@ -101,6 +108,7 @@ import {
   adminUserDetailRoute,
   adminReaderActivityRoute,
   adminReaderAccessRoute,
+  adminReaderSocialIdentityUnlinkRoute,
   adminReaderEmailVerificationRoute,
   adminReaderVerificationMessageRoute,
   adminReaderPasswordRecoveryMessageRoute,
@@ -1064,6 +1072,9 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
       db: c.env.DB,
       userId: session.administrator.id,
       headers: c.req.raw.headers,
+      emailPasswordEnabled: runtime.authPolicy.emailPasswordEnabled,
+      requireEmailVerification: runtime.authPolicy.requireEmailVerification,
+      socialProviders: runtime.authPolicy.socialProviders,
     });
     const outcome = await reader.current();
     if (outcome.kind === 'forbidden') {
@@ -1173,6 +1184,9 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
       db: c.env.DB,
       userId: session.administrator.id,
       headers: c.req.raw.headers,
+      emailPasswordEnabled: runtime.authPolicy.emailPasswordEnabled,
+      requireEmailVerification: runtime.authPolicy.requireEmailVerification,
+      socialProviders: runtime.authPolicy.socialProviders,
     });
     const query = c.req.valid('query');
     const outcome = await reader.list({
@@ -1432,6 +1446,9 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
       db: c.env.DB,
       userId: session.administrator.id,
       headers: c.req.raw.headers,
+      emailPasswordEnabled: runtime.authPolicy.emailPasswordEnabled,
+      requireEmailVerification: runtime.authPolicy.requireEmailVerification,
+      socialProviders: runtime.authPolicy.socialProviders,
     });
     const params = c.req.valid('param');
     const outcome = await reader.get(params.userId);
@@ -1500,6 +1517,115 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
       requestId: c.get('requestId'),
     });
     if (outcome.kind !== 'success') return readerAccessProblem(c, outcome) as never;
+    c.header('ETag', `"${String(outcome.value.revision)}"`);
+    return c.json(outcome.value, 200);
+  });
+
+  router.openapi(adminReaderSocialIdentityUnlinkRoute, async (c) => {
+    const runtime = requestIdentityRuntime(c, override);
+    c.header('Cache-Control', 'private, no-store');
+    const rejected = guardCookieMutation(c, runtime, 'private, no-store');
+    if (rejected !== null) return rejected as never;
+    const session = await runtime.resolveAdministratorSessionContext(
+      c.req.raw.headers,
+      c.get('requestId'),
+    );
+    if (session === null) return administratorSessionProblem(c) as never;
+    const params = c.req.valid('param');
+    const policy = runtime.authPolicy;
+    const outcome = await unlinkReaderSocialIdentity({
+      db: c.env.DB,
+      runtime,
+      administratorId: session.administrator.id,
+      readerId: params.userId,
+      associationId: params.associationId,
+      headers: c.req.raw.headers,
+      ifMatch: c.req.header('if-match'),
+      idempotencyKey: c.req.header('idempotency-key'),
+      requestId: c.get('requestId'),
+      emailPasswordEnabled: policy.emailPasswordEnabled,
+      requireEmailVerification: policy.requireEmailVerification,
+    });
+    if (outcome.kind !== 'success') {
+      switch (outcome.kind) {
+        case 'forbidden':
+          return problem(c, 403, 'forbidden', 'Forbidden') as never;
+        case 'administrator-disabled':
+          return problem(c, 403, 'administrator-disabled', 'Administrator disabled') as never;
+        case 'reader-not-found':
+          return problem(c, 404, 'reader-not-found', 'Reader not found') as never;
+        case 'bad-request':
+          return problem(c, 400, 'bad-request', 'Bad Request') as never;
+        case 'precondition-required':
+          return problem(c, 428, 'precondition-required', 'Precondition Required') as never;
+        case 'stale-revision':
+          return problem(c, 412, 'stale-revision', 'Precondition Failed') as never;
+        case 'active-deletion-request':
+          return problem(
+            c,
+            409,
+            'active-deletion-request',
+            'Reader deletion is under review',
+          ) as never;
+        case 'no-usable-login-method':
+          return problem(c, 409, 'no-usable-login-method', 'No usable login method') as never;
+        case 'idempotency-key-reused':
+          return problem(c, 409, 'idempotency-key-reused', 'Idempotency key reused') as never;
+        case 'delivery-scheduling-failed':
+          return problem(
+            c,
+            503,
+            'delivery-scheduling-failed',
+            'Delivery scheduling failed',
+          ) as never;
+        case 'internal-error':
+          return problem(c, 500, 'internal-error', 'Internal Server Error') as never;
+      }
+    }
+    const key = c.req.header('idempotency-key') ?? '';
+    const noticeClaimed =
+      outcome.retryPayload !== undefined &&
+      (await claimReaderSocialIdentityNotice({
+        db: c.env.DB,
+        administratorId: session.administrator.id,
+        readerId: params.userId,
+        idempotencyKey: key,
+      }));
+    const schedulingResult = noticeClaimed
+      ? await runtime.retryReaderMessageScheduling(outcome.retryPayload)
+      : 'accepted';
+    if (schedulingResult !== 'accepted') {
+      if (noticeClaimed) {
+        await releaseReaderSocialIdentityNoticeClaim({
+          db: c.env.DB,
+          administratorId: session.administrator.id,
+          readerId: params.userId,
+          idempotencyKey: key,
+        });
+      }
+      if (schedulingResult === 'invalid-envelope') {
+        return problem(c, 500, 'internal-error', 'Internal Server Error') as never;
+      }
+      return problem(c, 503, 'delivery-scheduling-failed', 'Delivery scheduling failed') as never;
+    }
+    if (noticeClaimed) {
+      const marked = await markReaderSocialIdentityNoticeScheduled({
+        db: c.env.DB,
+        administratorId: session.administrator.id,
+        readerId: params.userId,
+        idempotencyKey: key,
+      });
+      if (!marked) {
+        await markReaderSocialIdentityNoticeDispatched({
+          db: c.env.DB,
+          administratorId: session.administrator.id,
+          readerId: params.userId,
+          idempotencyKey: key,
+        });
+        // Dispatch succeeded. Preserve a durable no-redispatch state without
+        // turning an accepted dispatch into a misleading 500.
+      }
+    }
     c.header('ETag', `"${String(outcome.value.revision)}"`);
     return c.json(outcome.value, 200);
   });

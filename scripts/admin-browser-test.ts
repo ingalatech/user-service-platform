@@ -6,8 +6,11 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
-import { chromium, type Browser, type Page } from 'playwright-core';
-import { AdminReaderDetailSchema } from '../admin/src/generated/contracts.js';
+import { chromium, type Browser, type Page, type Request as BrowserRequest } from 'playwright-core';
+import {
+  AdminReaderDetailSchema,
+  AdminReaderSocialIdentityUnlinkSchema,
+} from '../admin/src/generated/contracts.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const exec = promisify(execFile);
@@ -108,13 +111,20 @@ export async function runAdminBrowserTest(): Promise<void> {
     const persist = join(state, 'd1');
     const envFile = join(state, '.env');
     await writeFile(envFile, '');
-    await writeFile(join(state, '.dev.vars'), '');
+    await writeFile(
+      join(state, '.dev.vars'),
+      'AUTH_SOCIAL_PROVIDERS=google\nAUTH_REQUIRE_EMAIL_VERIFICATION=false\n',
+    );
     const original = await readFile(join(root, 'wrangler.jsonc'), 'utf8');
     // Preserve all routing/binding configuration; relocate only file paths so
     // local-secret discovery and storage also live in the disposable directory.
     await writeFile(
       config,
       original
+        .replace(
+          '"ENVIRONMENT": "local",',
+          '"ENVIRONMENT": "local",\n    "AUTH_SOCIAL_PROVIDERS": "google",',
+        )
         .replace('"main": "src/index.ts"', `"main": ${JSON.stringify(join(root, 'src/index.ts'))}`)
         .replace(
           '"directory": "./admin/dist"',
@@ -194,6 +204,17 @@ export async function runAdminBrowserTest(): Promise<void> {
     // Actual verify-email transitions are covered by Workers-runtime tests.
     await sql(`UPDATE "admin_user" SET email_verified = 1 WHERE email = '${admin}'`);
     await sql(`UPDATE "user" SET email_verified = 1 WHERE email = '${regular}'`);
+    const readerSessionLogin = await http('/v1/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: regular, password }),
+    });
+    assert(readerSessionLogin.status === 200, 'Reader session fixture created through public HTTP');
+    const readerCookie = readerSessionLogin.headers.get('set-cookie')?.split(';')[0];
+    assert(readerCookie !== undefined && readerCookie.length > 0, 'Reader session cookie captured');
+    const readerSession = await http('/v1/me', { headers: { cookie: readerCookie } });
+    assert(readerSession.status === 200, 'Reader session is valid before social unlink');
+    await readerSession.arrayBuffer();
     phase = 'assets';
     for (const path of ['/admin', '/admin/', '/admin/login', '/admin/denegado']) {
       const response = await http(path);
@@ -811,14 +832,6 @@ export async function runAdminBrowserTest(): Promise<void> {
       'verification scheduling retry preserves the idempotency key',
     );
     await page.unroute('**/v1/admin/users/*/email-verification/messages');
-    const recoveryResponse = page.waitForResponse(
-      (response) =>
-        response.request().method() === 'POST' &&
-        response.url().endsWith(`/v1/admin/users/${unverifiedId}/password-recovery/messages`),
-    );
-    await page.getByRole('tab', { name: 'Acceso', exact: true }).click();
-    await page.getByRole('button', { name: 'Enviar recuperación', exact: true }).click();
-    assert((await recoveryResponse).status() === 202, 'password recovery accepted');
     const forceVerificationResponse = page.waitForResponse(
       (response) =>
         response.request().method() === 'PUT' &&
@@ -832,6 +845,18 @@ export async function runAdminBrowserTest(): Promise<void> {
     });
     assert(verifiedDetail.status === 200, 'verified Reader detail remains readable');
     await verifiedDetail.arrayBuffer();
+    phase = 'verified Reader password-recovery message request';
+    const recoveryResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'POST' &&
+        response.url().endsWith(`/v1/admin/users/${unverifiedId}/password-recovery/messages`),
+    );
+    await page.getByRole('tab', { name: 'Acceso', exact: true }).click();
+    await page.getByRole('button', { name: 'Enviar recuperación', exact: true }).click();
+    assert(
+      (await recoveryResponse).status() === 202,
+      'password recovery accepted when locally usable',
+    );
     await sql(`DELETE FROM "user" WHERE id = '${unverifiedId}'`);
     const emailChangeReaderEmail = 'qa-email-change-reader@example.com';
     const emailChangeRegistration = await http('/v1/auth/register', {
@@ -1106,10 +1131,11 @@ export async function runAdminBrowserTest(): Promise<void> {
       .waitFor();
     await page.unroute(`**/v1/admin/users/${emailChangeReaderId}/email-changes`);
     phase = 'user detail, reload, back and direct navigation';
+    await sql(`DELETE FROM "user" WHERE id = '${emailChangeReaderId}'`);
     await page.goto(`${base}/admin/users`);
     phase = 'user list after email-change cleanup';
     await visible(page, 'Usuarios');
-    await sql(`DELETE FROM "user" WHERE id = '${emailChangeReaderId}'`);
+    phase = 'social fixture Reader lookup';
     const detailLookup = await http(`/v1/admin/users?email=${encodeURIComponent(regular)}`, {
       headers: { cookie: cookieHeader },
     });
@@ -1121,6 +1147,64 @@ export async function runAdminBrowserTest(): Promise<void> {
     assert(
       typeof regularDetailId === 'string' && regularDetailId.length > 0,
       'regular detail identifier resolved',
+    );
+    phase = 'social fixture D1 seed';
+    const socialAssociationIds = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
+    const [noOpAssociation, facebookAssociation, finalGoogleAssociation] = socialAssociationIds;
+    assert(
+      noOpAssociation !== undefined &&
+        facebookAssociation !== undefined &&
+        finalGoogleAssociation !== undefined,
+      'social selectors allocated',
+    );
+    const socialCreatedAt = Math.floor(Date.now() / 1000) - 3600;
+    await sql(
+      `INSERT INTO account (id, account_id, provider_id, user_id, access_token, refresh_token, id_token,
+       access_token_expires_at, refresh_token_expires_at, scope, password, created_at, updated_at)
+       VALUES ('${noOpAssociation}', 'external-google-a-secret', 'google', '${regularDetailId}', 'social-access-secret', 'social-refresh-secret', 'social-id-secret', ${String(socialCreatedAt + 3600)}, ${String(socialCreatedAt + 7200)}, 'profile email secret-scope', NULL, ${String(socialCreatedAt)}, ${String(socialCreatedAt)}),
+              ('${facebookAssociation}', 'external-facebook-secret', 'facebook', '${regularDetailId}', 'facebook-access-secret', 'facebook-refresh-secret', 'facebook-id-secret', ${String(socialCreatedAt + 3600)}, ${String(socialCreatedAt + 7200)}, 'email secret-scope', NULL, ${String(socialCreatedAt + 1)}, ${String(socialCreatedAt + 1)}),
+              ('${finalGoogleAssociation}', 'external-google-b-secret', 'google', '${regularDetailId}', 'google-b-access-secret', 'google-b-refresh-secret', 'google-b-id-secret', ${String(socialCreatedAt + 3600)}, ${String(socialCreatedAt + 7200)}, 'profile secret-scope', NULL, ${String(socialCreatedAt + 2)}, ${String(socialCreatedAt + 2)})`,
+    );
+    phase = 'social projection privacy';
+    const socialProjectionResponse = await http(
+      `/v1/admin/users/${encodeURIComponent(regularDetailId)}`,
+      { headers: { cookie: cookieHeader } },
+    );
+    phase = 'social safe projection response';
+    assert(
+      socialProjectionResponse.status === 200,
+      'safe social detail is readable through Worker',
+    );
+    const socialProjectionText = await socialProjectionResponse.text();
+    phase = 'social projection secret redaction';
+    for (const secret of [
+      'external-google-a-secret',
+      'external-facebook-secret',
+      'social-access-secret',
+      'social-refresh-secret',
+      'social-id-secret',
+      'facebook-access-secret',
+      'facebook-refresh-secret',
+      'facebook-id-secret',
+      'secret-scope',
+    ]) {
+      assert(
+        !socialProjectionText.includes(secret),
+        'social detail omits provider credentials and scopes',
+      );
+    }
+    const socialDetailResult = AdminReaderDetailSchema.safeParse(JSON.parse(socialProjectionText));
+    phase = 'social projection generated contract';
+    if (!socialDetailResult.success) {
+      phase = `social Admin schema mismatch: ${socialDetailResult.error.issues.map((issue) => issue.path.join('.')).join(',')}`;
+      assert(false, 'social detail matches generated Admin runtime contract');
+    }
+    assert(
+      socialDetailResult.data.socialIdentities.length === 3 &&
+        socialDetailResult.data.socialIdentities.every(
+          (identity) => identity.state === 'unavailable',
+        ),
+      'social detail projects only configured local identities',
     );
     await searchBox.fill(regular);
     await page.getByText('1 usuario en total', { exact: true }).waitFor();
@@ -1146,7 +1230,7 @@ export async function runAdminBrowserTest(): Promise<void> {
     );
     await selectTab(page, 'Acceso');
     await page.getByText('Permitido', { exact: true }).waitFor();
-    await page.getByText('Contraseña', { exact: true }).waitFor();
+    await page.getByText('Contraseña', { exact: false }).waitFor();
     await page.getByRole('tab', { name: 'Sesiones', exact: true }).click();
     await page
       .getByText('La consulta y gestión de sesiones estará disponible en una próxima entrega.', {
@@ -1156,6 +1240,464 @@ export async function runAdminBrowserTest(): Promise<void> {
     await selectTab(page, 'Ciclo de vida');
     phase = 'deletion lifecycle panel visible';
     await page.getByRole('heading', { name: 'Solicitud de eliminación', exact: true }).waitFor();
+    phase = 'social association safe projection';
+    await page.getByRole('heading', { name: 'Identidades sociales', exact: true }).waitFor();
+    await page
+      .getByText('external-google-a-secret', { exact: true })
+      .waitFor()
+      .catch(() => undefined);
+    assert(
+      !(await page.locator('body').innerText()).includes('external-google-a-secret') &&
+        !(await page.locator('body').innerText()).includes('social-access-secret') &&
+        !(await page.locator('body').innerText()).includes('secret-scope'),
+      'Admin social projection never renders provider ids, tokens or scopes',
+    );
+    phase = 'social availability label';
+    await page.getByText('No disponible en esta configuración', { exact: true }).first().waitFor();
+
+    phase = 'social verified unlink confirmation';
+    const verifiedCard = page.locator('li').filter({ hasText: facebookAssociation });
+    const socialRequestsBeforeConfirmation = { count: 0 };
+    const countSocialRequest = (request: BrowserRequest) => {
+      if (request.url().includes('/social-identities/')) socialRequestsBeforeConfirmation.count++;
+    };
+    page.on('request', countSocialRequest);
+    phase = 'open verified unlink confirmation';
+    await verifiedCard
+      .getByRole('button', { name: 'Desvincular Social provider', exact: true })
+      .focus();
+    await page.keyboard.press('Enter');
+    const noOpDialog = page.getByRole('alertdialog', {
+      name: 'Confirmar desvinculación de Social provider',
+    });
+    await noOpDialog.waitFor();
+    phase = 'verify verified unlink copy';
+    const verifiedConfirmation = await noOpDialog.innerText();
+    assert(
+      verifiedConfirmation.includes('revocarán todas las sesiones Reader.') &&
+        verifiedConfirmation.includes(
+          'Se programará un aviso de seguridad porque el correo canónico está verificado.',
+        ) &&
+        verifiedConfirmation.includes('No se revocarán permisos en Social provider.') &&
+        !verifiedConfirmation.includes(regular) &&
+        !verifiedConfirmation.includes('social-access-secret') &&
+        !verifiedConfirmation.includes('secret-scope'),
+      'verified unlink confirmation explains the notice condition without exposing account or provider details',
+    );
+    assert(
+      socialRequestsBeforeConfirmation.count === 0,
+      'unlink does not send before confirmation',
+    );
+    await noOpDialog.getByRole('button', { name: 'Cancelar', exact: true }).click();
+    await sql(`UPDATE "user" SET email_verified = 0 WHERE id = '${regularDetailId}'`);
+    await page.reload();
+    await visible(page, 'Detalle de usuario');
+    await selectTab(page, 'Ciclo de vida');
+    const unverifiedCard = page.locator('li').filter({ hasText: facebookAssociation });
+    await unverifiedCard
+      .getByRole('button', { name: 'Desvincular Social provider', exact: true })
+      .click();
+    const unverifiedDialog = page.getByRole('alertdialog', {
+      name: 'Confirmar desvinculación de Social provider',
+    });
+    await unverifiedDialog.waitFor();
+    const unverifiedConfirmation = await unverifiedDialog.innerText();
+    assert(
+      unverifiedConfirmation.includes(
+        'No se puede programar un aviso automático porque el correo canónico no está verificado.',
+      ) &&
+        unverifiedConfirmation.includes('No se revocarán permisos en Social provider.') &&
+        !unverifiedConfirmation.includes(regular) &&
+        !unverifiedConfirmation.includes('social-access-secret') &&
+        !unverifiedConfirmation.includes('secret-scope'),
+      'unverified unlink confirmation states no automatic notice and exposes no account or provider details',
+    );
+    await unverifiedDialog.getByRole('button', { name: 'Cancelar', exact: true }).click();
+    await sql(`UPDATE "user" SET email_verified = 1 WHERE id = '${regularDetailId}'`);
+    await page.reload();
+    await visible(page, 'Detalle de usuario');
+    await selectTab(page, 'Ciclo de vida');
+    const noOpCard = page.locator('li').filter({ hasText: noOpAssociation });
+    await noOpCard.getByRole('button', { name: 'Desvincular Google', exact: true }).click();
+    const noOpConfirmation = page.getByRole('alertdialog', {
+      name: 'Confirmar desvinculación de Google',
+    });
+    await noOpConfirmation.waitFor();
+    await sql(
+      `DELETE FROM account WHERE id = '${noOpAssociation}' AND user_id = '${regularDetailId}'`,
+    );
+    const noOpRequest = page.waitForRequest(
+      (request) =>
+        request.method() === 'DELETE' &&
+        request.url().endsWith(`/social-identities/${noOpAssociation}`),
+    );
+    const noOpResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'DELETE' &&
+        response.url().endsWith(`/social-identities/${noOpAssociation}`),
+    );
+    await noOpConfirmation
+      .getByRole('button', { name: 'Confirmar desvinculación de Google', exact: true })
+      .focus();
+    await page.keyboard.press('Enter');
+    const [noOpRequestValue, noOpResponseValue] = await Promise.all([noOpRequest, noOpResponse]);
+    page.off('request', countSocialRequest);
+    assert(noOpResponseValue.status() === 200, 'missing association is an HTTP no-op');
+    assert(
+      noOpRequestValue.headers()['if-match'] === '"1"' &&
+        (noOpRequestValue.headers()['idempotency-key'] ?? '').length > 0,
+      'no-op unlink carries the account ETag and Idempotency-Key',
+    );
+    const noOpResult = (await noOpResponseValue.json()) as unknown;
+    assert(
+      AdminReaderSocialIdentityUnlinkSchema.safeParse(noOpResult).success &&
+        typeof noOpResult === 'object' &&
+        noOpResult !== null &&
+        'changed' in noOpResult &&
+        noOpResult.changed === false,
+      'no-op is presented as changed false, never as a committed unlink',
+    );
+    await page
+      .getByText('Esta asociación ya no estaba vinculada; no se aplicó ningún cambio.', {
+        exact: true,
+      })
+      .waitFor();
+    await noOpCard.waitFor({ state: 'detached' });
+    assert(
+      await page
+        .getByText('Esta asociación ya no estaba vinculada; no se aplicó ningún cambio.', {
+          exact: true,
+        })
+        .isVisible(),
+      'no-op status survives removal of the stale association row',
+    );
+    const readerSessionAfterNoOp = await http('/v1/me', { headers: { cookie: readerCookie } });
+    assert(readerSessionAfterNoOp.status === 200, 'no-op leaves Reader session active');
+    await readerSessionAfterNoOp.arrayBuffer();
+    const noOpActivity = await http(
+      `/v1/admin/users/${encodeURIComponent(regularDetailId)}/activity?limit=25`,
+      { headers: { cookie: cookieHeader } },
+    );
+    assert(noOpActivity.status === 200, 'Reader activity remains readable after no-op');
+    assert(
+      !(await noOpActivity.text()).includes('social-identity-unlinked'),
+      'no-op creates no lifecycle activity event',
+    );
+
+    phase = 'social unlink active-deletion policy';
+    const deletionForSocial = await http(
+      `/v1/admin/users/${encodeURIComponent(regularDetailId)}/deletion-requests`,
+      {
+        method: 'POST',
+        headers: {
+          cookie: cookieHeader,
+          'content-type': 'application/json',
+          'if-match': '"1"',
+          'idempotency-key': 'browser-social-active-deletion',
+        },
+        body: JSON.stringify({}),
+      },
+    );
+    phase = 'social active-deletion request committed';
+    if (deletionForSocial.status !== 201) {
+      const deletionProblem = (await deletionForSocial.json()) as { code?: unknown };
+      phase = `social active-deletion response ${String(deletionForSocial.status)} ${String(deletionProblem.code)}`;
+      assert(false, 'deletion suspension fixture is committed by Worker');
+    }
+    const socialDeletion = (await deletionForSocial.json()) as { requestId: string };
+    await page.reload();
+    await visible(page, 'Detalle de usuario');
+    await selectTab(page, 'Ciclo de vida');
+    phase = 'social unlink blocked by active deletion';
+    const facebookCardDuringDeletion = page.locator('li').filter({ hasText: facebookAssociation });
+    await facebookCardDuringDeletion
+      .getByRole('button', { name: 'Desvincular Social provider', exact: true })
+      .click();
+    const deletionBlockDialog = page.getByRole('alertdialog', {
+      name: 'Confirmar desvinculación de Social provider',
+    });
+    await deletionBlockDialog.waitFor();
+    const deletionBlockedRequest = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'DELETE' &&
+        response.url().endsWith(`/social-identities/${facebookAssociation}`),
+    );
+    await deletionBlockDialog
+      .getByRole('button', { name: 'Confirmar desvinculación de Social provider', exact: true })
+      .click();
+    const deletionBlockedResponse = await deletionBlockedRequest;
+    assert(
+      deletionBlockedResponse.status() === 409,
+      'active deletion blocks social unlink at Worker',
+    );
+    await page
+      .getByText(
+        'No se pueden administrar asociaciones mientras una solicitud de eliminación esté activa.',
+        { exact: true },
+      )
+      .waitFor();
+    const cancelSocialDeletion = await http(
+      `/v1/admin/users/${encodeURIComponent(regularDetailId)}/deletion-requests/${encodeURIComponent(socialDeletion.requestId)}/status`,
+      {
+        method: 'PUT',
+        headers: {
+          cookie: cookieHeader,
+          'content-type': 'application/json',
+          'if-match': '"1"',
+          'idempotency-key': 'browser-social-cancel-deletion',
+        },
+        body: JSON.stringify({ state: 'cancelled' }),
+      },
+    );
+    assert(cancelSocialDeletion.status === 200, 'social test deletion suspension is cancelled');
+    await page.reload();
+    await visible(page, 'Detalle de usuario');
+    await selectTab(page, 'Ciclo de vida');
+
+    phase = 'social unlink stale account ETag';
+    const beforeStaleAccess = await http(`/v1/admin/users/${encodeURIComponent(regularDetailId)}`, {
+      headers: { cookie: cookieHeader },
+    });
+    phase = 'social stale ETag detail lookup';
+    assert(beforeStaleAccess.status === 200, 'current account revision is available');
+    const staleEtag = beforeStaleAccess.headers.get('etag');
+    assert(staleEtag !== null, 'current account ETag is present before the race');
+    await beforeStaleAccess.arrayBuffer();
+    const accessBeforeStale = await http(
+      `/v1/admin/users/${encodeURIComponent(regularDetailId)}/access`,
+      {
+        method: 'PUT',
+        headers: {
+          cookie: cookieHeader,
+          'content-type': 'application/json',
+          'if-match': staleEtag,
+        },
+        body: JSON.stringify({ state: 'disabled' }),
+      },
+    );
+    phase = 'social stale ETag concurrent account update';
+    assert(
+      accessBeforeStale.status === 200,
+      'Reader is disabled through public Admin access route',
+    );
+    const staleFacebookCard = page.locator('li').filter({ hasText: facebookAssociation });
+    phase = 'social stale ETag unlink mutation';
+    await staleFacebookCard
+      .getByRole('button', { name: 'Desvincular Social provider', exact: true })
+      .click();
+    const staleDialog = page.getByRole('alertdialog', {
+      name: 'Confirmar desvinculación de Social provider',
+    });
+    await staleDialog.waitFor();
+    const staleSocialResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'DELETE' &&
+        response.url().endsWith(`/social-identities/${facebookAssociation}`),
+    );
+    await staleDialog
+      .getByRole('button', { name: 'Confirmar desvinculación de Social provider', exact: true })
+      .click();
+    assert((await staleSocialResponse).status() === 412, 'stale unlink ETag is rejected by Worker');
+    await page
+      .getByText('La cuenta cambió. Actualiza los datos antes de volver a intentarlo.', {
+        exact: true,
+      })
+      .waitFor();
+
+    phase = 'social unlink required account ETag';
+    await page.reload();
+    await visible(page, 'Detalle de usuario');
+    await selectTab(page, 'Ciclo de vida');
+    let stripIfMatchOnce = true;
+    await page.route(
+      `**/v1/admin/users/${regularDetailId}/social-identities/${facebookAssociation}`,
+      async (route) => {
+        if (stripIfMatchOnce) {
+          stripIfMatchOnce = false;
+          const headers = { ...route.request().headers() };
+          delete headers['if-match'];
+          await route.continue({ headers });
+        } else {
+          await route.continue();
+        }
+      },
+    );
+    const preconditionCard = page.locator('li').filter({ hasText: facebookAssociation });
+    await preconditionCard
+      .getByRole('button', { name: 'Desvincular Social provider', exact: true })
+      .click();
+    const preconditionDialog = page.getByRole('alertdialog', {
+      name: 'Confirmar desvinculación de Social provider',
+    });
+    await preconditionDialog.waitFor();
+    const missingMatchResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'DELETE' &&
+        response.url().endsWith(`/social-identities/${facebookAssociation}`),
+    );
+    await preconditionDialog
+      .getByRole('button', { name: 'Confirmar desvinculación de Social provider', exact: true })
+      .click();
+    assert(
+      (await missingMatchResponse).status() === 428,
+      'missing account ETag is rejected by Worker',
+    );
+    await page
+      .getByText(
+        'Falta la revisión de la cuenta. Actualiza los datos antes de volver a intentarlo.',
+        { exact: true },
+      )
+      .waitFor();
+    await page.unroute(
+      `**/v1/admin/users/${regularDetailId}/social-identities/${facebookAssociation}`,
+    );
+
+    phase = 'social unlink ambiguous committed retry';
+    const rehabilitateRevision = Number(staleEtag.replaceAll('"', '')) + 1;
+    const rehabilitated = await http(
+      `/v1/admin/users/${encodeURIComponent(regularDetailId)}/access`,
+      {
+        method: 'PUT',
+        headers: {
+          cookie: cookieHeader,
+          'content-type': 'application/json',
+          'if-match': `"${String(rehabilitateRevision)}"`,
+        },
+        body: JSON.stringify({ state: 'active' }),
+      },
+    );
+    assert(rehabilitated.status === 200, 'disabled Reader remains manageable and is rehabilitated');
+    const relogin = await http('/v1/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: regular, password }),
+    });
+    assert(relogin.status === 200, 'Reader can sign in again before final social unlink');
+    const socialReaderCookie = relogin.headers.get('set-cookie')?.split(';')[0];
+    assert(
+      socialReaderCookie !== undefined && socialReaderCookie.length > 0,
+      'fresh Reader session captured',
+    );
+    const activeReaderSession = await http('/v1/me', { headers: { cookie: socialReaderCookie } });
+    assert(activeReaderSession.status === 200, 'Reader session is live before successful unlink');
+    await activeReaderSession.arrayBuffer();
+    await page.reload();
+    await visible(page, 'Detalle de usuario');
+    await selectTab(page, 'Ciclo de vida');
+    const unlinkKeys: string[] = [];
+    const unlinkEtags: string[] = [];
+    let hideCommittedResponseOnce = true;
+    await page.route(
+      `**/v1/admin/users/${regularDetailId}/social-identities/${facebookAssociation}`,
+      async (route) => {
+        unlinkKeys.push(route.request().headers()['idempotency-key'] ?? '');
+        unlinkEtags.push(route.request().headers()['if-match'] ?? '');
+        if (hideCommittedResponseOnce) {
+          hideCommittedResponseOnce = false;
+          const committed = await route.fetch();
+          assert(
+            committed.status() === 200,
+            'actual D1 unlink commits before simulated lost response',
+          );
+          await route.fulfill({
+            status: 503,
+            contentType: 'application/problem+json',
+            body: JSON.stringify({
+              type: 'urn:problem:delivery-scheduling-failed',
+              title: 'Delivery scheduling failed',
+              status: 503,
+              code: 'delivery-scheduling-failed',
+            }),
+          });
+        } else {
+          await route.continue();
+        }
+      },
+    );
+    const facebookCard = page.locator('li').filter({ hasText: facebookAssociation });
+    await facebookCard
+      .getByRole('button', { name: 'Desvincular Social provider', exact: true })
+      .click();
+    const successDialog = page.getByRole('alertdialog', {
+      name: 'Confirmar desvinculación de Social provider',
+    });
+    await successDialog.waitFor();
+    await successDialog
+      .getByRole('button', { name: 'Confirmar desvinculación de Social provider', exact: true })
+      .click();
+    await page
+      .getByText(
+        'La asociación se quitó, pero no se pudo programar el aviso de seguridad. Reintenta el mismo comando.',
+        { exact: true },
+      )
+      .waitFor();
+    const retryUnlinkResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'DELETE' &&
+        response.url().endsWith(`/social-identities/${facebookAssociation}`),
+    );
+    await facebookCard
+      .getByRole('button', { name: 'Reintentar desvinculación pendiente', exact: true })
+      .click();
+    assert(
+      (await retryUnlinkResponse).status() === 200,
+      'retry replays the committed unlink response',
+    );
+    assert(
+      unlinkKeys.length === 2 &&
+        unlinkKeys[0] !== '' &&
+        unlinkKeys[0] === unlinkKeys[1] &&
+        unlinkEtags.length === 2 &&
+        unlinkEtags[0] === unlinkEtags[1],
+      'ambiguous social unlink retry preserves exact Idempotency-Key and account ETag',
+    );
+    await page.unroute(
+      `**/v1/admin/users/${regularDetailId}/social-identities/${facebookAssociation}`,
+    );
+    const revokedReaderSession = await http('/v1/me', { headers: { cookie: socialReaderCookie } });
+    assert(
+      revokedReaderSession.status === 401,
+      'successful social unlink revokes the Reader session',
+    );
+    await revokedReaderSession.arrayBuffer();
+    await page.getByText(facebookAssociation, { exact: true }).waitFor({ state: 'hidden' });
+
+    phase = 'social unlink last usable login policy';
+    await sql(
+      `DELETE FROM account WHERE user_id = '${regularDetailId}' AND provider_id = 'credential'`,
+    );
+    await page.reload();
+    await visible(page, 'Detalle de usuario');
+    await selectTab(page, 'Ciclo de vida');
+    const lastSocialCard = page.locator('li').filter({ hasText: finalGoogleAssociation });
+    await lastSocialCard.getByRole('button', { name: 'Desvincular Google', exact: true }).click();
+    const lastMethodDialog = page.getByRole('alertdialog', {
+      name: 'Confirmar desvinculación de Google',
+    });
+    await lastMethodDialog.waitFor();
+    const lastMethodResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'DELETE' &&
+        response.url().endsWith(`/social-identities/${finalGoogleAssociation}`),
+    );
+    await lastMethodDialog
+      .getByRole('button', { name: 'Confirmar desvinculación de Google', exact: true })
+      .click();
+    assert(
+      (await lastMethodResponse).status() === 409,
+      'Worker protects the final usable login method',
+    );
+    await page
+      .getByText('No se puede quitar el último método de acceso utilizable del Reader.', {
+        exact: true,
+      })
+      .waitFor();
+    await sql(
+      `INSERT INTO account (id, account_id, provider_id, user_id, password, created_at, updated_at)
+       SELECT '${crypto.randomUUID()}', '${regularDetailId}', 'credential', '${regularDetailId}', password, created_at, updated_at
+       FROM account WHERE provider_id = 'credential' AND user_id <> '${regularDetailId}' LIMIT 1`,
+    );
+
     const deletionNote = 'Browser acceptance private decision note';
     await page.getByLabel('Nota (opcional)', { exact: true }).fill(deletionNote);
     const deletionCreateRequest = page.waitForRequest(

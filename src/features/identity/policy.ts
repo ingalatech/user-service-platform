@@ -14,10 +14,19 @@ export interface AuthPolicy {
   // Whether an email/password session requires a verified email address.
   // The initial deployment requires verification (GLOSSARY.md).
   readonly requireEmailVerification: boolean;
+  readonly socialProviders: readonly SocialProvider[];
   // Lifetime of Better Auth verification tokens, in seconds.
   readonly emailVerificationTTLSeconds: number;
   readonly passwordPolicy: PasswordPolicy;
 }
+
+export type SocialProvider = 'google' | 'facebook';
+export const SOCIAL_PROVIDER_DISPLAY_NAMES: Readonly<
+  Record<SocialProvider, 'Google' | 'Facebook'>
+> = {
+  google: 'Google',
+  facebook: 'Facebook',
+};
 
 // Deployment defaults for the initial single-client release: open
 // registration with email/password, gated on verified email.
@@ -25,6 +34,7 @@ export const DEFAULT_AUTH_POLICY: AuthPolicy = {
   registrationEnabled: true,
   emailPasswordEnabled: true,
   requireEmailVerification: true,
+  socialProviders: [],
   emailVerificationTTLSeconds: 3600,
   passwordPolicy: {
     minLength: 8,
@@ -50,6 +60,20 @@ function parseFlag(value: string | undefined, fallback: boolean, name: string): 
   throw new Error(`Invalid boolean for ${name}: expected "true" or "false".`);
 }
 
+function parseSocialProviders(value: string | undefined): readonly SocialProvider[] {
+  if (value === undefined || value.trim() === '') return [];
+  const values = value.split(',').map((provider) => provider.trim().toLowerCase());
+  if (
+    values.some((provider) => provider !== 'google' && provider !== 'facebook') ||
+    new Set(values).size !== values.length
+  ) {
+    throw new Error(
+      'Invalid AUTH_SOCIAL_PROVIDERS: expected a comma-separated list of google,facebook.',
+    );
+  }
+  return values as SocialProvider[];
+}
+
 function parsePositiveInteger(value: string | undefined, fallback: number, name: string): number {
   if (value === undefined) return fallback;
   const parsed = Number(value.trim());
@@ -71,6 +95,7 @@ export function resolveAuthPolicy(
     | 'AUTH_REGISTRATION_ENABLED'
     | 'AUTH_EMAIL_PASSWORD_ENABLED'
     | 'AUTH_REQUIRE_EMAIL_VERIFICATION'
+    | 'AUTH_SOCIAL_PROVIDERS'
     | 'AUTH_EMAIL_VERIFICATION_TTL_SECONDS'
     | 'AUTH_PASSWORD_MIN_LENGTH'
     | 'AUTH_PASSWORD_MAX_LENGTH'
@@ -109,6 +134,7 @@ export function resolveAuthPolicy(
       DEFAULT_AUTH_POLICY.requireEmailVerification,
       'AUTH_REQUIRE_EMAIL_VERIFICATION',
     ),
+    socialProviders: parseSocialProviders(env.AUTH_SOCIAL_PROVIDERS),
     emailVerificationTTLSeconds: parsePositiveInteger(
       env.AUTH_EMAIL_VERIFICATION_TTL_SECONDS,
       DEFAULT_AUTH_POLICY.emailVerificationTTLSeconds,

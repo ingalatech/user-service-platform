@@ -15,6 +15,7 @@ import { RecordField } from './kit/components/admin/record-field.js';
 import { Show } from './kit/components/admin/show.js';
 import { EmailChangeActions } from './email-change-actions.js';
 import { DeletionRequestActions } from './deletion-request-actions.js';
+import { SocialIdentityActions } from './social-identity-actions.js';
 import { Button } from './kit/components/ui/button.js';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './kit/components/ui/tabs.js';
 
@@ -351,6 +352,7 @@ export function UsersShow() {
   const validId = id !== undefined && id.length > 0 && id.length <= 128;
   const [activeTab, setActiveTab] = useState('summary');
   const [emailChangeTerminalState, setEmailChangeTerminalState] = useState<string | null>(null);
+  const [socialIdentityStatus, setSocialIdentityStatus] = useState<string | null>(null);
   const query = useGetOne<AdminReaderDetail>(
     'users',
     { id: id ?? '' },
@@ -517,6 +519,16 @@ export function UsersShow() {
               </p>
             ) : null}
             <p>Estado de eliminación: {query.data.deletionState ?? 'Sin solicitud activa'}</p>
+            {socialIdentityStatus !== null ? <p role="status">{socialIdentityStatus}</p> : null}
+            <SocialIdentityActions
+              record={query.data}
+              refresh={() => query.refetch()}
+              onNoop={() => {
+                setSocialIdentityStatus(
+                  'Esta asociación ya no estaba vinculada; no se aplicó ningún cambio.',
+                );
+              }}
+            />
             <DeletionRequestActions
               key={`deletion-${query.data.id}`}
               record={query.data}

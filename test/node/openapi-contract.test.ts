@@ -302,4 +302,54 @@ describe('generated OpenAPI artifact', () => {
     );
     expect(document.paths['/v1/admin/users/{userId}/access']?.put?.responses).toHaveProperty('200');
   });
+
+  it('publishes a redacted Reader social association projection and targeted unlink operation', async () => {
+    const raw = await readFile(artifactPath, 'utf8');
+    const document = JSON.parse(raw) as {
+      components: {
+        schemas: Record<
+          string,
+          {
+            required?: string[];
+            properties?: Record<string, { enum?: string[] }>;
+            allOf?: { properties?: Record<string, unknown> }[];
+          }
+        >;
+      };
+      paths: Record<
+        string,
+        Record<string, { operationId?: string; responses?: Record<string, unknown> }>
+      >;
+    };
+    const detailProperties = document.components.schemas.AdminReaderDetail?.allOf?.[1]?.properties;
+    expect(detailProperties).toHaveProperty('socialIdentities');
+    expect(document.components.schemas.AdminReaderSocialIdentity?.required).toEqual(
+      expect.arrayContaining([
+        'associationId',
+        'provider',
+        'providerDisplayName',
+        'linkedAt',
+        'state',
+      ]),
+    );
+    expect(document.components.schemas.AdminReaderSocialIdentity?.properties?.state?.enum).toEqual([
+      'available',
+      'unavailable',
+    ]);
+    expect(
+      document.components.schemas.AdminReaderActivityEvent?.properties?.metadata,
+    ).toBeDefined();
+    expect(document.components.schemas.AdminAuditMetadata?.properties).toHaveProperty(
+      'associationId',
+    );
+    expect(document.components.schemas.AdminAuditMetadata?.properties).toHaveProperty('provider');
+    expect(
+      document.paths['/v1/admin/users/{userId}/social-identities/{associationId}']?.delete
+        ?.operationId,
+    ).toBe('unlinkAdminReaderSocialIdentity');
+    expect(
+      document.paths['/v1/admin/users/{userId}/social-identities/{associationId}']?.delete
+        ?.responses,
+    ).toHaveProperty('200');
+  });
 });

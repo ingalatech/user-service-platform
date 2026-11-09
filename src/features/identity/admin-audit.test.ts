@@ -426,6 +426,79 @@ describe('GET /v1/admin/audit-events', () => {
     expect(activity).not.toContain('audit-failure');
   });
 
+  it('uses strict social-unlink metadata validation in both Audit and Account Activity', async () => {
+    const actor = await bootstrapAdministrator();
+    const reader = await registerVerifiedReader('social-metadata-reader@example.com');
+    await workerEnv.DB.prepare('DELETE FROM identity_event').run();
+    const occurredAt = Date.UTC(2026, 0, 2);
+    const shared = {
+      type: 'social-identity-unlinked',
+      actorRealm: 'administrator',
+      actorId: actor.id,
+      subjectRealm: 'reader',
+      subjectId: reader.id,
+      result: 'success' as const,
+    };
+    await seedEvent({
+      ...shared,
+      id: 'social-metadata-valid',
+      occurredAt,
+      requestId: 'request-social-metadata-valid',
+      metadata: { associationId: 'association_1', provider: 'google', revision: 3 },
+    });
+    await seedEvent({
+      ...shared,
+      id: 'social-metadata-malformed',
+      occurredAt: occurredAt + 1,
+      requestId: 'request-social-metadata-malformed',
+      metadata: { associationId: 'association_2', provider: 'unknown', revision: 4 },
+    });
+    await seedEvent({
+      ...shared,
+      id: 'social-metadata-extra',
+      occurredAt: occurredAt + 2,
+      requestId: 'request-social-metadata-extra',
+      metadata: {
+        associationId: 'association_3',
+        provider: 'facebook',
+        revision: 5,
+        token: 'must-not-project',
+      },
+    });
+
+    const auditResponse = await get(
+      `/v1/admin/audit-events?actorId=${actor.id}&action=social-identity-unlinked`,
+      actor.cookie,
+    );
+    expect(auditResponse.status).toBe(200);
+    const audit = (await auditResponse.json()) as {
+      items: { id: string; metadata: Record<string, unknown> | null }[];
+    };
+    expect(audit.items).toEqual([
+      expect.objectContaining({ id: 'social-metadata-extra', metadata: null }),
+      expect.objectContaining({ id: 'social-metadata-malformed', metadata: null }),
+      expect.objectContaining({
+        id: 'social-metadata-valid',
+        metadata: { associationId: 'association_1', provider: 'google', revision: 3 },
+      }),
+    ]);
+
+    const activityResponse = await get(`/v1/admin/users/${reader.id}/activity`, actor.cookie);
+    expect(activityResponse.status).toBe(200);
+    const activity = (await activityResponse.json()) as {
+      items: { id: string; metadata: Record<string, unknown> | null }[];
+    };
+    expect(activity.items).toEqual([
+      expect.objectContaining({ id: 'social-metadata-extra', metadata: null }),
+      expect.objectContaining({ id: 'social-metadata-malformed', metadata: null }),
+      expect.objectContaining({
+        id: 'social-metadata-valid',
+        metadata: { associationId: 'association_1', provider: 'google', revision: 3 },
+      }),
+    ]);
+    expect(JSON.stringify({ audit, activity })).not.toContain('must-not-project');
+  });
+
   it('paginates newest-first and applies actor, action, result, and time filters', async () => {
     const actor = await bootstrapAdministrator();
     await workerEnv.DB.prepare('DELETE FROM identity_event').run();

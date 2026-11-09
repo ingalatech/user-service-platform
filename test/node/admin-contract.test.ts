@@ -96,8 +96,15 @@ describe('administration API contract', () => {
       'deletionState',
       'methods',
       'revision',
+      'socialIdentities',
       'summary',
     ]);
+    expect(adminReader?.allOf?.[1]?.properties?.socialIdentities).toEqual({
+      $ref: '#/components/schemas/AdminReaderSocialIdentityList',
+    });
+    expect(doc.components.schemas.AdminReaderSocialIdentityList).toMatchObject({
+      items: { $ref: '#/components/schemas/AdminReaderSocialIdentity' },
+    });
   });
 
   it('publishes the paged Reader activity route with explicit statuses', async () => {

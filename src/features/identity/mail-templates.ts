@@ -15,6 +15,11 @@ export interface EmailChangeNoticeTemplateInput {
   readonly newEmail: string;
 }
 
+export interface SocialIdentityUnlinkNoticeTemplateInput {
+  readonly appName: string;
+  readonly providerDisplayName: 'Google' | 'Facebook';
+}
+
 export interface AuthMailTemplate {
   readonly subject: string;
   readonly html: string;
@@ -71,5 +76,16 @@ export function renderEmailChangeNotice(input: EmailChangeNoticeTemplateInput): 
       `<strong>${escapeHtml(input.previousEmail)}</strong> to ` +
       `<strong>${escapeHtml(input.newEmail)}</strong>.</p>` +
       '<p>If you did not request this change, contact support.</p>',
+  };
+}
+
+export function renderSocialIdentityUnlinkNotice(
+  input: SocialIdentityUnlinkNoticeTemplateInput,
+): AuthMailTemplate {
+  const provider = input.providerDisplayName;
+  return {
+    subject: `A ${provider} sign-in was removed from ${input.appName}`,
+    text: `A ${provider} sign-in association was removed from your ${input.appName} account. If you did not expect this change, contact support.`,
+    html: `<p>A ${provider} sign-in association was removed from your ${escapeHtml(input.appName)} account.</p><p>If you did not expect this change, contact support.</p>`,
   };
 }
