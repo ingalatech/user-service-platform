@@ -680,6 +680,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/admin/users/{userId}/social-identities/{associationId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Unlink one local Reader social identity
+         * @description Removes one local association and its credentials, revokes Reader sessions, advances the account revision and records audit/lifecycle events atomically. No remote provider revocation is performed.
+         */
+        delete: operations["unlinkAdminReaderSocialIdentity"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/admin/users/{userId}/email-verification": {
         parameters: {
             query?: never;
@@ -1342,6 +1362,9 @@ export interface components {
             changed?: boolean;
             operation?: string;
             revision?: number;
+            associationId?: string;
+            /** @enum {string} */
+            provider?: "google" | "facebook";
             /** @enum {string} */
             previousAccessState?: "active" | "disabled";
             retryAfterSeconds?: number;
@@ -1364,6 +1387,7 @@ export interface components {
                 /** @enum {string} */
                 provider?: "google" | "facebook" | "apple";
             }[];
+            socialIdentities: components["schemas"]["AdminReaderSocialIdentityList"];
             /** @description Only persisted active workflows; never inferred or fabricated. */
             activeWorkflows: ({
                 id: string;
@@ -1428,6 +1452,19 @@ export interface components {
             /** @enum {string} */
             effectiveState: "active" | "disabled" | "suspended";
         };
+        AdminReaderSocialIdentityList: components["schemas"]["AdminReaderSocialIdentity"][];
+        AdminReaderSocialIdentity: {
+            /** Format: uuid */
+            associationId: string;
+            /** @enum {string} */
+            provider: "google" | "facebook";
+            /** @enum {string} */
+            providerDisplayName: "Google" | "Facebook" | "Social provider";
+            /** Format: date-time */
+            linkedAt: string;
+            /** @enum {string} */
+            state: "available" | "unavailable";
+        };
         AdminReaderActivity: {
             items: components["schemas"]["AdminReaderActivityEvent"][];
             nextCursor: string | null;
@@ -1443,7 +1480,14 @@ export interface components {
                 /** @enum {string} */
                 realm: "administrator";
             };
+            metadata: components["schemas"]["SocialIdentityUnlinkedMetadata"];
         };
+        SocialIdentityUnlinkedMetadata: {
+            associationId: string;
+            /** @enum {string} */
+            provider: "google" | "facebook";
+            revision: number;
+        } | null;
         AdminReaderAccessResult: {
             /** @enum {string} */
             state: "active" | "disabled";
@@ -1453,6 +1497,12 @@ export interface components {
         AdminReaderAccessRequest: {
             /** @enum {string} */
             state: "active" | "disabled";
+        };
+        AdminReaderSocialIdentityUnlink: {
+            /** Format: uuid */
+            associationId: string;
+            changed: boolean;
+            revision: number;
         };
         AdminReaderEmailVerification: {
             /**
@@ -3134,6 +3184,122 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["AdminReaderAccessResult"];
+                };
+            };
+            /** @description Invalid command input. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description No authoritative Administrator session. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The actor is not allowed to perform the command. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description Reader not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The command conflicts with current Reader state. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The resource revision is stale. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description A required precondition is missing. */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The message cooldown is active. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The command could not be audited or completed. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description Message scheduling failed after the command was committed. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+        };
+    };
+    unlinkAdminReaderSocialIdentity: {
+        parameters: {
+            query?: never;
+            header?: {
+                "if-match"?: string;
+                "idempotency-key"?: string;
+            };
+            path: {
+                userId: string;
+                associationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The association was removed or was already absent. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminReaderSocialIdentityUnlink"];
                 };
             };
             /** @description Invalid command input. */

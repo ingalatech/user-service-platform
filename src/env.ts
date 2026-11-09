@@ -32,6 +32,9 @@ export interface Env {
   AUTH_REGISTRATION_ENABLED?: string;
   AUTH_EMAIL_PASSWORD_ENABLED?: string;
   AUTH_REQUIRE_EMAIL_VERIFICATION?: string;
+  // Comma-separated allowlist of locally usable social providers. Currently
+  // recognized values are google and facebook; an empty value disables them.
+  AUTH_SOCIAL_PROVIDERS?: string;
   AUTH_EMAIL_VERIFICATION_TTL_SECONDS?: string;
   AUTH_PASSWORD_MIN_LENGTH?: string;
   AUTH_PASSWORD_MAX_LENGTH?: string;

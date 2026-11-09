@@ -38,6 +38,8 @@ import {
   AdminReaderDeletionRequestSchema,
   AdminReaderDeletionRequestStatusSchema,
   AdminReaderDeletionRequestTransitionSchema,
+  AdminReaderSocialIdentityParamsSchema,
+  AdminReaderSocialIdentityUnlinkSchema,
   AuthConfigSchema,
   CheckPasswordResetRequestSchema,
   CheckPasswordResetResultSchema,
@@ -66,6 +68,13 @@ import {
 const adminReaderIfMatchHeaders = z
   .object({ 'if-match': z.string().min(1).max(128).optional() })
   .openapi('AdminReaderIfMatchHeaders');
+
+const adminReaderSocialIdentityHeaders = z
+  .object({
+    'if-match': z.string().min(1).max(128).optional(),
+    'idempotency-key': z.string().min(1).max(128).optional(),
+  })
+  .openapi('AdminReaderSocialIdentityHeaders');
 
 const adminAdministratorIfMatchHeaders = z
   .object({ 'if-match': z.string().min(1).max(128).optional() })
@@ -933,6 +942,27 @@ export const adminReaderAccessRoute = createRoute({
     200: {
       content: { 'application/json': { schema: AdminReaderAccessResultSchema } },
       description: 'The current or changed Reader access state.',
+    },
+    ...adminReaderCommandResponses,
+  },
+});
+
+export const adminReaderSocialIdentityUnlinkRoute = createRoute({
+  method: 'delete',
+  path: '/admin/users/{userId}/social-identities/{associationId}',
+  operationId: 'unlinkAdminReaderSocialIdentity',
+  summary: 'Unlink one local Reader social identity',
+  description:
+    'Removes one local association and its credentials, revokes Reader sessions, advances the account revision and records audit/lifecycle events atomically. No remote provider revocation is performed.',
+  tags: ['admin'],
+  request: {
+    params: AdminReaderSocialIdentityParamsSchema,
+    headers: adminReaderSocialIdentityHeaders,
+  },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: AdminReaderSocialIdentityUnlinkSchema } },
+      description: 'The association was removed or was already absent.',
     },
     ...adminReaderCommandResponses,
   },

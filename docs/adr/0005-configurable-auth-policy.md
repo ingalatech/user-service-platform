@@ -23,7 +23,7 @@ The initial policy supports these capabilities:
 - email verification can be required before successful login;
 - password reset is supported when email/password auth is enabled;
 - email change must be verified before replacing the canonical email address;
-- OAuth support is available, with enabled providers supplied by deployment configuration;
+- recognized OAuth provider catalog entries are supplied by deployment configuration for provider recognition/display only; social login is not an application-owned operation and catalog membership does not make an association usable for login;
 - session lifetime and relevant auth-token lifetimes are configuration-owned values rather than constants hidden inside feature code.
 - password creation requirements (length and Unicode character-category counts) are deployment-owned and publicly discoverable through the application-owned auth configuration contract. Existing passwords are not revalidated during login.
 

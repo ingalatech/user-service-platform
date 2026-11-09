@@ -1,6 +1,7 @@
 import type { Env } from '../../env.js';
 import {
   renderEmailChangeNotice,
+  renderSocialIdentityUnlinkNotice,
   renderPasswordResetEmail,
   renderVerificationEmail,
 } from './mail-templates.js';
@@ -8,6 +9,7 @@ import type {
   AuthMailDeliveryResult,
   AuthMailer,
   EmailChangeNoticeMessage,
+  SocialIdentityUnlinkNoticeMessage,
   PasswordResetMessage,
   VerificationMessage,
 } from './mailer.js';
@@ -39,7 +41,8 @@ import type {
 
 export const RESEND_API_URL = 'https://api.resend.com/emails';
 
-export type AuthMailPurpose = 'email-verification' | 'password-reset' | 'email-change-notice';
+export type AuthMailPurpose =
+  'email-verification' | 'password-reset' | 'email-change-notice' | 'social-identity-unlink-notice';
 
 // Structured telemetry record for a delivery outcome (ADR-0009). Only
 // operational metadata: purpose, transport, recipient domain and provider
@@ -207,6 +210,20 @@ export class ResendAuthMailer implements AuthMailer {
     });
     return this.deliver({
       purpose: 'email-change-notice',
+      to: message.to,
+      subject: template.subject,
+      html: template.html,
+      text: template.text,
+    }).then(() => undefined);
+  }
+
+  sendSocialIdentityUnlinkNotice(message: SocialIdentityUnlinkNoticeMessage): Promise<void> {
+    const template = renderSocialIdentityUnlinkNotice({
+      appName: this.config.appName,
+      providerDisplayName: message.providerDisplayName,
+    });
+    return this.deliver({
+      purpose: 'social-identity-unlink-notice',
       to: message.to,
       subject: template.subject,
       html: template.html,

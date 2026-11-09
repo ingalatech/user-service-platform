@@ -23,7 +23,7 @@ import {
   resolveConsumerOrigins,
   resolveGatewayOrigins,
 } from './origin-guard.js';
-import type { AuthMailer, AuthMailTask } from './mailer.js';
+import type { AuthMailer, AuthMailTask, SocialIdentityUnlinkNoticeMessage } from './mailer.js';
 import { deferredAuthMailer, resolveAuthMailer } from './mailer.js';
 import { resolveAuthPolicy } from './policy.js';
 import type { AuthPolicy } from './policy.js';
@@ -95,6 +95,9 @@ export interface IdentityRuntime {
   retryReaderEmailChangeScheduling(
     payload: string,
   ): Promise<'accepted' | 'rejected' | 'invalid-envelope'>;
+  sealSocialIdentityUnlinkNotice(
+    message: SocialIdentityUnlinkNoticeMessage,
+  ): Promise<string | null>;
   bootstrapAdministrator(userId: string): ReturnType<typeof createBootstrapIdentityAuth>;
   readerState(): ReturnType<typeof createReaderStateAuth>;
   cookieMutationAllowed(headers: Headers): boolean;
@@ -188,6 +191,10 @@ const singleAuthMailTaskSchema = z.discriminatedUnion('kind', [
     kind: z.literal('email-change-notice'),
     message: z.object({ to: z.string(), previousEmail: z.string(), newEmail: z.string() }),
   }),
+  z.object({
+    kind: z.literal('social-identity-unlink-notice'),
+    message: z.object({ to: z.string(), providerDisplayName: z.enum(['Google', 'Facebook']) }),
+  }),
 ]);
 
 const sealedAuthMailTaskSchema = z.union([
@@ -252,6 +259,8 @@ function createAcceptedScheduler(input: IdentityRuntimeInput) {
       const deliveries = tasks.map((task) => {
         if (task.kind === 'email-verification') return mailer.sendVerificationEmail(task.message);
         if (task.kind === 'password-recovery') return mailer.sendPasswordResetEmail(task.message);
+        if (task.kind === 'social-identity-unlink-notice')
+          return mailer.sendSocialIdentityUnlinkNotice(task.message);
         return mailer.sendEmailChangeNotice(task.message);
       });
       Promise.all(deliveries).then(() => {
@@ -538,6 +547,20 @@ export function createIdentityRuntime(input: IdentityRuntimeInput) {
     return sealAuthMailTask(task, resolvedAuthSecret);
   }
 
+  async function sealSocialIdentityUnlinkNotice(
+    message: SocialIdentityUnlinkNoticeMessage,
+  ): Promise<string | null> {
+    try {
+      const authInput = resolveAuthInput('reader', 'synchronous');
+      return await sealAuthMailTask(
+        { kind: 'social-identity-unlink-notice', message },
+        authInput.secret,
+      );
+    } catch {
+      return null;
+    }
+  }
+
   async function retryMessageScheduling(
     realm: 'reader' | 'administrator',
     payload: string,
@@ -636,6 +659,7 @@ export function createIdentityRuntime(input: IdentityRuntimeInput) {
     prepareReaderEmailChangeMessages,
     readReaderEmailChangeToken,
     retryReaderEmailChangeScheduling: (payload) => retryMessageScheduling('reader', payload),
+    sealSocialIdentityUnlinkNotice,
     administration: () => adminAuth('deferred'),
     bootstrapAdministrator: createBootstrapAuth,
     readerState: readerStateAuth,

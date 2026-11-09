@@ -10,6 +10,7 @@ describe('resolveAuthPolicy', () => {
       registrationEnabled: true,
       emailPasswordEnabled: true,
       requireEmailVerification: true,
+      socialProviders: [],
     });
   });
 
@@ -25,6 +26,7 @@ describe('resolveAuthPolicy', () => {
       registrationEnabled: false,
       emailPasswordEnabled: false,
       requireEmailVerification: false,
+      socialProviders: [],
       emailVerificationTTLSeconds: 7200,
       passwordPolicy: DEFAULT_AUTH_POLICY.passwordPolicy,
     });
@@ -41,6 +43,7 @@ describe('resolveAuthPolicy', () => {
       registrationEnabled: true,
       emailPasswordEnabled: false,
       requireEmailVerification: true,
+      socialProviders: [],
       emailVerificationTTLSeconds: 3600,
       passwordPolicy: DEFAULT_AUTH_POLICY.passwordPolicy,
     });
@@ -52,5 +55,17 @@ describe('resolveAuthPolicy', () => {
     expect(() => resolveAuthPolicy({ AUTH_EMAIL_PASSWORD_ENABLED: '' })).toThrow();
     expect(() => resolveAuthPolicy({ AUTH_REQUIRE_EMAIL_VERIFICATION: '2' })).toThrow();
     expect(() => resolveAuthPolicy({ AUTH_EMAIL_VERIFICATION_TTL_SECONDS: '0' })).toThrow();
+    expect(() => resolveAuthPolicy({ AUTH_SOCIAL_PROVIDERS: 'google,unknown' })).toThrow(
+      /AUTH_SOCIAL_PROVIDERS/,
+    );
+    expect(() => resolveAuthPolicy({ AUTH_SOCIAL_PROVIDERS: 'google,google' })).toThrow(
+      /AUTH_SOCIAL_PROVIDERS/,
+    );
+  });
+
+  it('resolves supported social providers from a comma-separated deployment allowlist', () => {
+    expect(
+      resolveAuthPolicy({ AUTH_SOCIAL_PROVIDERS: 'google, facebook' }).socialProviders,
+    ).toEqual(['google', 'facebook']);
   });
 });

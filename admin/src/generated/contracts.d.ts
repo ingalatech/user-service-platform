@@ -22,6 +22,8 @@ export type AdminReaderDeletionRequest = components['schemas']['AdminReaderDelet
 export type AdminReaderDeletionRequestTransition = components['schemas']['AdminReaderDeletionRequestTransition'];
 export type AdminReaderAccessRequest = components['schemas']['AdminReaderAccessRequest'];
 export type AdminReaderAccessResult = components['schemas']['AdminReaderAccessResult'];
+export type AdminReaderSocialIdentityUnlink = components['schemas']['AdminReaderSocialIdentityUnlink'];
+export type AdminReaderSocialIdentityParams = operations['unlinkAdminReaderSocialIdentity']['parameters']['path'];
 export type AdminReaderDeletionRequestParams = {
   userId: string;
   requestId: string;
@@ -102,6 +104,8 @@ export declare const AdminReaderDeletionRequestStatusSchema: ZodType<components[
 export declare const AdminReaderDeletionRequestParamsSchema: ZodType<AdminReaderDeletionRequestParams>;
 export declare const AdminReaderAccessRequestSchema: ZodType<AdminReaderAccessRequest>;
 export declare const AdminReaderAccessResultSchema: ZodType<AdminReaderAccessResult>;
+export declare const AdminReaderSocialIdentityUnlinkSchema: ZodType<AdminReaderSocialIdentityUnlink>;
+export declare const AdminReaderSocialIdentityParamsSchema: ZodType<AdminReaderSocialIdentityParams>;
 export declare const AdminReaderEmailChangeCancelSchema: ZodType<AdminReaderEmailChangeCancel>;
 export declare const AdminReaderEmailChangeMessageSchema: ZodType<AdminReaderEmailChangeMessage>;
 export declare const AdminReaderEmailChangeRequestSchema: ZodType<AdminReaderEmailChangeRequest>;

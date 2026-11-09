@@ -1269,6 +1269,19 @@
             "type": "integer",
             "minimum": 1
           },
+          "associationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "google",
+              "facebook"
+            ]
+          },
           "previousAccessState": {
             "type": "string",
             "enum": [
@@ -1363,6 +1376,9 @@
                   ]
                 },
                 "description": "Safe locally usable login methods without provider identifiers."
+              },
+              "socialIdentities": {
+                "$ref": "#/components/schemas/AdminReaderSocialIdentityList"
               },
               "activeWorkflows": {
                 "type": "array",
@@ -1543,6 +1559,7 @@
               "access",
               "deletionState",
               "methods",
+              "socialIdentities",
               "activeWorkflows"
             ]
           }
@@ -1587,6 +1604,54 @@
         "required": [
           "state",
           "effectiveState"
+        ]
+      },
+      "AdminReaderSocialIdentityList": {
+        "type": "array",
+        "items": {
+          "$ref": "#/components/schemas/AdminReaderSocialIdentity"
+        }
+      },
+      "AdminReaderSocialIdentity": {
+        "type": "object",
+        "properties": {
+          "associationId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "google",
+              "facebook"
+            ]
+          },
+          "providerDisplayName": {
+            "type": "string",
+            "enum": [
+              "Google",
+              "Facebook",
+              "Social provider"
+            ]
+          },
+          "linkedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "available",
+              "unavailable"
+            ]
+          }
+        },
+        "required": [
+          "associationId",
+          "provider",
+          "providerDisplayName",
+          "linkedAt",
+          "state"
         ]
       },
       "AdminReaderActivity": {
@@ -1656,14 +1721,49 @@
               "id",
               "realm"
             ]
+          },
+          "metadata": {
+            "$ref": "#/components/schemas/SocialIdentityUnlinkedMetadata"
           }
         },
         "required": [
           "id",
           "type",
           "occurredAt",
-          "actor"
+          "actor",
+          "metadata"
         ]
+      },
+      "SocialIdentityUnlinkedMetadata": {
+        "type": [
+          "object",
+          "null"
+        ],
+        "properties": {
+          "associationId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "provider": {
+            "type": "string",
+            "enum": [
+              "google",
+              "facebook"
+            ]
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "associationId",
+          "provider",
+          "revision"
+        ],
+        "additionalProperties": false
       },
       "AdminReaderAccessResult": {
         "type": "object",
@@ -1703,6 +1803,28 @@
         },
         "required": [
           "state"
+        ],
+        "additionalProperties": false
+      },
+      "AdminReaderSocialIdentityUnlink": {
+        "type": "object",
+        "properties": {
+          "associationId": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "changed": {
+            "type": "boolean"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "associationId",
+          "changed",
+          "revision"
         ],
         "additionalProperties": false
       },
@@ -4270,6 +4392,169 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/AdminReaderAccessResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid command input.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No authoritative Administrator session.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The actor is not allowed to perform the command.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Reader not found.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The command conflicts with current Reader state.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "412": {
+            "description": "The resource revision is stale.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "428": {
+            "description": "A required precondition is missing.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "The message cooldown is active.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The command could not be audited or completed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Message scheduling failed after the command was committed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/users/{userId}/social-identities/{associationId}": {
+      "delete": {
+        "operationId": "unlinkAdminReaderSocialIdentity",
+        "summary": "Unlink one local Reader social identity",
+        "description": "Removes one local association and its credentials, revokes Reader sessions, advances the account revision and records audit/lifecycle events atomically. No remote provider revocation is performed.",
+        "tags": [
+          "admin"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "required": true,
+            "name": "userId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            },
+            "required": true,
+            "name": "associationId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "required": false,
+            "name": "if-match",
+            "in": "header"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "required": false,
+            "name": "idempotency-key",
+            "in": "header"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The association was removed or was already absent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminReaderSocialIdentityUnlink"
                 }
               }
             }

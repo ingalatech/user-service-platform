@@ -10,6 +10,7 @@ import {
   AdminAuditEventSchema,
   AdminAuditMetadataSchema,
   AdminAuditProblemCodeSchema,
+  SocialIdentityUnlinkedMetadataSchema,
 } from './contract.js';
 import { authorizeAdministrator } from './admin-authorization.js';
 
@@ -29,6 +30,8 @@ const ADMIN_AUDIT_EVENT_ALLOWLIST = [
   { version: 1, type: 'email-change-message-requested' },
   { version: 1, type: 'email-change-cancelled' },
   { version: 1, type: 'email-changed' },
+  { version: 1, type: 'social-unlink-attempt' },
+  { version: 1, type: 'social-identity-unlinked' },
   { version: 1, type: 'deletion-request-attempt' },
   { version: 1, type: 'deletion-requested' },
   { version: 1, type: 'deletion-approved' },
@@ -53,6 +56,8 @@ const METADATA_FIELDS_BY_TYPE: Readonly<Record<string, readonly string[]>> = {
   'email-change-message-requested': ['workflowId'],
   'email-change-cancelled': ['changed', 'revision', 'workflowId'],
   'email-changed': ['revision', 'workflowId'],
+  'social-unlink-attempt': ['changed', 'revision'],
+  'social-identity-unlinked': ['associationId', 'provider', 'revision'],
   'deletion-request-attempt': ['changed', 'previousAccessState', 'revision', 'state', 'workflowId'],
   'deletion-requested': ['previousAccessState', 'revision', 'workflowId'],
   'deletion-approved': ['previousAccessState', 'revision', 'state', 'workflowId'],
@@ -133,6 +138,12 @@ function safeMetadata(type: string, serialized: string | null): AdminAuditEvent[
     return null;
   }
   if (!isPlainRecord(parsed)) return null;
+  if (type === 'social-identity-unlinked') {
+    const socialMetadata = SocialIdentityUnlinkedMetadataSchema.safeParse(parsed);
+    if (!socialMetadata.success) return null;
+    const safeSocialMetadata = AdminAuditMetadataSchema.safeParse(socialMetadata.data);
+    return safeSocialMetadata.success ? safeSocialMetadata.data : null;
+  }
 
   const safe: Record<string, boolean | number | string> = {};
   for (const field of METADATA_FIELDS_BY_TYPE[type] ?? []) {

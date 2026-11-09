@@ -1,6 +1,7 @@
 import type { D1Database } from '@cloudflare/workers-types';
 import type { createAdministrationAuth } from './auth.js';
-import type { AdminReaderActivity } from './contract.js';
+import type { AdminReaderActivity, SocialIdentityUnlinkedMetadata } from './contract.js';
+import { SocialIdentityUnlinkedMetadataSchema } from './contract.js';
 import { authorizeAdministrator } from './admin-authorization.js';
 
 const ACTIVITY_TYPES = [
@@ -58,6 +59,7 @@ interface EventRow {
   readonly type: ActivityType;
   readonly occurred_at: number;
   readonly actor_id: string;
+  readonly metadata: string | null;
 }
 
 export type AdminReaderActivityOutcome =
@@ -96,7 +98,7 @@ export async function readAdminReaderActivity(input: {
   const cursorClause =
     cursor === undefined ? '' : 'AND (occurred_at < ? OR (occurred_at = ? AND id < ?))';
   const statement = input.db.prepare(
-    `SELECT id, type, occurred_at, actor_id
+    `SELECT id, type, occurred_at, actor_id, metadata
      FROM identity_event
      WHERE subject_realm = 'reader' AND subject_id = ?
        AND actor_realm = 'administrator' AND result = 'success' AND version = 1
@@ -121,6 +123,10 @@ export async function readAdminReaderActivity(input: {
         type: row.type,
         occurredAt: new Date(row.occurred_at).toISOString(),
         actor: { id: row.actor_id, realm: 'administrator' },
+        metadata:
+          row.type !== 'social-identity-unlinked' || row.metadata === null
+            ? null
+            : safeSocialIdentityMetadata(row.metadata),
       })),
       nextCursor:
         result.results.length > input.limit && last !== undefined
@@ -128,4 +134,14 @@ export async function readAdminReaderActivity(input: {
           : null,
     },
   };
+}
+
+function safeSocialIdentityMetadata(serialized: string): SocialIdentityUnlinkedMetadata | null {
+  try {
+    const metadata: unknown = JSON.parse(serialized);
+    const parsed = SocialIdentityUnlinkedMetadataSchema.safeParse(metadata);
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
 }

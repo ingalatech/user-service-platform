@@ -77,7 +77,15 @@ are excluded from Event Ledger metadata and public projections.
 
 ### Auth Policy
 
-Deployment-level configuration that controls supported authentication behaviour without exposing Better Auth configuration directly to feature code. It includes capabilities such as registration enablement, email/password enablement, required email verification, password creation requirements, OAuth providers, and auth/session lifetimes. Password creation requirements apply to registration, reset and administrator bootstrap, not login. The initial deployment requires verified email before login succeeds.
+Deployment-level configuration that controls supported authentication behaviour without exposing Better Auth configuration directly to feature code. It includes registration and email/password enablement, required email verification, password creation requirements, recognized social-provider catalog entries, and auth/session lifetimes. Catalog entries support provider recognition and display only; they do not establish an application-owned social login capability. Password creation requirements apply to registration, reset and administrator bootstrap, not login. The initial deployment requires verified email before login succeeds.
+
+### Social Identity
+
+A local association between a Reader and a recognized social provider account.
+In the current service it is unavailable for login: provider catalog membership
+does not establish an application-owned end-to-end login capability. Unlinking
+removes only this local association and does not revoke credentials or sessions
+at the remote provider.
 
 ### Account Photo
 

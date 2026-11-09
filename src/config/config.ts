@@ -109,6 +109,21 @@ function validateProfile(config: NonSecretProfile): void {
   parseBooleanFlag('AUTH_REGISTRATION_ENABLED', config.AUTH_REGISTRATION_ENABLED);
   parseBooleanFlag('AUTH_EMAIL_PASSWORD_ENABLED', config.AUTH_EMAIL_PASSWORD_ENABLED);
   parseBooleanFlag('AUTH_REQUIRE_EMAIL_VERIFICATION', config.AUTH_REQUIRE_EMAIL_VERIFICATION);
+  const socialProviders = config.AUTH_SOCIAL_PROVIDERS.split(',').map((provider) =>
+    provider.trim(),
+  );
+  if (
+    socialProviders.some(
+      (provider) => provider !== '' && provider !== 'google' && provider !== 'facebook',
+    )
+  ) {
+    throw new Error(
+      'Configuration error: AUTH_SOCIAL_PROVIDERS may contain only "google" and "facebook".',
+    );
+  }
+  if (new Set(socialProviders.filter(Boolean)).size !== socialProviders.filter(Boolean).length) {
+    throw new Error('Configuration error: AUTH_SOCIAL_PROVIDERS must not contain duplicates.');
+  }
   const emailVerificationTTL = Number(config.AUTH_EMAIL_VERIFICATION_TTL_SECONDS.trim());
   if (!Number.isSafeInteger(emailVerificationTTL) || emailVerificationTTL < 1) {
     throw new Error(

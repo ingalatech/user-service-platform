@@ -31,6 +31,8 @@ export {
   AdminReaderDeletionRequestCreateSchema,
   AdminReaderDeletionRequestParamsSchema,
   AdminReaderDeletionRequestStatusSchema,
+  AdminReaderSocialIdentityParamsSchema,
+  AdminReaderSocialIdentityUnlinkSchema,
   AdminReaderMessageSchema,
   AdminReaderMessageRequestSchema,
   AdminUserDetailParamsSchema,

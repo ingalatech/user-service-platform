@@ -27,6 +27,8 @@ import {
   AdminReaderDeletionRequestTransitionSchema,
   AdminReaderDeletionRequestCreateSchema,
   AdminReaderDeletionRequestStatusSchema,
+  AdminReaderSocialIdentityParamsSchema,
+  AdminReaderSocialIdentityUnlinkSchema,
   AdminReaderMessageSchema,
   AdminUserDetailParamsSchema,
   AdminUserListQuerySchema,
@@ -52,6 +54,7 @@ import {
   type AdminReaderEmailChange,
   type AdminReaderDeletionRequest,
   type AdminReaderDeletionRequestTransition,
+  type AdminReaderSocialIdentityUnlink,
   type AdminReaderEmailChangeCancel,
   type AdminReaderEmailChangeMessage,
   type AdminReaderEmailVerification,
@@ -482,6 +485,27 @@ export async function adminSetReaderAccess(
       undefined,
       'PUT',
       { 'if-match': `"${String(revision)}"` },
+    ),
+  );
+  if (!result.success) throw new ApiError(502);
+  return result.data;
+}
+
+export async function adminUnlinkReaderSocialIdentity(
+  userId: AdminUserDetailParams['userId'],
+  associationId: string,
+  accountRevision: number,
+  idempotencyKey: string,
+): Promise<AdminReaderSocialIdentityUnlink> {
+  const params = AdminReaderSocialIdentityParamsSchema.safeParse({ userId, associationId });
+  if (!params.success) throw new ApiError(400, 'bad-request');
+  const result = AdminReaderSocialIdentityUnlinkSchema.safeParse(
+    await request(
+      `/v1/admin/users/${encodeURIComponent(params.data.userId)}/social-identities/${encodeURIComponent(params.data.associationId)}`,
+      undefined,
+      undefined,
+      'DELETE',
+      { 'if-match': `"${String(accountRevision)}"`, 'idempotency-key': idempotencyKey },
     ),
   );
   if (!result.success) throw new ApiError(502);
