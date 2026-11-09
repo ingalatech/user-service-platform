@@ -47,6 +47,11 @@ import {
 import { createAdminAccountDetailsOperations } from './admin-account-details.js';
 import { readAdminReaderActivity } from './admin-reader-activity.js';
 import {
+  listAdminReaderSessions,
+  revokeAdminReaderSession,
+  revokeAllAdminReaderSessions,
+} from './admin-reader-sessions.js';
+import {
   claimReaderSocialIdentityNotice,
   markReaderSocialIdentityNoticeDispatched,
   markReaderSocialIdentityNoticeScheduled,
@@ -83,6 +88,7 @@ import type {
 import { AdminReaderDeletionRequestStatusSchema } from './contract.js';
 import { createIdentityRuntime } from './identity-runtime.js';
 import type { IdentityRuntime } from './identity-runtime.js';
+import { resolveAuthSecret } from './secret.js';
 import { createPasswordPolicyProblemDetails } from './problem.js';
 import {
   adminBootstrapRoute,
@@ -107,6 +113,9 @@ import {
   adminSignOutRoute,
   adminUserDetailRoute,
   adminReaderActivityRoute,
+  adminReaderSessionsRoute,
+  adminReaderSessionRevokeRoute,
+  adminReaderSessionsRevokeAllRoute,
   adminReaderAccessRoute,
   adminReaderSocialIdentityUnlinkRoute,
   adminReaderEmailVerificationRoute,
@@ -1495,6 +1504,111 @@ export function createIdentityRouter(options: IdentityRouterOptions = {}) {
     if (outcome.kind === 'bad-cursor') return problem(c, 400, 'bad-request', 'Bad Request');
     return c.json(outcome.value, 200);
   });
+
+  router.openapi(adminReaderSessionsRoute, async (c) => {
+    c.header('Cache-Control', 'private, no-store');
+    const runtime = requestIdentityRuntime(c, override);
+    const session = await runtime.resolveAdministratorSessionContext(
+      c.req.raw.headers,
+      c.get('requestId'),
+    );
+    if (session === null) return administratorSessionProblem(c) as never;
+    const { userId } = c.req.valid('param');
+    const query = c.req.valid('query');
+    const outcome = await listAdminReaderSessions({
+      auth: runtime.administration(),
+      db: c.env.DB,
+      administratorId: session.administrator.id,
+      headers: c.req.raw.headers,
+      readerId: userId,
+      limit: query.limit,
+      cursor: query.cursor,
+      cursorSecret: resolveAuthSecret(c.env),
+    });
+    if (outcome.kind === 'forbidden') {
+      return problem(
+        c,
+        403,
+        'forbidden',
+        'Forbidden',
+        'Administrator access is required.',
+      ) as never;
+    }
+    if (outcome.kind === 'administrator-disabled') {
+      return problem(c, 403, 'administrator-disabled', 'Administrator disabled') as never;
+    }
+    if (outcome.kind === 'reader-not-found') {
+      return problem(c, 404, 'reader-not-found', 'Reader not found') as never;
+    }
+    if (outcome.kind === 'bad-cursor')
+      return problem(c, 400, 'bad-request', 'Bad Request') as never;
+    if (outcome.kind === 'internal-error') {
+      return problem(c, 500, 'internal-error', 'Internal Server Error') as never;
+    }
+    return c.json(outcome.value, 200);
+  });
+
+  const revokeReaderSession = async (c: IdentityContext, readerId: string, selector?: string) => {
+    c.header('Cache-Control', 'private, no-store');
+    const runtime = requestIdentityRuntime(c, override);
+    const rejected = guardCookieMutation(c, runtime, 'private, no-store');
+    if (rejected !== null) return rejected as never;
+    const session = await runtime.resolveAdministratorSessionContext(
+      c.req.raw.headers,
+      c.get('requestId'),
+    );
+    if (session === null) return administratorSessionProblem(c) as never;
+    const outcome =
+      selector === undefined
+        ? await revokeAllAdminReaderSessions({
+            auth: runtime.administration(),
+            db: c.env.DB,
+            administratorId: session.administrator.id,
+            headers: c.req.raw.headers,
+            readerId,
+            requestId: c.get('requestId'),
+            cursorSecret: resolveAuthSecret(c.env),
+          })
+        : await revokeAdminReaderSession({
+            auth: runtime.administration(),
+            db: c.env.DB,
+            administratorId: session.administrator.id,
+            headers: c.req.raw.headers,
+            readerId,
+            requestId: c.get('requestId'),
+            selector,
+            cursorSecret: resolveAuthSecret(c.env),
+          });
+    if (outcome.kind === 'forbidden') {
+      return problem(
+        c,
+        403,
+        'forbidden',
+        'Forbidden',
+        'Administrator access is required.',
+      ) as never;
+    }
+    if (outcome.kind === 'administrator-disabled') {
+      return problem(c, 403, 'administrator-disabled', 'Administrator disabled') as never;
+    }
+    if (outcome.kind === 'reader-not-found') {
+      return problem(c, 404, 'reader-not-found', 'Reader not found') as never;
+    }
+    if (outcome.kind === 'internal-error') {
+      return problem(c, 500, 'internal-error', 'Internal Server Error') as never;
+    }
+    return c.json(outcome.value, 200);
+  };
+
+  router.openapi(
+    adminReaderSessionRevokeRoute,
+    (c) =>
+      revokeReaderSession(c, c.req.valid('param').userId, c.req.valid('param').sessionId) as never,
+  );
+  router.openapi(
+    adminReaderSessionsRevokeAllRoute,
+    (c) => revokeReaderSession(c, c.req.valid('param').userId) as never,
+  );
 
   router.openapi(adminReaderAccessRoute, async (c) => {
     const runtime = requestIdentityRuntime(c, override);

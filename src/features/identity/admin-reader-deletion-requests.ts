@@ -1,5 +1,9 @@
 import type { D1Database } from '@cloudflare/workers-types';
 import { authorizeAdministrator } from './admin-authorization.js';
+import {
+  prepareReaderSessionRevocation,
+  readerSessionRevocationCount,
+} from './reader-session-store.js';
 import type { IdentityRuntime } from './identity-runtime.js';
 import type {
   AdminReaderDeletionRequest,
@@ -471,6 +475,17 @@ export async function createReaderDeletionRequest(input: {
     accountRevision: nextAccountRevision,
     now,
   });
+  const deletionSessionGuard = {
+    kind: 'deletion-request' as const,
+    requestId,
+    revision: nextAccountRevision,
+    mutationToken,
+    now,
+  };
+  const deletionSessionCount = readerSessionRevocationCount({
+    readerId: target.id,
+    guard: deletionSessionGuard,
+  });
   try {
     const results = await input.db.batch([
       input.db
@@ -530,17 +545,6 @@ export async function createReaderDeletionRequest(input: {
         ),
       input.db
         .prepare(
-          `DELETE FROM session WHERE user_id = ? AND EXISTS (
-             SELECT 1 FROM reader_deletion_request
-             WHERE id = ? AND user_id = ? AND state = 'pending_review'
-           ) AND EXISTS (
-             SELECT 1 FROM reader_access_state
-             WHERE user_id = ? AND revision = ? AND mutation_token = ?
-           )`,
-        )
-        .bind(target.id, requestId, target.id, target.id, nextAccountRevision, mutationToken),
-      input.db
-        .prepare(
           `INSERT INTO admin_idempotency_record
            (id, actor_id, key, method, normalized_path, target_id, body_hash, response_status,
             response_body, created_at, expires_at)
@@ -579,7 +583,8 @@ export async function createReaderDeletionRequest(input: {
           `INSERT INTO identity_event
            (id, version, type, occurred_at, actor_realm, actor_id, subject_realm, subject_id,
             result, request_id, problem_code, metadata)
-           SELECT ?, 1, 'deletion-requested', ?, 'administrator', ?, 'reader', ?, 'success', ?, NULL, ?
+           SELECT ?, 1, 'deletion-requested', ?, 'administrator', ?, 'reader', ?, 'success', ?, NULL,
+             json_set(?, '$.revokedSessionCount', ${deletionSessionCount.sql})
            WHERE EXISTS (
              SELECT 1 FROM admin_idempotency_record
              WHERE actor_id = ? AND method = 'POST' AND normalized_path = ?
@@ -593,12 +598,16 @@ export async function createReaderDeletionRequest(input: {
           target.id,
           input.requestId,
           JSON.stringify({ workflowId: requestId, previousAccessState, revision: 1 }),
+          ...deletionSessionCount.bindings,
           input.administratorId,
           READER_DELETION_REQUESTS_PATH,
           target.id,
           key,
           bodyHash,
         ),
+      prepareReaderSessionRevocation(input.db, target.id, {
+        ...deletionSessionGuard,
+      }),
       input.db
         .prepare(
           `INSERT INTO identity_event

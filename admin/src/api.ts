@@ -29,6 +29,10 @@ import {
   AdminReaderDeletionRequestStatusSchema,
   AdminReaderSocialIdentityParamsSchema,
   AdminReaderSocialIdentityUnlinkSchema,
+  AdminReaderSessionsQuerySchema,
+  AdminReaderSessionsSchema,
+  AdminReaderSessionParamsSchema,
+  AdminReaderSessionRevocationSchema,
   AdminReaderMessageSchema,
   AdminUserDetailParamsSchema,
   AdminUserListQuerySchema,
@@ -55,6 +59,8 @@ import {
   type AdminReaderDeletionRequest,
   type AdminReaderDeletionRequestTransition,
   type AdminReaderSocialIdentityUnlink,
+  type AdminReaderSessions,
+  type AdminReaderSessionRevocation,
   type AdminReaderEmailChangeCancel,
   type AdminReaderEmailChangeMessage,
   type AdminReaderEmailVerification,
@@ -506,6 +512,64 @@ export async function adminUnlinkReaderSocialIdentity(
       undefined,
       'DELETE',
       { 'if-match': `"${String(accountRevision)}"`, 'idempotency-key': idempotencyKey },
+    ),
+  );
+  if (!result.success) throw new ApiError(502);
+  return result.data;
+}
+
+export async function adminReaderSessions(
+  userId: AdminUserDetailParams['userId'],
+  cursor?: string,
+  signal?: AbortSignal,
+): Promise<AdminReaderSessions> {
+  const params = AdminUserDetailParamsSchema.safeParse({ userId });
+  const query = AdminReaderSessionsQuerySchema.safeParse(
+    cursor === undefined ? { limit: 25 } : { limit: 25, cursor },
+  );
+  if (!params.success || !query.success) throw new ApiError(400, 'bad-request');
+  const search = new URLSearchParams({ limit: String(query.data.limit) });
+  if (query.data.cursor !== undefined) search.set('cursor', query.data.cursor);
+  const result = AdminReaderSessionsSchema.safeParse(
+    await request(
+      `/v1/admin/users/${encodeURIComponent(params.data.userId)}/sessions?${search.toString()}`,
+      undefined,
+      signal,
+    ),
+  );
+  if (!result.success) throw new ApiError(502);
+  return result.data;
+}
+
+export async function adminRevokeReaderSession(
+  userId: AdminUserDetailParams['userId'],
+  selector: string,
+): Promise<AdminReaderSessionRevocation> {
+  const params = AdminReaderSessionParamsSchema.safeParse({ userId, sessionId: selector });
+  if (!params.success) throw new ApiError(400, 'bad-request');
+  const result = AdminReaderSessionRevocationSchema.safeParse(
+    await request(
+      `/v1/admin/users/${encodeURIComponent(params.data.userId)}/sessions/${encodeURIComponent(params.data.sessionId)}`,
+      undefined,
+      undefined,
+      'DELETE',
+    ),
+  );
+  if (!result.success) throw new ApiError(502);
+  return result.data;
+}
+
+export async function adminRevokeAllReaderSessions(
+  userId: AdminUserDetailParams['userId'],
+): Promise<AdminReaderSessionRevocation> {
+  const params = AdminUserDetailParamsSchema.safeParse({ userId });
+  if (!params.success) throw new ApiError(400, 'bad-request');
+  const result = AdminReaderSessionRevocationSchema.safeParse(
+    await request(
+      `/v1/admin/users/${encodeURIComponent(params.data.userId)}/sessions`,
+      undefined,
+      undefined,
+      'DELETE',
     ),
   );
   if (!result.success) throw new ApiError(502);

@@ -1190,6 +1190,17 @@ describe('password recovery', () => {
     expect(resetRes.status).toBe(200);
     expect(resetRes.headers.get('content-type')).toContain('application/json');
     expect(await resetRes.json()).toEqual({ status: 'ok' });
+    const readerId = await workerEnv.DB.prepare('SELECT id FROM user WHERE email=?')
+      .bind('rotate@example.com')
+      .first<{ id: string }>();
+    const manualSessionEvents = await workerEnv.DB.prepare(
+      `SELECT count(*) AS total FROM identity_event
+       WHERE subject_realm='reader' AND subject_id=?
+         AND type IN ('session-revoked','sessions-revoked')`,
+    )
+      .bind(readerId?.id)
+      .first<{ total: number }>();
+    expect(manualSessionEvents?.total).toBe(0);
 
     // Previously issued sessions can no longer authenticate.
     const after = await get('/v1/me', { cookie });

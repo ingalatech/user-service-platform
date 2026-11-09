@@ -889,6 +889,7 @@ describe('Account Photo HTTP boundary', () => {
     const cookie = await signedInUser();
     let signalPutStarted: () => void = () => undefined;
     let releasePut: () => void = () => undefined;
+    let putReleased = false;
     const putStarted = new Promise<void>((resolve) => {
       signalPutStarted = resolve;
     });
@@ -937,11 +938,11 @@ describe('Account Photo HTTP boundary', () => {
         return object;
       },
     };
-    const shortLeaseApp = createApp({
+    const boundedLeaseApp = createApp({
       authMailer: mailer,
-      accountPhotoLockTiming: { leaseMs: 60, heartbeatMs: 10 },
+      accountPhotoLockTiming: { leaseMs: 3_000, heartbeatMs: 250 },
     });
-    const uploadResponse = shortLeaseApp.request(
+    const uploadResponse = boundedLeaseApp.request(
       '/v1/account-photo',
       {
         method: 'POST',
@@ -955,22 +956,101 @@ describe('Account Photo HTTP boundary', () => {
       testEnv({ FILES: filesWithSlowPut }),
     );
     try {
-      await putStarted;
-      await new Promise((resolve) => setTimeout(resolve, 150));
+      const initialLeaseDeadline = Date.now() + 10_000;
+      let initialLock: { readonly user_id: string; readonly expires_at: number } | null = null;
+      while (Date.now() < initialLeaseDeadline) {
+        initialLock = await workerEnv.DB.prepare(
+          `SELECT photo.user_id, lock.expires_at
+           FROM user_photo AS photo
+           JOIN user_photo_lock AS lock ON lock.user_id=photo.user_id
+           WHERE photo.state='uploading'
+           ORDER BY photo.created_at DESC LIMIT 1`,
+        ).first<{ user_id: string; expires_at: number }>();
+        if (initialLock !== null) break;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(initialLock).not.toBeNull();
+      if (initialLock === null) throw new Error('Expected the initial upload-lock expiry.');
+      const initialExpiresAt = initialLock.expires_at;
+      const putDeadline = Date.now() + 10_000;
+      await Promise.race([
+        putStarted,
+        new Promise<never>((_, reject) => {
+          const timeout = setTimeout(
+            () => {
+              reject(new Error('R2 put did not reach the blocked state before the deadline.'));
+            },
+            Math.max(0, putDeadline - Date.now()),
+          );
+          void putStarted.finally(() => {
+            clearTimeout(timeout);
+          });
+        }),
+      ]);
+      const uploadingPhoto = await workerEnv.DB.prepare(
+        `SELECT photo_id FROM user_photo WHERE user_id=? AND state='uploading' LIMIT 1`,
+      )
+        .bind(initialLock.user_id)
+        .first<{ photo_id: string }>();
+      expect(uploadingPhoto).not.toBeNull();
+      if (uploadingPhoto === null) throw new Error('Expected a persisted upload intent.');
+      await workerEnv.DB.prepare(
+        'UPDATE user_photo SET created_at=? WHERE photo_id=? AND user_id=?',
+      )
+        .bind(Date.now() - 2 * 60 * 60 * 1_000, uploadingPhoto.photo_id, initialLock.user_id)
+        .run();
+
+      const renewalDeadline = Date.now() + 10_000;
+      let renewedLock: { readonly expires_at: number } | null = null;
+      while (Date.now() < renewalDeadline) {
+        renewedLock = await workerEnv.DB.prepare(
+          'SELECT expires_at FROM user_photo_lock WHERE user_id=?',
+        )
+          .bind(initialLock.user_id)
+          .first<{ expires_at: number }>();
+        if (
+          renewedLock !== null &&
+          renewedLock.expires_at > initialExpiresAt &&
+          renewedLock.expires_at > Date.now()
+        ) {
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(renewedLock?.expires_at).toBeGreaterThan(initialExpiresAt);
+      expect(Date.now()).toBeLessThan(initialExpiresAt);
+
+      const originalLeaseDeadline = Date.now() + 10_000;
+      while (Date.now() <= initialExpiresAt && Date.now() < originalLeaseDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      expect(Date.now()).toBeGreaterThan(initialExpiresAt);
+      expect(putReleased).toBe(false);
+      const currentLock = await workerEnv.DB.prepare(
+        'SELECT expires_at FROM user_photo_lock WHERE user_id=?',
+      )
+        .bind(initialLock.user_id)
+        .first<{ expires_at: number }>();
+      expect(currentLock?.expires_at).toBeGreaterThan(Date.now());
       await runPhotoCleanup();
       const uploading = await workerEnv.DB.prepare(
-        'SELECT photo_id FROM "user_photo" WHERE state = \'uploading\' LIMIT 1',
-      ).first<{ photo_id: string }>();
+        `SELECT photo_id FROM user_photo WHERE user_id=? AND photo_id=? AND state='uploading'`,
+      )
+        .bind(initialLock.user_id, uploadingPhoto.photo_id)
+        .first<{ photo_id: string }>();
       expect(uploading).not.toBeNull();
     } finally {
+      putReleased = true;
       releasePut();
+      await uploadResponse;
     }
+    expect(putReleased).toBe(true);
     expect((await uploadResponse).status).toBe(204);
     const details = (await (await request('/v1/account-details', { cookie })).json()) as {
       image: string;
     };
     expect((await request(details.image, { cookie })).status).toBe(200);
-  });
+  }, 20_000);
 
   it('does not persist a Better Auth photo reference when the D1 upload intent was removed', async () => {
     const cookie = await signedInUser();

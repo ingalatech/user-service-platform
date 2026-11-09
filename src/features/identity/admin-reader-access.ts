@@ -1,5 +1,6 @@
 import type { D1Database } from '@cloudflare/workers-types';
 import { authorizeAdministrator } from './admin-authorization.js';
+import { prepareReaderSessionRevocation } from './reader-session-store.js';
 import type { IdentityRuntime } from './identity-runtime.js';
 import type { AdminReaderAccessRequest, AdminReaderAccessResult } from './contract.js';
 import type { ProblemCode } from '../../shared/problem.js';
@@ -262,14 +263,12 @@ export async function setReaderAccess(input: {
         ),
       ...(input.body.state === 'disabled'
         ? [
-            input.db
-              .prepare(
-                `DELETE FROM session WHERE user_id = ? AND EXISTS (
-                   SELECT 1 FROM reader_access_state
-                   WHERE user_id = ? AND state = 'disabled' AND revision = ? AND mutation_token = ?
-                 )`,
-              )
-              .bind(target.id, target.id, nextRevision, mutationToken),
+            prepareReaderSessionRevocation(input.db, target.id, {
+              kind: 'access-disable',
+              revision: nextRevision,
+              mutationToken,
+              now,
+            }),
           ]
         : []),
       input.db
@@ -277,7 +276,10 @@ export async function setReaderAccess(input: {
           `INSERT INTO identity_event
            (id, version, type, occurred_at, actor_realm, actor_id, subject_realm, subject_id,
             result, request_id, problem_code, metadata)
-           SELECT ?, 1, ?, ?, 'administrator', ?, 'reader', ?, 'success', ?, NULL, ?
+           SELECT ?, 1, ?, ?, 'administrator', ?, 'reader', ?, 'success', ?, NULL,
+                  CASE WHEN ?='access-disabled'
+                       THEN json_object('revision', ?, 'revokedSessionCount', changes())
+                       ELSE json_object('revision', ?) END
            WHERE EXISTS (
              SELECT 1 FROM reader_access_state
              WHERE user_id = ? AND state = ? AND revision = ? AND mutation_token = ?
@@ -290,7 +292,9 @@ export async function setReaderAccess(input: {
           input.administratorId,
           target.id,
           input.requestId,
-          JSON.stringify({ revision: nextRevision }),
+          lifecycleType,
+          nextRevision,
+          nextRevision,
           target.id,
           input.body.state,
           nextRevision,

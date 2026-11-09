@@ -19,6 +19,12 @@ const passwordField = z
   .max(128, { error: 'Password must be at most 128 characters.' })
   .openapi({ example: 'Correct-horse-41' });
 
+const adminReaderSessionSelector = z
+  .string()
+  .min(42)
+  .max(211)
+  .regex(/^s1_[A-Za-z0-9_-]+$/);
+
 export const AuthConfigSchema = z
   .object({
     capabilities: z
@@ -325,6 +331,7 @@ export const SocialIdentityUnlinkedMetadataSchema = z
       .regex(/^[A-Za-z0-9_-]+$/),
     provider: z.enum(['google', 'facebook']),
     revision: z.number().int().min(1),
+    revokedSessionCount: z.number().int().min(0).optional(),
   })
   .strict()
   .openapi('SocialIdentityUnlinkedMetadata');
@@ -342,6 +349,9 @@ export const AdminAuditMetadataSchema = z
     revision: SocialIdentityUnlinkedMetadataSchema.shape.revision.optional(),
     associationId: SocialIdentityUnlinkedMetadataSchema.shape.associationId.optional(),
     provider: SocialIdentityUnlinkedMetadataSchema.shape.provider.optional(),
+    selector: adminReaderSessionSelector.optional(),
+    count: z.number().int().min(0).optional(),
+    revokedSessionCount: z.number().int().min(0).optional(),
     previousAccessState: z.enum(['active', 'disabled']).optional(),
     retryAfterSeconds: z.number().int().min(1).max(86_400).optional(),
     state: z
@@ -644,6 +654,107 @@ export const AdminReaderActivityQuerySchema = z
   })
   .openapi('AdminReaderActivityQuery');
 
+export const AdminReaderSessionSchema = z
+  .object({
+    selector: adminReaderSessionSelector,
+    createdAt: z.iso.datetime(),
+    updatedAt: z.iso.datetime(),
+    expiresAt: z.iso.datetime(),
+  })
+  .strict()
+  .openapi('AdminReaderSession');
+
+export const AdminReaderSessionsQuerySchema = z
+  .object({
+    limit: z.coerce.number().int().min(1).max(50).default(25),
+    cursor: z.string().min(1).max(512).optional(),
+  })
+  .strict()
+  .openapi('AdminReaderSessionsQuery');
+
+export const AdminReaderSessionsSchema = z
+  .object({
+    items: z.array(AdminReaderSessionSchema),
+    total: z.number().int().min(0),
+    nextCursor: z.string().nullable(),
+  })
+  .strict()
+  .openapi('AdminReaderSessions');
+
+export const AdminReaderSessionParamsSchema = z
+  .object({ userId: z.string().min(1).max(128), sessionId: adminReaderSessionSelector })
+  .strict()
+  .openapi('AdminReaderSessionParams');
+
+export const AdminReaderSessionRevocationSchema = z
+  .object({
+    state: z.enum(['active', 'disabled', 'suspended']),
+    revision: z.number().int().min(1),
+    changed: z.boolean(),
+  })
+  .strict()
+  .openapi('AdminReaderSessionRevocation');
+
+export const ReaderSessionRevokedMetadataSchema = z
+  .object({
+    selector: adminReaderSessionSelector,
+    revision: z.number().int().min(1),
+  })
+  .strict()
+  .openapi('ReaderSessionRevokedMetadata');
+
+export const ReaderAccessDisabledMetadataSchema = z
+  .object({
+    revision: z.number().int().min(1),
+    revokedSessionCount: z.number().int().min(0).optional(),
+  })
+  .strict()
+  .openapi('ReaderAccessDisabledMetadata');
+
+export const ReaderDeletionRequestedMetadataSchema = z
+  .object({
+    workflowId: z
+      .string()
+      .min(1)
+      .max(128)
+      .regex(/^[A-Za-z0-9_-]+$/),
+    previousAccessState: z.enum(['active', 'disabled']),
+    revision: z.number().int().min(1),
+    revokedSessionCount: z.number().int().min(0).optional(),
+  })
+  .strict()
+  .openapi('ReaderDeletionRequestedMetadata');
+
+export const ReaderEmailChangedMetadataSchema = z
+  .object({
+    workflowId: z
+      .string()
+      .min(1)
+      .max(128)
+      .regex(/^[A-Za-z0-9_-]+$/),
+    revision: z.number().int().min(1),
+    revokedSessionCount: z.number().int().min(0).optional(),
+  })
+  .strict()
+  .openapi('ReaderEmailChangedMetadata');
+
+export const ReaderSessionsRevokedMetadataSchema = z
+  .object({
+    count: z.number().int().min(1),
+    revision: z.number().int().min(1),
+  })
+  .strict()
+  .openapi('ReaderSessionsRevokedMetadata');
+
+export const ReaderSessionsRevokeAttemptMetadataSchema = z
+  .object({
+    changed: z.boolean(),
+    count: z.number().int().min(0),
+    revision: z.number().int().min(1),
+  })
+  .strict()
+  .openapi('ReaderSessionsRevokeAttemptMetadata');
+
 export const AdminReaderActivityEventSchema = z
   .object({
     id: z.string(),
@@ -655,6 +766,7 @@ export const AdminReaderActivityEventSchema = z
       'email-change-cancelled',
       'email-changed',
       'social-identity-unlinked',
+      'session-revoked',
       'sessions-revoked',
       'access-disabled',
       'access-rehabilitated',
@@ -665,7 +777,16 @@ export const AdminReaderActivityEventSchema = z
     ]),
     occurredAt: z.iso.datetime(),
     actor: z.object({ id: z.string(), realm: z.literal('administrator') }),
-    metadata: SocialIdentityUnlinkedMetadataSchema.nullable(),
+    metadata: z
+      .union([
+        SocialIdentityUnlinkedMetadataSchema,
+        ReaderAccessDisabledMetadataSchema,
+        ReaderDeletionRequestedMetadataSchema,
+        ReaderEmailChangedMetadataSchema,
+        ReaderSessionRevokedMetadataSchema,
+        ReaderSessionsRevokedMetadataSchema,
+      ])
+      .nullable(),
   })
   .openapi('AdminReaderActivityEvent');
 
@@ -1004,3 +1125,8 @@ export type AdminReaderDeletionRequestTransition = z.infer<
 export type AdminUserList = z.infer<typeof AdminUserListSchema>;
 export type AdminUserListQuery = z.infer<typeof AdminUserListQuerySchema>;
 export type AdminUserDetailParams = z.infer<typeof AdminUserDetailParamsSchema>;
+export type AdminReaderSessions = z.infer<typeof AdminReaderSessionsSchema>;
+export type AdminReaderSession = z.infer<typeof AdminReaderSessionSchema>;
+export type AdminReaderSessionsQuery = z.infer<typeof AdminReaderSessionsQuerySchema>;
+export type AdminReaderSessionParams = z.infer<typeof AdminReaderSessionParamsSchema>;
+export type AdminReaderSessionRevocation = z.infer<typeof AdminReaderSessionRevocationSchema>;

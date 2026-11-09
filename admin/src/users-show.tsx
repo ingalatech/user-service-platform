@@ -16,6 +16,7 @@ import { Show } from './kit/components/admin/show.js';
 import { EmailChangeActions } from './email-change-actions.js';
 import { DeletionRequestActions } from './deletion-request-actions.js';
 import { SocialIdentityActions } from './social-identity-actions.js';
+import { ReaderSessions } from './reader-sessions.js';
 import { Button } from './kit/components/ui/button.js';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './kit/components/ui/tabs.js';
 
@@ -353,6 +354,10 @@ export function UsersShow() {
   const [activeTab, setActiveTab] = useState('summary');
   const [emailChangeTerminalState, setEmailChangeTerminalState] = useState<string | null>(null);
   const [socialIdentityStatus, setSocialIdentityStatus] = useState<string | null>(null);
+  const [readerSessionStatus, setReaderSessionStatus] = useState<{
+    readerId: string;
+    message: string;
+  } | null>(null);
   const query = useGetOne<AdminReaderDetail>(
     'users',
     { id: id ?? '' },
@@ -501,7 +506,24 @@ export function UsersShow() {
             />
           </TabsContent>
           <TabsContent value="sessions" className="pt-4">
-            <p>La consulta y gestión de sesiones estará disponible en una próxima entrega.</p>
+            {readerSessionStatus?.readerId === query.data.id ? (
+              <p role="status" className="mb-4">
+                {readerSessionStatus.message}
+              </p>
+            ) : null}
+            <ReaderSessions
+              key={query.data.id}
+              readerId={query.data.id}
+              onMutationStatus={(message) => {
+                setReaderSessionStatus(
+                  message === null ? null : { readerId: query.data.id, message },
+                );
+              }}
+              refreshReader={async () => {
+                const refreshed = await query.refetch();
+                if (refreshed.isError) throw new Error('Reader detail refresh failed.');
+              }}
+            />
           </TabsContent>
           <TabsContent value="lifecycle" className="space-y-3 pt-4">
             {query.data.activeWorkflows.length === 0 ? (

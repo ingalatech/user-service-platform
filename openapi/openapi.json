@@ -1282,6 +1282,20 @@
               "facebook"
             ]
           },
+          "selector": {
+            "type": "string",
+            "minLength": 42,
+            "maxLength": 211,
+            "pattern": "^s1_[A-Za-z0-9_-]+$"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "revokedSessionCount": {
+            "type": "integer",
+            "minimum": 0
+          },
           "previousAccessState": {
             "type": "string",
             "enum": [
@@ -1691,6 +1705,7 @@
               "email-change-cancelled",
               "email-changed",
               "social-identity-unlinked",
+              "session-revoked",
               "sessions-revoked",
               "access-disabled",
               "access-rehabilitated",
@@ -1723,7 +1738,29 @@
             ]
           },
           "metadata": {
-            "$ref": "#/components/schemas/SocialIdentityUnlinkedMetadata"
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SocialIdentityUnlinkedMetadata"
+              },
+              {
+                "$ref": "#/components/schemas/ReaderAccessDisabledMetadata"
+              },
+              {
+                "$ref": "#/components/schemas/ReaderDeletionRequestedMetadata"
+              },
+              {
+                "$ref": "#/components/schemas/ReaderEmailChangedMetadata"
+              },
+              {
+                "$ref": "#/components/schemas/ReaderSessionRevokedMetadata"
+              },
+              {
+                "$ref": "#/components/schemas/ReaderSessionsRevokedMetadata"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -1735,10 +1772,7 @@
         ]
       },
       "SocialIdentityUnlinkedMetadata": {
-        "type": [
-          "object",
-          "null"
-        ],
+        "type": "object",
         "properties": {
           "associationId": {
             "type": "string",
@@ -1756,12 +1790,210 @@
           "revision": {
             "type": "integer",
             "minimum": 1
+          },
+          "revokedSessionCount": {
+            "type": "integer",
+            "minimum": 0
           }
         },
         "required": [
           "associationId",
           "provider",
           "revision"
+        ],
+        "additionalProperties": false
+      },
+      "ReaderAccessDisabledMetadata": {
+        "type": "object",
+        "properties": {
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "revokedSessionCount": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "revision"
+        ],
+        "additionalProperties": false
+      },
+      "ReaderDeletionRequestedMetadata": {
+        "type": "object",
+        "properties": {
+          "workflowId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "previousAccessState": {
+            "type": "string",
+            "enum": [
+              "active",
+              "disabled"
+            ]
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "revokedSessionCount": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "workflowId",
+          "previousAccessState",
+          "revision"
+        ],
+        "additionalProperties": false
+      },
+      "ReaderEmailChangedMetadata": {
+        "type": "object",
+        "properties": {
+          "workflowId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[A-Za-z0-9_-]+$"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "revokedSessionCount": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "workflowId",
+          "revision"
+        ],
+        "additionalProperties": false
+      },
+      "ReaderSessionRevokedMetadata": {
+        "type": "object",
+        "properties": {
+          "selector": {
+            "type": "string",
+            "minLength": 42,
+            "maxLength": 211,
+            "pattern": "^s1_[A-Za-z0-9_-]+$"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "selector",
+          "revision"
+        ],
+        "additionalProperties": false
+      },
+      "ReaderSessionsRevokedMetadata": {
+        "type": "object",
+        "properties": {
+          "count": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          }
+        },
+        "required": [
+          "count",
+          "revision"
+        ],
+        "additionalProperties": false
+      },
+      "AdminReaderSessions": {
+        "type": "object",
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AdminReaderSession"
+            }
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "nextCursor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "nextCursor"
+        ],
+        "additionalProperties": false
+      },
+      "AdminReaderSession": {
+        "type": "object",
+        "properties": {
+          "selector": {
+            "type": "string",
+            "minLength": 42,
+            "maxLength": 211,
+            "pattern": "^s1_[A-Za-z0-9_-]+$"
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "selector",
+          "createdAt",
+          "updatedAt",
+          "expiresAt"
+        ],
+        "additionalProperties": false
+      },
+      "AdminReaderSessionRevocation": {
+        "type": "object",
+        "properties": {
+          "state": {
+            "type": "string",
+            "enum": [
+              "active",
+              "disabled",
+              "suspended"
+            ]
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "changed": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "state",
+          "revision",
+          "changed"
         ],
         "additionalProperties": false
       },
@@ -4332,6 +4564,294 @@
           },
           "500": {
             "description": "Internal failure.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/users/{userId}/sessions": {
+      "get": {
+        "operationId": "listAdminReaderSessions",
+        "summary": "List active Reader sessions",
+        "description": "Returns only active, nonexpired Reader sessions using opaque selectors and a newest-first cursor. Session tokens and connection/device metadata are never exposed.",
+        "tags": [
+          "admin"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "Opaque administrative User identifier.",
+              "example": "abc123"
+            },
+            "required": true,
+            "description": "Opaque administrative User identifier.",
+            "name": "userId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50,
+              "default": 25
+            },
+            "required": false,
+            "name": "limit",
+            "in": "query"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 512
+            },
+            "required": false,
+            "name": "cursor",
+            "in": "query"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The active Reader session page.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminReaderSessions"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid session selector, cursor, or page size.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No authoritative Administrator session.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The Administrator is forbidden or disabled.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Reader not found.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The request could not be completed or audited.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "revokeAllAdminReaderSessions",
+        "summary": "Revoke all Reader sessions",
+        "description": "Revokes all active Reader sessions without changing account access or preventing future login. No If-Match or Idempotency-Key is required.",
+        "tags": [
+          "admin"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "description": "Opaque administrative User identifier.",
+              "example": "abc123"
+            },
+            "required": true,
+            "description": "Opaque administrative User identifier.",
+            "name": "userId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The current Reader access state and whether any sessions were revoked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminReaderSessionRevocation"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid session selector, cursor, or page size.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No authoritative Administrator session.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The Administrator is forbidden or disabled.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Reader not found.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The request could not be completed or audited.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/admin/users/{userId}/sessions/{sessionId}": {
+      "delete": {
+        "operationId": "revokeAdminReaderSession",
+        "summary": "Revoke one Reader session",
+        "description": "Revokes one session belonging to the target Reader. Missing and foreign selectors are indistinguishable no-ops. No If-Match or Idempotency-Key is required.",
+        "tags": [
+          "admin"
+        ],
+        "parameters": [
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "required": true,
+            "name": "userId",
+            "in": "path"
+          },
+          {
+            "schema": {
+              "type": "string",
+              "minLength": 42,
+              "maxLength": 211,
+              "pattern": "^s1_[A-Za-z0-9_-]+$"
+            },
+            "required": true,
+            "name": "sessionId",
+            "in": "path"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The current Reader access state and whether a session was revoked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AdminReaderSessionRevocation"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid session selector, cursor, or page size.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No authoritative Administrator session.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The Administrator is forbidden or disabled.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Reader not found.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IdentityProblemDetails"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "The request could not be completed or audited.",
             "content": {
               "application/problem+json": {
                 "schema": {
