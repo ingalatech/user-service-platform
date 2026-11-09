@@ -477,12 +477,22 @@ describe('Reader administrative email-change workflow', () => {
         .first<{ count: number }>(),
     ).toEqual({ count: 0 });
     const emailChanged = await workerEnv.DB.prepare(
-      `SELECT count(*) AS count FROM identity_event
+      `SELECT count(*) AS count, metadata FROM identity_event
        WHERE type = 'email-changed' AND subject_id = ? AND actor_id = ?`,
     )
       .bind(reader.id, completedWorkflow?.creator_id ?? '')
-      .first<{ count: number }>();
+      .first<{ count: number; metadata: string }>();
     expect(emailChanged?.count).toBe(1);
+    expect(JSON.parse(emailChanged?.metadata ?? '{}')).toMatchObject({
+      revokedSessionCount: 2,
+    });
+    expect(
+      await workerEnv.DB.prepare(
+        `SELECT count(*) AS total FROM identity_event WHERE subject_id=? AND type IN ('session-revoked','sessions-revoked')`,
+      )
+        .bind(reader.id)
+        .first<{ total: number }>(),
+    ).toEqual({ total: 0 });
     expect(
       await workerEnv.DB.prepare(
         'SELECT count(*) AS count FROM reader_message_workflow WHERE user_id = ?',

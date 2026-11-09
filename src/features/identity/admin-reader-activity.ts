@@ -1,7 +1,14 @@
 import type { D1Database } from '@cloudflare/workers-types';
 import type { createAdministrationAuth } from './auth.js';
-import type { AdminReaderActivity, SocialIdentityUnlinkedMetadata } from './contract.js';
-import { SocialIdentityUnlinkedMetadataSchema } from './contract.js';
+import type { AdminReaderActivity } from './contract.js';
+import {
+  ReaderAccessDisabledMetadataSchema,
+  ReaderDeletionRequestedMetadataSchema,
+  ReaderEmailChangedMetadataSchema,
+  ReaderSessionRevokedMetadataSchema,
+  ReaderSessionsRevokedMetadataSchema,
+  SocialIdentityUnlinkedMetadataSchema,
+} from './contract.js';
 import { authorizeAdministrator } from './admin-authorization.js';
 
 const ACTIVITY_TYPES = [
@@ -12,6 +19,7 @@ const ACTIVITY_TYPES = [
   'email-change-cancelled',
   'email-changed',
   'social-identity-unlinked',
+  'session-revoked',
   'sessions-revoked',
   'access-disabled',
   'access-rehabilitated',
@@ -123,10 +131,7 @@ export async function readAdminReaderActivity(input: {
         type: row.type,
         occurredAt: new Date(row.occurred_at).toISOString(),
         actor: { id: row.actor_id, realm: 'administrator' },
-        metadata:
-          row.type !== 'social-identity-unlinked' || row.metadata === null
-            ? null
-            : safeSocialIdentityMetadata(row.metadata),
+        metadata: safeActivityMetadata(row.type, row.metadata),
       })),
       nextCursor:
         result.results.length > input.limit && last !== undefined
@@ -136,11 +141,38 @@ export async function readAdminReaderActivity(input: {
   };
 }
 
-function safeSocialIdentityMetadata(serialized: string): SocialIdentityUnlinkedMetadata | null {
+function safeActivityMetadata(
+  type: ActivityType,
+  serialized: string | null,
+): AdminReaderActivity['items'][number]['metadata'] {
+  if (serialized === null) return null;
   try {
     const metadata: unknown = JSON.parse(serialized);
-    const parsed = SocialIdentityUnlinkedMetadataSchema.safeParse(metadata);
-    return parsed.success ? parsed.data : null;
+    if (type === 'social-identity-unlinked') {
+      const parsed = SocialIdentityUnlinkedMetadataSchema.safeParse(metadata);
+      return parsed.success ? parsed.data : null;
+    }
+    if (type === 'access-disabled') {
+      const parsed = ReaderAccessDisabledMetadataSchema.safeParse(metadata);
+      return parsed.success ? parsed.data : null;
+    }
+    if (type === 'deletion-requested') {
+      const parsed = ReaderDeletionRequestedMetadataSchema.safeParse(metadata);
+      return parsed.success ? parsed.data : null;
+    }
+    if (type === 'email-changed') {
+      const parsed = ReaderEmailChangedMetadataSchema.safeParse(metadata);
+      return parsed.success ? parsed.data : null;
+    }
+    if (type === 'session-revoked') {
+      const parsed = ReaderSessionRevokedMetadataSchema.safeParse(metadata);
+      return parsed.success ? parsed.data : null;
+    }
+    if (type === 'sessions-revoked') {
+      const parsed = ReaderSessionsRevokedMetadataSchema.safeParse(metadata);
+      return parsed.success ? parsed.data : null;
+    }
+    return null;
   } catch {
     return null;
   }

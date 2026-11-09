@@ -269,6 +269,13 @@ describe('Reader deletion-request HTTP workflow', () => {
   it('creates a pending request, snapshots access state, revokes sessions and separates effective access', async () => {
     const administratorCookie = await bootstrapAdministrator();
     const reader = await registerReader();
+    const expiredSessionNow = Math.floor(Date.now() / 1_000);
+    await workerEnv.DB.prepare(
+      `INSERT INTO session(id,expires_at,token,created_at,updated_at,user_id)
+       VALUES('expired-before-deletion',?,'expired-token',?,?,?)`,
+    )
+      .bind(expiredSessionNow - 60, expiredSessionNow - 120, expiredSessionNow - 120, reader.id)
+      .run();
     const detail = await request(`/v1/admin/users/${reader.id}`, 'GET', {
       cookie: administratorCookie,
     });
@@ -293,10 +300,27 @@ describe('Reader deletion-request HTTP workflow', () => {
     });
     expect(JSON.stringify(createdBody)).not.toContain('Review requested by account holder.');
     expect(
-      await workerEnv.DB.prepare('SELECT count(*) AS count FROM session WHERE user_id = ?')
-        .bind(reader.id)
+      await workerEnv.DB.prepare(
+        'SELECT count(*) AS count FROM session WHERE user_id = ? AND expires_at > ?',
+      )
+        .bind(reader.id, expiredSessionNow)
         .first<{ count: number }>(),
     ).toEqual({ count: 0 });
+    expect(
+      await workerEnv.DB.prepare('SELECT count(*) AS count FROM session WHERE id=?')
+        .bind('expired-before-deletion')
+        .first<{ count: number }>(),
+    ).toEqual({ count: 1 });
+    const suspendedSessions = await request(`/v1/admin/users/${reader.id}/sessions`, 'GET', {
+      cookie: administratorCookie,
+    });
+    expect(suspendedSessions.status).toBe(200);
+    expect(await suspendedSessions.json()).toMatchObject({ items: [], total: 0, nextCursor: null });
+    const suspendedCleanup = await request(`/v1/admin/users/${reader.id}/sessions`, 'DELETE', {
+      cookie: administratorCookie,
+    });
+    expect(suspendedCleanup.status).toBe(200);
+    expect(await suspendedCleanup.json()).toMatchObject({ state: 'suspended', changed: false });
     const events = await workerEnv.DB.prepare(
       `SELECT type, result, metadata FROM identity_event WHERE subject_id = ? ORDER BY type`,
     )
@@ -305,7 +329,17 @@ describe('Reader deletion-request HTTP workflow', () => {
     expect(events.results.map((event) => [event.type, event.result])).toEqual([
       ['deletion-request-attempt', 'success'],
       ['deletion-requested', 'success'],
+      ['sessions-revoke-attempt', 'success'],
     ]);
+    const deletionLifecycle = events.results.find((event) => event.type === 'deletion-requested');
+    expect(JSON.parse(deletionLifecycle?.metadata ?? '{}')).toMatchObject({
+      revokedSessionCount: 1,
+    });
+    expect(
+      events.results.some(
+        (event) => event.type === 'session-revoked' || event.type === 'sessions-revoked',
+      ),
+    ).toBe(false);
     expect(JSON.stringify(events.results)).not.toContain('Review requested by account holder.');
     expect(
       await workerEnv.DB.prepare(
@@ -1144,6 +1178,22 @@ describe('Reader deletion-request HTTP workflow', () => {
     expect(disabled.headers.get('cache-control')).toBe('private, no-store');
     expect(await disabled.json()).toEqual({ state: 'disabled', changed: true, revision: 2 });
     expect(disabled.headers.get('etag')).toBe('"2"');
+    const disabledEvent = await workerEnv.DB.prepare(
+      `SELECT metadata FROM identity_event WHERE subject_id=? AND type='access-disabled'`,
+    )
+      .bind(reader.id)
+      .first<{ metadata: string }>();
+    expect(JSON.parse(disabledEvent?.metadata ?? '{}')).toMatchObject({
+      revision: 2,
+      revokedSessionCount: 1,
+    });
+    expect(
+      await workerEnv.DB.prepare(
+        `SELECT count(*) AS total FROM identity_event WHERE subject_id=? AND type IN ('session-revoked','sessions-revoked')`,
+      )
+        .bind(reader.id)
+        .first<{ total: number }>(),
+    ).toEqual({ total: 0 });
     expect((await request('/v1/me', 'GET', { cookie: reader.cookie })).status).toBe(401);
 
     const rehabilitated = await request(path, 'PUT', {

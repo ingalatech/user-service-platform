@@ -87,6 +87,16 @@ does not establish an application-owned end-to-end login capability. Unlinking
 removes only this local association and does not revoke credentials or sessions
 at the remote provider.
 
+### Reader Session
+
+The authoritative Better Auth session for a Reader, stored only in the Reader
+`session` table and independent from Administrator sessions. Administrative
+session management exposes only an abbreviated opaque selector and registered
+creation, update, and expiry times. Manual revocation invalidates credentials
+without changing account access or preventing a later login; workflow-driven
+revocation is recorded with its owning lifecycle event rather than a duplicate
+manual session event.
+
 ### Account Photo
 
 An optional private image uploaded by its User in JPEG, PNG or WebP format. The

@@ -11,6 +11,12 @@ import {
   AdminAuditMetadataSchema,
   AdminAuditProblemCodeSchema,
   SocialIdentityUnlinkedMetadataSchema,
+  ReaderAccessDisabledMetadataSchema,
+  ReaderDeletionRequestedMetadataSchema,
+  ReaderEmailChangedMetadataSchema,
+  ReaderSessionRevokedMetadataSchema,
+  ReaderSessionsRevokedMetadataSchema,
+  ReaderSessionsRevokeAttemptMetadataSchema,
 } from './contract.js';
 import { authorizeAdministrator } from './admin-authorization.js';
 
@@ -32,6 +38,10 @@ const ADMIN_AUDIT_EVENT_ALLOWLIST = [
   { version: 1, type: 'email-changed' },
   { version: 1, type: 'social-unlink-attempt' },
   { version: 1, type: 'social-identity-unlinked' },
+  { version: 1, type: 'session-revoke-attempt' },
+  { version: 1, type: 'sessions-revoke-attempt' },
+  { version: 1, type: 'session-revoked' },
+  { version: 1, type: 'sessions-revoked' },
   { version: 1, type: 'deletion-request-attempt' },
   { version: 1, type: 'deletion-requested' },
   { version: 1, type: 'deletion-approved' },
@@ -45,7 +55,7 @@ const PROBLEM_CODE_SET = new Set<string>(AdminAuditProblemCodeSchema.options);
 
 const METADATA_FIELDS_BY_TYPE: Readonly<Record<string, readonly string[]>> = {
   'access-attempt': ['changed'],
-  'access-disabled': ['revision'],
+  'access-disabled': ['revision', 'revokedSessionCount'],
   'access-rehabilitated': ['revision'],
   'email-verification-attempt': ['changed', 'retryAfterSeconds', 'state'],
   'email-verified': ['operation', 'revision'],
@@ -55,11 +65,15 @@ const METADATA_FIELDS_BY_TYPE: Readonly<Record<string, readonly string[]>> = {
   'email-change-message-attempt': ['retryAfterSeconds', 'state'],
   'email-change-message-requested': ['workflowId'],
   'email-change-cancelled': ['changed', 'revision', 'workflowId'],
-  'email-changed': ['revision', 'workflowId'],
+  'email-changed': ['revision', 'workflowId', 'revokedSessionCount'],
   'social-unlink-attempt': ['changed', 'revision'],
-  'social-identity-unlinked': ['associationId', 'provider', 'revision'],
+  'social-identity-unlinked': ['associationId', 'provider', 'revision', 'revokedSessionCount'],
+  'session-revoke-attempt': ['changed', 'revision'],
+  'sessions-revoke-attempt': ['changed', 'count', 'revision'],
+  'session-revoked': ['selector', 'revision'],
+  'sessions-revoked': ['count', 'revision'],
   'deletion-request-attempt': ['changed', 'previousAccessState', 'revision', 'state', 'workflowId'],
-  'deletion-requested': ['previousAccessState', 'revision', 'workflowId'],
+  'deletion-requested': ['previousAccessState', 'revision', 'workflowId', 'revokedSessionCount'],
   'deletion-approved': ['previousAccessState', 'revision', 'state', 'workflowId'],
   'deletion-rejected': ['previousAccessState', 'revision', 'state', 'workflowId'],
   'deletion-cancelled': ['previousAccessState', 'revision', 'state', 'workflowId'],
@@ -143,6 +157,21 @@ function safeMetadata(type: string, serialized: string | null): AdminAuditEvent[
     if (!socialMetadata.success) return null;
     const safeSocialMetadata = AdminAuditMetadataSchema.safeParse(socialMetadata.data);
     return safeSocialMetadata.success ? safeSocialMetadata.data : null;
+  }
+  const canonicalSchemas = {
+    'access-disabled': ReaderAccessDisabledMetadataSchema,
+    'deletion-requested': ReaderDeletionRequestedMetadataSchema,
+    'email-changed': ReaderEmailChangedMetadataSchema,
+    'session-revoked': ReaderSessionRevokedMetadataSchema,
+    'sessions-revoked': ReaderSessionsRevokedMetadataSchema,
+    'sessions-revoke-attempt': ReaderSessionsRevokeAttemptMetadataSchema,
+  } as const;
+  if (type in canonicalSchemas) {
+    const schema = canonicalSchemas[type as keyof typeof canonicalSchemas];
+    const canonical = schema.safeParse(parsed);
+    if (!canonical.success) return null;
+    const safeCanonical = AdminAuditMetadataSchema.safeParse(canonical.data);
+    return safeCanonical.success ? safeCanonical.data : null;
   }
 
   const safe: Record<string, boolean | number | string> = {};

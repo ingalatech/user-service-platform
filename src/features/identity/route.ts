@@ -22,6 +22,10 @@ import {
   AdminReaderDetailSchema,
   AdminReaderActivityQuerySchema,
   AdminReaderActivitySchema,
+  AdminReaderSessionsQuerySchema,
+  AdminReaderSessionsSchema,
+  AdminReaderSessionParamsSchema,
+  AdminReaderSessionRevocationSchema,
   AdminReaderEmailVerificationSchema,
   AdminReaderAccessRequestSchema,
   AdminReaderAccessResultSchema,
@@ -920,6 +924,87 @@ export const adminReaderActivityRoute = createRoute({
       content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
       description: 'Internal failure.',
     },
+  },
+});
+
+const adminReaderSessionResponses = {
+  400: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'Invalid session selector, cursor, or page size.',
+  },
+  401: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'No authoritative Administrator session.',
+  },
+  403: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'The Administrator is forbidden or disabled.',
+  },
+  404: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'Reader not found.',
+  },
+  500: {
+    content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+    description: 'The request could not be completed or audited.',
+  },
+} as const;
+
+export const adminReaderSessionsRoute = createRoute({
+  method: 'get',
+  path: '/admin/users/{userId}/sessions',
+  operationId: 'listAdminReaderSessions',
+  summary: 'List active Reader sessions',
+  description:
+    'Returns only active, nonexpired Reader sessions using opaque selectors and a newest-first cursor. ' +
+    'Session tokens and connection/device metadata are never exposed.',
+  tags: ['admin'],
+  request: {
+    params: AdminUserDetailParamsSchema,
+    query: AdminReaderSessionsQuerySchema,
+  },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: AdminReaderSessionsSchema } },
+      description: 'The active Reader session page.',
+    },
+    ...adminReaderSessionResponses,
+  },
+});
+
+export const adminReaderSessionRevokeRoute = createRoute({
+  method: 'delete',
+  path: '/admin/users/{userId}/sessions/{sessionId}',
+  operationId: 'revokeAdminReaderSession',
+  summary: 'Revoke one Reader session',
+  description:
+    'Revokes one session belonging to the target Reader. Missing and foreign selectors are indistinguishable no-ops. No If-Match or Idempotency-Key is required.',
+  tags: ['admin'],
+  request: { params: AdminReaderSessionParamsSchema },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: AdminReaderSessionRevocationSchema } },
+      description: 'The current Reader access state and whether a session was revoked.',
+    },
+    ...adminReaderSessionResponses,
+  },
+});
+
+export const adminReaderSessionsRevokeAllRoute = createRoute({
+  method: 'delete',
+  path: '/admin/users/{userId}/sessions',
+  operationId: 'revokeAllAdminReaderSessions',
+  summary: 'Revoke all Reader sessions',
+  description:
+    'Revokes all active Reader sessions without changing account access or preventing future login. No If-Match or Idempotency-Key is required.',
+  tags: ['admin'],
+  request: { params: AdminUserDetailParamsSchema },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: AdminReaderSessionRevocationSchema } },
+      description: 'The current Reader access state and whether any sessions were revoked.',
+    },
+    ...adminReaderSessionResponses,
   },
 });
 

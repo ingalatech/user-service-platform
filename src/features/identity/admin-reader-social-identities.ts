@@ -1,5 +1,9 @@
 import type { D1Database } from '@cloudflare/workers-types';
 import { authorizeAdministrator } from './admin-authorization.js';
+import {
+  prepareReaderSessionRevocation,
+  readerSessionRevocationCount,
+} from './reader-session-store.js';
 import type { IdentityRuntime } from './identity-runtime.js';
 import type { AdminReaderSocialIdentityUnlink } from './contract.js';
 import { AdminReaderSocialIdentityUnlinkSchema } from './contract.js';
@@ -385,6 +389,16 @@ export async function unlinkReaderSocialIdentity(input: {
       notice === undefined ? null : await input.runtime.sealSocialIdentityUnlinkNotice(notice);
     if (notice !== undefined && retryPayload === null) return { kind: 'internal-error' };
     const token = uuid();
+    const socialSessionGuard = {
+      kind: 'social-unlink' as const,
+      revision: nextRevision,
+      mutationToken: token,
+      now,
+    };
+    const socialSessionCount = readerSessionRevocationCount({
+      readerId: target.id,
+      guard: socialSessionGuard,
+    });
     await input.db.batch([
       input.db
         .prepare(
@@ -423,12 +437,6 @@ export async function unlinkReaderSocialIdentity(input: {
         .bind(input.associationId, target.id, target.id, nextRevision, token),
       input.db
         .prepare(
-          `DELETE FROM session WHERE user_id=? AND ?=1 AND EXISTS
-        (SELECT 1 FROM reader_access_state WHERE user_id=? AND revision=? AND mutation_token=?)`,
-        )
-        .bind(target.id, changed ? 1 : 0, target.id, nextRevision, token),
-      input.db
-        .prepare(
           `INSERT INTO admin_idempotency_record
         (id,actor_id,key,method,normalized_path,target_id,body_hash,response_status,response_body,retry_payload,created_at,expires_at)
          SELECT ?,?,?, 'DELETE',?,?,?,200,?,?,?,? WHERE EXISTS
@@ -461,7 +469,8 @@ export async function unlinkReaderSocialIdentity(input: {
         .prepare(
           `INSERT INTO identity_event
         (id,version,type,occurred_at,actor_realm,actor_id,subject_realm,subject_id,result,request_id,problem_code,metadata)
-        SELECT ?,1,'social-identity-unlinked',?,'administrator',?,'reader',?,'success',?,NULL,?
+         SELECT ?,1,'social-identity-unlinked',?,'administrator',?,'reader',?,'success',?,NULL,
+           json_set(?, '$.revokedSessionCount', ${socialSessionCount.sql})
         WHERE ?=1 AND EXISTS(SELECT 1 FROM reader_access_state WHERE user_id=? AND revision=? AND mutation_token=?)`,
         )
         .bind(
@@ -479,11 +488,13 @@ export async function unlinkReaderSocialIdentity(input: {
                   revision: nextRevision,
                 },
           ),
+          ...socialSessionCount.bindings,
           changed ? 1 : 0,
           target.id,
           nextRevision,
           token,
         ),
+      ...(changed ? [prepareReaderSessionRevocation(input.db, target.id, socialSessionGuard)] : []),
       input.db
         .prepare(
           `INSERT INTO identity_event

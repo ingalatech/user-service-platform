@@ -1,5 +1,9 @@
 import type { D1Database } from '@cloudflare/workers-types';
 import { authorizeAdministrator } from './admin-authorization.js';
+import {
+  prepareReaderSessionRevocation,
+  readerSessionRevocationCount,
+} from './reader-session-store.js';
 import { digestVerificationToken, normalizeVerificationTarget } from './verification-token.js';
 import {
   READER_EMAIL_VERIFICATION_MESSAGE_PATH,
@@ -2173,6 +2177,17 @@ export async function completeReaderEmailChange(input: {
   const revision = currentRevision(target);
   const nextRevision = revision + 1;
   const nowSeconds = Math.floor(now / 1_000);
+  const emailSessionGuard = {
+    kind: 'email-change' as const,
+    revision: nextRevision,
+    mutationToken,
+    newEmail,
+    now,
+  };
+  const emailSessionCount = readerSessionRevocationCount({
+    readerId: target.id,
+    guard: emailSessionGuard,
+  });
   try {
     await input.db.batch([
       input.db
@@ -2252,17 +2267,6 @@ export async function completeReaderEmailChange(input: {
              )`,
         )
         .bind(newEmail, nowSeconds, target.id, oldEmail, target.id, nextRevision, mutationToken),
-      input.db
-        .prepare(
-          `DELETE FROM session WHERE user_id = ?
-           AND EXISTS (
-             SELECT 1 FROM reader_access_state
-             WHERE user_id = ? AND revision = ? AND mutation_token = ?
-           ) AND EXISTS (
-             SELECT 1 FROM user WHERE id = ? AND email = ? AND email_verified = 1
-           )`,
-        )
-        .bind(target.id, target.id, nextRevision, mutationToken, target.id, newEmail),
       input.db
         .prepare(
           `UPDATE reader_email_change_workflow
@@ -2351,7 +2355,8 @@ export async function completeReaderEmailChange(input: {
           `INSERT INTO identity_event
            (id, version, type, occurred_at, actor_realm, actor_id, subject_realm, subject_id,
             result, request_id, problem_code, metadata)
-           SELECT ?, 1, 'email-changed', ?, 'administrator', ?, 'reader', ?, 'success', ?, NULL, ?
+            SELECT ?, 1, 'email-changed', ?, 'administrator', ?, 'reader', ?, 'success', ?, NULL,
+              json_set(?, '$.revokedSessionCount', ${emailSessionCount.sql})
            WHERE EXISTS (
              SELECT 1 FROM reader_email_change_workflow
              WHERE id = ? AND state = 'completed' AND claim_token = ?
@@ -2364,9 +2369,11 @@ export async function completeReaderEmailChange(input: {
           target.id,
           input.requestId,
           JSON.stringify({ workflowId: workflow.id, revision: nextRevision }),
+          ...emailSessionCount.bindings,
           workflow.id,
           mutationToken,
         ),
+      prepareReaderSessionRevocation(input.db, target.id, emailSessionGuard),
       input.db
         .prepare(
           `INSERT INTO identity_event

@@ -499,6 +499,59 @@ describe('GET /v1/admin/audit-events', () => {
     expect(JSON.stringify({ audit, activity })).not.toContain('must-not-project');
   });
 
+  it('projects canonical revoke-all attempt metadata and fails closed on malformed data', async () => {
+    const actor = await bootstrapAdministrator();
+    const reader = await registerVerifiedReader('session-attempt-reader@example.com');
+    await workerEnv.DB.prepare('DELETE FROM identity_event').run();
+    const occurredAt = Date.UTC(2026, 0, 2);
+    const shared = {
+      type: 'sessions-revoke-attempt',
+      actorRealm: 'administrator',
+      actorId: actor.id,
+      subjectRealm: 'reader',
+      subjectId: reader.id,
+      result: 'success' as const,
+    };
+    await seedEvent({
+      ...shared,
+      id: 'sessions-attempt-valid',
+      occurredAt,
+      requestId: 'request-sessions-attempt-valid',
+      metadata: { changed: true, count: 3, revision: 2 },
+    });
+    await seedEvent({
+      ...shared,
+      id: 'sessions-attempt-extra',
+      occurredAt: occurredAt + 1,
+      requestId: 'request-sessions-attempt-extra',
+      metadata: { changed: true, count: 3, revision: 2, selector: 'unexpected' },
+    });
+    await seedEvent({
+      ...shared,
+      id: 'sessions-attempt-invalid-count',
+      occurredAt: occurredAt + 2,
+      requestId: 'request-sessions-attempt-invalid-count',
+      metadata: { changed: true, count: -1, revision: 2 },
+    });
+
+    const response = await get(
+      `/v1/admin/audit-events?actorId=${actor.id}&action=sessions-revoke-attempt`,
+      actor.cookie,
+    );
+    expect(response.status).toBe(200);
+    const audit = (await response.json()) as {
+      items: { id: string; metadata: Record<string, unknown> | null }[];
+    };
+    expect(audit.items).toEqual([
+      expect.objectContaining({ id: 'sessions-attempt-invalid-count', metadata: null }),
+      expect.objectContaining({ id: 'sessions-attempt-extra', metadata: null }),
+      expect.objectContaining({
+        id: 'sessions-attempt-valid',
+        metadata: { changed: true, count: 3, revision: 2 },
+      }),
+    ]);
+  });
+
   it('paginates newest-first and applies actor, action, result, and time filters', async () => {
     const actor = await bootstrapAdministrator();
     await workerEnv.DB.prepare('DELETE FROM identity_event').run();

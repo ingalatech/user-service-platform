@@ -660,6 +660,50 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/admin/users/{userId}/sessions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List active Reader sessions
+         * @description Returns only active, nonexpired Reader sessions using opaque selectors and a newest-first cursor. Session tokens and connection/device metadata are never exposed.
+         */
+        get: operations["listAdminReaderSessions"];
+        put?: never;
+        post?: never;
+        /**
+         * Revoke all Reader sessions
+         * @description Revokes all active Reader sessions without changing account access or preventing future login. No If-Match or Idempotency-Key is required.
+         */
+        delete: operations["revokeAllAdminReaderSessions"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/users/{userId}/sessions/{sessionId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Revoke one Reader session
+         * @description Revokes one session belonging to the target Reader. Missing and foreign selectors are indistinguishable no-ops. No If-Match or Idempotency-Key is required.
+         */
+        delete: operations["revokeAdminReaderSession"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/admin/users/{userId}/access": {
         parameters: {
             query?: never;
@@ -1365,6 +1409,9 @@ export interface components {
             associationId?: string;
             /** @enum {string} */
             provider?: "google" | "facebook";
+            selector?: string;
+            count?: number;
+            revokedSessionCount?: number;
             /** @enum {string} */
             previousAccessState?: "active" | "disabled";
             retryAfterSeconds?: number;
@@ -1472,7 +1519,7 @@ export interface components {
         AdminReaderActivityEvent: {
             id: string;
             /** @enum {string} */
-            type: "email-verified" | "email-verification-requested" | "password-recovery-requested" | "email-change-requested" | "email-change-cancelled" | "email-changed" | "social-identity-unlinked" | "sessions-revoked" | "access-disabled" | "access-rehabilitated" | "deletion-requested" | "deletion-approved" | "deletion-rejected" | "deletion-cancelled";
+            type: "email-verified" | "email-verification-requested" | "password-recovery-requested" | "email-change-requested" | "email-change-cancelled" | "email-changed" | "social-identity-unlinked" | "session-revoked" | "sessions-revoked" | "access-disabled" | "access-rehabilitated" | "deletion-requested" | "deletion-approved" | "deletion-rejected" | "deletion-cancelled";
             /** Format: date-time */
             occurredAt: string;
             actor: {
@@ -1480,14 +1527,59 @@ export interface components {
                 /** @enum {string} */
                 realm: "administrator";
             };
-            metadata: components["schemas"]["SocialIdentityUnlinkedMetadata"];
+            metadata: components["schemas"]["SocialIdentityUnlinkedMetadata"] | components["schemas"]["ReaderAccessDisabledMetadata"] | components["schemas"]["ReaderDeletionRequestedMetadata"] | components["schemas"]["ReaderEmailChangedMetadata"] | components["schemas"]["ReaderSessionRevokedMetadata"] | components["schemas"]["ReaderSessionsRevokedMetadata"] | null;
         };
         SocialIdentityUnlinkedMetadata: {
             associationId: string;
             /** @enum {string} */
             provider: "google" | "facebook";
             revision: number;
-        } | null;
+            revokedSessionCount?: number;
+        };
+        ReaderAccessDisabledMetadata: {
+            revision: number;
+            revokedSessionCount?: number;
+        };
+        ReaderDeletionRequestedMetadata: {
+            workflowId: string;
+            /** @enum {string} */
+            previousAccessState: "active" | "disabled";
+            revision: number;
+            revokedSessionCount?: number;
+        };
+        ReaderEmailChangedMetadata: {
+            workflowId: string;
+            revision: number;
+            revokedSessionCount?: number;
+        };
+        ReaderSessionRevokedMetadata: {
+            selector: string;
+            revision: number;
+        };
+        ReaderSessionsRevokedMetadata: {
+            count: number;
+            revision: number;
+        };
+        AdminReaderSessions: {
+            items: components["schemas"]["AdminReaderSession"][];
+            total: number;
+            nextCursor: string | null;
+        };
+        AdminReaderSession: {
+            selector: string;
+            /** Format: date-time */
+            createdAt: string;
+            /** Format: date-time */
+            updatedAt: string;
+            /** Format: date-time */
+            expiresAt: string;
+        };
+        AdminReaderSessionRevocation: {
+            /** @enum {string} */
+            state: "active" | "disabled" | "suspended";
+            revision: number;
+            changed: boolean;
+        };
         AdminReaderAccessResult: {
             /** @enum {string} */
             state: "active" | "disabled";
@@ -3149,6 +3241,213 @@ export interface operations {
                 };
             };
             /** @description Internal failure. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+        };
+    };
+    listAdminReaderSessions: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string;
+            };
+            header?: never;
+            path: {
+                /** @description Opaque administrative User identifier. */
+                userId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The active Reader session page. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminReaderSessions"];
+                };
+            };
+            /** @description Invalid session selector, cursor, or page size. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description No authoritative Administrator session. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The Administrator is forbidden or disabled. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description Reader not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The request could not be completed or audited. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+        };
+    };
+    revokeAllAdminReaderSessions: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description Opaque administrative User identifier. */
+                userId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The current Reader access state and whether any sessions were revoked. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminReaderSessionRevocation"];
+                };
+            };
+            /** @description Invalid session selector, cursor, or page size. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description No authoritative Administrator session. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The Administrator is forbidden or disabled. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description Reader not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The request could not be completed or audited. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+        };
+    };
+    revokeAdminReaderSession: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                userId: string;
+                sessionId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The current Reader access state and whether a session was revoked. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminReaderSessionRevocation"];
+                };
+            };
+            /** @description Invalid session selector, cursor, or page size. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description No authoritative Administrator session. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The Administrator is forbidden or disabled. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description Reader not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description The request could not be completed or audited. */
             500: {
                 headers: {
                     [name: string]: unknown;

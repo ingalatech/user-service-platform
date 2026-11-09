@@ -2,6 +2,11 @@ import { readFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
+import {
+  AdminReaderSessionSchema,
+  AdminReaderSessionRevocationSchema,
+  AdminReaderSessionsSchema,
+} from '../../admin/src/generated/contracts.js';
 
 // Published generated contracts: admin identity is exact and existing login,
 // logout and public identity operations keep their application-owned shapes.
@@ -11,6 +16,7 @@ const artifactPath = resolve(root, 'openapi', 'openapi.json');
 interface Operation {
   readonly operationId?: string;
   readonly responses?: Record<string, { content?: Record<string, { schema?: unknown }> }>;
+  readonly parameters?: { readonly name?: string; readonly in?: string }[];
 }
 
 async function document(): Promise<{
@@ -21,10 +27,12 @@ async function document(): Promise<{
       {
         required?: string[];
         properties?: Record<string, unknown>;
+        items?: { $ref?: string };
         allOf?: {
           $ref?: string;
           required?: string[];
           properties?: Record<string, unknown>;
+          items?: { $ref?: string };
         }[];
       }
     >;
@@ -39,10 +47,12 @@ async function document(): Promise<{
         {
           required?: string[];
           properties?: Record<string, unknown>;
+          items?: { $ref?: string };
           allOf?: {
             $ref?: string;
             required?: string[];
             properties?: Record<string, unknown>;
+            items?: { $ref?: string };
           }[];
         }
       >;
@@ -122,6 +132,92 @@ describe('administration API contract', () => {
     const schema = operation?.responses?.['200']?.content?.['application/json']?.schema as
       { $ref?: string } | undefined;
     expect(schema?.$ref).toBe('#/components/schemas/AdminReaderActivity');
+  });
+
+  it('publishes safe Reader session listing and revocation contracts', async () => {
+    const doc = await document();
+    const listPath = '/v1/admin/users/{userId}/sessions';
+    const onePath = '/v1/admin/users/{userId}/sessions/{sessionId}';
+    const list = doc.paths[listPath]?.get;
+    const revokeOne = doc.paths[onePath]?.delete;
+    const revokeAll = doc.paths[listPath]?.delete;
+
+    expect(list?.operationId).toBe('listAdminReaderSessions');
+    expect(revokeOne?.operationId).toBe('revokeAdminReaderSession');
+    expect(revokeAll?.operationId).toBe('revokeAllAdminReaderSessions');
+    expect(Object.keys(list?.responses ?? {}).sort()).toEqual([
+      '200',
+      '400',
+      '401',
+      '403',
+      '404',
+      '500',
+    ]);
+    expect(Object.keys(revokeOne?.responses ?? {}).sort()).toEqual([
+      '200',
+      '400',
+      '401',
+      '403',
+      '404',
+      '500',
+    ]);
+    expect(Object.keys(revokeAll?.responses ?? {}).sort()).toEqual([
+      '200',
+      '400',
+      '401',
+      '403',
+      '404',
+      '500',
+    ]);
+    expect(revokeOne?.parameters?.some((parameter) => parameter.name === 'if-match')).toBe(false);
+    expect(revokeOne?.parameters?.some((parameter) => parameter.name === 'idempotency-key')).toBe(
+      false,
+    );
+
+    expect(doc.components.schemas.AdminReaderSession?.required?.slice().sort()).toEqual([
+      'createdAt',
+      'expiresAt',
+      'selector',
+      'updatedAt',
+    ]);
+    expect(Object.keys(doc.components.schemas.AdminReaderSession?.properties ?? {}).sort()).toEqual(
+      ['createdAt', 'expiresAt', 'selector', 'updatedAt'],
+    );
+    expect(doc.components.schemas.AdminReaderSessions?.required?.slice().sort()).toEqual([
+      'items',
+      'nextCursor',
+      'total',
+    ]);
+    expect(list?.responses?.['200']?.content?.['application/json']?.schema).toEqual({
+      $ref: '#/components/schemas/AdminReaderSessions',
+    });
+    expect(revokeOne?.responses?.['200']?.content?.['application/json']?.schema).toEqual({
+      $ref: '#/components/schemas/AdminReaderSessionRevocation',
+    });
+    expect(revokeAll?.responses?.['200']?.content?.['application/json']?.schema).toEqual({
+      $ref: '#/components/schemas/AdminReaderSessionRevocation',
+    });
+  });
+
+  it('generates runtime Admin session validators with exact safe projections', () => {
+    const session = {
+      selector: `s1_${'A'.repeat(39)}`,
+      createdAt: '2026-11-09T12:00:00.000Z',
+      updatedAt: '2026-11-09T12:01:00.000Z',
+      expiresAt: '2026-11-10T12:00:00.000Z',
+    };
+    expect(AdminReaderSessionSchema.safeParse(session).success).toBe(true);
+    expect(AdminReaderSessionSchema.safeParse({ ...session, token: 'never' }).success).toBe(false);
+    expect(
+      AdminReaderSessionsSchema.safeParse({ items: [session], total: 1, nextCursor: null }).success,
+    ).toBe(true);
+    expect(
+      AdminReaderSessionRevocationSchema.safeParse({
+        state: 'active',
+        revision: 1,
+        changed: true,
+      }).success,
+    ).toBe(true);
   });
 
   it('keeps Reader and Administrator login and sign-out contracts separate', async () => {

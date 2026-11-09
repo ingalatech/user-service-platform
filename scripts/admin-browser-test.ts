@@ -9,6 +9,8 @@ import { promisify } from 'node:util';
 import { chromium, type Browser, type Page, type Request as BrowserRequest } from 'playwright-core';
 import {
   AdminReaderDetailSchema,
+  AdminReaderSessionRevocationSchema,
+  AdminReaderSessionsSchema,
   AdminReaderSocialIdentityUnlinkSchema,
 } from '../admin/src/generated/contracts.js';
 
@@ -18,6 +20,17 @@ const pause = (ms: number): Promise<void> => new Promise((done) => setTimeout(do
 
 function assert(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(`Administration browser assertion: ${message}`);
+}
+
+async function waitForLocatorCount(page: Page, selector: string, expected: number): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt++) {
+    if ((await page.locator(selector).count()) === expected) return;
+    await pause(50);
+  }
+  assert(
+    (await page.locator(selector).count()) === expected,
+    'browser locator reaches expected count',
+  );
 }
 
 async function command(label: string, args: string[]): Promise<void> {
@@ -1148,6 +1161,71 @@ export async function runAdminBrowserTest(): Promise<void> {
       typeof regularDetailId === 'string' && regularDetailId.length > 0,
       'regular detail identifier resolved',
     );
+    phase = 'Reader session fixture seeding';
+    const sessionNow = Math.floor(Date.now() / 1_000);
+    const sessionFixtureIds = Array.from({ length: 27 }, () => crypto.randomUUID());
+    const sessionFixtureValues = sessionFixtureIds.map((id, index) => {
+      const timestamp = sessionNow - index;
+      return `('${id}', 'session-token-private-${String(index)}', '${regularDetailId}', ${String(timestamp)}, ${String(timestamp)}, ${String(sessionNow + 3_600)}, '198.51.100.${String(index + 1)}', 'session-user-agent-private-${String(index)}')`;
+    });
+    await sql(
+      `INSERT INTO session (id, token, user_id, created_at, updated_at, expires_at, ip_address, user_agent)
+       VALUES ${sessionFixtureValues.join(',')}`,
+    );
+    phase = 'Reader session safe HTTP projection';
+    const sessionsResponse = await http(
+      `/v1/admin/users/${encodeURIComponent(regularDetailId)}/sessions?limit=50`,
+      { headers: { cookie: cookieHeader } },
+    );
+    phase = `Reader session list HTTP status ${String(sessionsResponse.status)}`;
+    assert(sessionsResponse.status === 200, 'Reader session page is available through Admin API');
+    const sessionsText = await sessionsResponse.text();
+    phase = 'Reader session response privacy projection';
+    for (const secret of [
+      ...sessionFixtureIds,
+      ...sessionFixtureIds.map((_, index) => `session-token-private-${String(index)}`),
+      ...sessionFixtureIds.map((_, index) => `session-user-agent-private-${String(index)}`),
+      ...sessionFixtureIds.map((_, index) => `198.51.100.${String(index + 1)}`),
+    ]) {
+      assert(!sessionsText.includes(secret), 'session API never exposes IDs or connection data');
+    }
+    const sessionsPayload: unknown = JSON.parse(sessionsText);
+    const sessionsContract = AdminReaderSessionsSchema.safeParse(sessionsPayload);
+    phase = 'Reader session generated-contract projection';
+    if (!sessionsContract.success) {
+      phase = `session contract mismatch: ${sessionsContract.error.issues.map((issue) => issue.path.join('.')).join(',')}`;
+      assert(false, 'session page matches the generated Admin contract');
+    }
+    phase = 'Reader session projection safety assertions';
+    assert(
+      sessionsContract.data.items.length === sessionsContract.data.total &&
+        sessionsContract.data.total >= 27 &&
+        sessionsContract.data.items.every(
+          (session) =>
+            Object.keys(session).sort().join('|') === 'createdAt|expiresAt|selector|updatedAt',
+        ),
+      'session projection contains only safe fields for all active Reader sessions',
+    );
+    const firstFixtureSession = sessionsContract.data.items.find(
+      (session) => session.createdAt === new Date(sessionNow * 1_000).toISOString(),
+    );
+    const absentFixtureSession = sessionsContract.data.items.find(
+      (session) => session.createdAt === new Date((sessionNow - 1) * 1_000).toISOString(),
+    );
+    assert(
+      firstFixtureSession !== undefined && absentFixtureSession !== undefined,
+      'session fixtures are present in the newest-first page',
+    );
+    phase = 'Reader detail remains available after sessions fixture setup';
+    const postSessionFixtureDetail = await http(
+      `/v1/admin/users/${encodeURIComponent(regularDetailId)}`,
+      { headers: { cookie: cookieHeader } },
+    );
+    assert(
+      postSessionFixtureDetail.status === 200,
+      'Reader detail remains readable after session setup',
+    );
+    await postSessionFixtureDetail.arrayBuffer();
     phase = 'social fixture D1 seed';
     const socialAssociationIds = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
     const [noOpAssociation, facebookAssociation, finalGoogleAssociation] = socialAssociationIds;
@@ -1231,12 +1309,307 @@ export async function runAdminBrowserTest(): Promise<void> {
     await selectTab(page, 'Acceso');
     await page.getByText('Permitido', { exact: true }).waitFor();
     await page.getByText('Contraseña', { exact: false }).waitFor();
-    await page.getByRole('tab', { name: 'Sesiones', exact: true }).click();
+    const uiSessionsResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'GET' &&
+        new URL(response.url()).pathname === `/v1/admin/users/${regularDetailId}/sessions`,
+    );
+    await selectTab(page, 'Sesiones');
+    const uiSessionsResponseValue = await uiSessionsResponse;
+    phase = 'Reader session UI response contract';
+    assert(uiSessionsResponseValue.status() === 200, 'Sessions tab loads its own session list');
+    const uiSessionsPayload: unknown = await uiSessionsResponseValue.json();
+    const uiSessionsContract = AdminReaderSessionsSchema.safeParse(uiSessionsPayload);
+    assert(
+      uiSessionsContract.success,
+      'Sessions tab response matches the generated Admin contract',
+    );
+    const firstUiFixtureSession = uiSessionsContract.data.items.find(
+      (session) => session.createdAt === new Date(sessionNow * 1_000).toISOString(),
+    );
+    const absentUiFixtureSession = uiSessionsContract.data.items.find(
+      (session) => session.createdAt === new Date((sessionNow - 1) * 1_000).toISOString(),
+    );
+    assert(
+      firstUiFixtureSession !== undefined && absentUiFixtureSession !== undefined,
+      'UI session response contains both timestamp-correlated fixtures',
+    );
+    phase = 'Reader sessions list, pagination and privacy';
+    await page.getByRole('heading', { name: 'Sesiones Reader', exact: true }).waitFor();
     await page
-      .getByText('La consulta y gestión de sesiones estará disponible en una próxima entrega.', {
-        exact: true,
-      })
+      .getByText(`${String(sessionsContract.data.total)} sesiones activas`, { exact: true })
       .waitFor();
+    const sessionRows = page.locator('section[aria-labelledby="reader-sessions-title"] li');
+    await waitForLocatorCount(page, 'section[aria-labelledby="reader-sessions-title"] li', 25);
+    const sessionBody = await page.locator('body').innerText();
+    for (const secret of [
+      ...sessionFixtureIds,
+      ...sessionFixtureIds.map((_, index) => `session-token-private-${String(index)}`),
+      ...sessionFixtureIds.map((_, index) => `session-user-agent-private-${String(index)}`),
+      ...sessionFixtureIds.map((_, index) => `198.51.100.${String(index + 1)}`),
+    ]) {
+      assert(!sessionBody.includes(secret), 'session UI never renders IDs or connection details');
+    }
+    assert(
+      sessionBody.includes(firstUiFixtureSession.selector.slice(0, 7)) &&
+        sessionBody.includes('Última actualización') &&
+        sessionBody.includes('Creada') &&
+        sessionBody.includes('Expira'),
+      'session UI renders abbreviated selectors and only approved timestamps',
+    );
+    await page.getByRole('button', { name: 'Cargar más sesiones', exact: true }).click();
+    await waitForLocatorCount(
+      page,
+      'section[aria-labelledby="reader-sessions-title"] li',
+      sessionsContract.data.total,
+    );
+
+    phase = 'individual Reader session revoke confirmation and failure retry';
+    let failSessionRevokeOnce = true;
+    const sessionRevokeRequests: {
+      readonly url: string;
+      readonly headers: Record<string, string>;
+    }[] = [];
+    await page.route(
+      `**/v1/admin/users/${regularDetailId}/sessions/${firstUiFixtureSession.selector}`,
+      async (route) => {
+        sessionRevokeRequests.push({
+          url: route.request().url(),
+          headers: route.request().headers(),
+        });
+        if (failSessionRevokeOnce) {
+          failSessionRevokeOnce = false;
+          await route.fulfill({
+            status: 503,
+            contentType: 'application/problem+json',
+            body: JSON.stringify({
+              type: 'urn:problem:internal-error',
+              title: 'Internal Server Error',
+              status: 503,
+              code: 'internal-error',
+              detail: 'private-session-problem-detail',
+            }),
+          });
+        } else {
+          await route.continue();
+        }
+      },
+    );
+    let detailReadsAfterSessionMutation = 0;
+    let sessionReadsAfterSessionMutation = 0;
+    const countSessionRefresh = (request: BrowserRequest) => {
+      const url = new URL(request.url());
+      if (request.method() === 'GET' && url.pathname === `/v1/admin/users/${regularDetailId}`) {
+        detailReadsAfterSessionMutation++;
+      }
+      if (
+        request.method() === 'GET' &&
+        url.pathname === `/v1/admin/users/${regularDetailId}/sessions`
+      ) {
+        sessionReadsAfterSessionMutation++;
+      }
+    };
+    page.on('request', countSessionRefresh);
+    const firstSessionRow = sessionRows.filter({
+      hasText: `${firstUiFixtureSession.selector.slice(0, 7)}…${firstUiFixtureSession.selector.slice(-4)}`,
+    });
+    const firstSessionAction = firstSessionRow.getByRole('button', {
+      name: /^Revocar sesión /,
+    });
+    assert(
+      !(await firstSessionAction.isDisabled()),
+      'individual revoke is enabled when sessions exist',
+    );
+    await firstSessionAction.click();
+    const revokeOneDialog = page.getByRole('alertdialog', {
+      name: 'Confirmar revocación de sesión',
+    });
+    await revokeOneDialog.waitFor();
+    const revokeOneCopy = await revokeOneDialog.innerText();
+    assert(
+      revokeOneCopy.includes('Se revocará solo la sesión') &&
+        revokeOneCopy.includes('podrá iniciar sesión de nuevo si el acceso lo permite.') &&
+        !revokeOneCopy.includes('private-session-problem-detail'),
+      'individual confirmation describes one-session scope and future login semantics',
+    );
+    const sessionMutationBeforeConfirmation = sessionRevokeRequests.length;
+    assert(sessionMutationBeforeConfirmation === 0, 'individual revoke waits for confirmation');
+    await revokeOneDialog
+      .getByRole('button', { name: 'Confirmar revocación', exact: true })
+      .click();
+    await page
+      .getByText(
+        'No recibimos una respuesta definitiva. Reintenta la misma revocación para comprobar el resultado.',
+        { exact: true },
+      )
+      .waitFor();
+    assert(
+      !(await page.locator('body').innerText()).includes('private-session-problem-detail'),
+      'session failure detail is never rendered',
+    );
+    await page
+      .getByRole('button', { name: 'Reintentar revocación pendiente', exact: true })
+      .click();
+    const retrySessionDialog = page.getByRole('alertdialog', {
+      name: 'Confirmar revocación de sesión',
+    });
+    await retrySessionDialog.waitFor();
+    await retrySessionDialog.getByText(/misma revocación pendiente/).waitFor();
+    const successfulSessionRevoke = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'DELETE' &&
+        new URL(response.url()).pathname ===
+          `/v1/admin/users/${regularDetailId}/sessions/${firstUiFixtureSession.selector}`,
+    );
+    const refreshedSessionsResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'GET' &&
+        new URL(response.url()).pathname === `/v1/admin/users/${regularDetailId}/sessions`,
+    );
+    await retrySessionDialog
+      .getByRole('button', { name: 'Confirmar reintento', exact: true })
+      .click();
+    assert((await successfulSessionRevoke).status() === 200, 'individual session retry succeeds');
+    const refreshedSessionsResponseValue = await refreshedSessionsResponse;
+    assert(
+      refreshedSessionsResponseValue.status() === 200,
+      'successful revoke refreshes session list',
+    );
+    const refreshedSessionsPayload: unknown = await refreshedSessionsResponseValue.json();
+    const refreshedSessionsContract = AdminReaderSessionsSchema.safeParse(refreshedSessionsPayload);
+    assert(refreshedSessionsContract.success, 'refreshed session list matches Admin contract');
+    const refreshedAbsentUiFixtureSession = refreshedSessionsContract.data.items.find(
+      (session) => session.createdAt === new Date((sessionNow - 1) * 1_000).toISOString(),
+    );
+    assert(
+      refreshedAbsentUiFixtureSession !== undefined,
+      'refreshed UI list retains the absent-session fixture',
+    );
+    await page
+      .getByText(
+        'La sesión se revocó. El Reader podrá iniciar sesión de nuevo si el acceso lo permite.',
+        { exact: true },
+      )
+      .waitFor();
+    await firstSessionRow.waitFor({ state: 'detached' });
+    assert(
+      sessionRevokeRequests.length === 2 &&
+        sessionRevokeRequests[0]?.url === sessionRevokeRequests[1]?.url &&
+        sessionRevokeRequests.every(
+          ({ headers }) =>
+            headers['if-match'] === undefined && headers['idempotency-key'] === undefined,
+        ) &&
+        detailReadsAfterSessionMutation > 0 &&
+        sessionReadsAfterSessionMutation >= 2,
+      'retry repeats the same selector without mutation headers and refreshes sessions and Reader detail',
+    );
+    page.off('request', countSessionRefresh);
+    await page.unroute(
+      `**/v1/admin/users/${regularDetailId}/sessions/${firstUiFixtureSession.selector}`,
+    );
+
+    phase = 'absent Reader session no-op convergence';
+    const absentSessionRow = sessionRows.filter({
+      hasText: `${refreshedAbsentUiFixtureSession.selector.slice(0, 7)}…${refreshedAbsentUiFixtureSession.selector.slice(-4)}`,
+    });
+    const absentSessionId = sessionFixtureIds[1];
+    assert(absentSessionId !== undefined, 'absent session fixture ID exists');
+    await sql(
+      `DELETE FROM session WHERE id = '${absentSessionId}' AND user_id = '${regularDetailId}'`,
+    );
+    await absentSessionRow.getByRole('button', { name: /^Revocar sesión / }).click();
+    const absentSessionDialog = page.getByRole('alertdialog', {
+      name: 'Confirmar revocación de sesión',
+    });
+    await absentSessionDialog.waitFor();
+    const absentSessionResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'DELETE' &&
+        new URL(response.url()).pathname ===
+          `/v1/admin/users/${regularDetailId}/sessions/${refreshedAbsentUiFixtureSession.selector}`,
+    );
+    await absentSessionDialog
+      .getByRole('button', { name: 'Confirmar revocación', exact: true })
+      .click();
+    const absentSessionResponseValue = await absentSessionResponse;
+    assert(
+      absentSessionResponseValue.status() === 200,
+      'absent session selector converges with 200',
+    );
+    const absentSessionPayload: unknown = await absentSessionResponseValue.json();
+    const absentSessionResult = AdminReaderSessionRevocationSchema.safeParse(absentSessionPayload);
+    assert(
+      absentSessionResult.success && !absentSessionResult.data.changed,
+      'absent session result is the contract-validated no-op',
+    );
+    await absentSessionRow.waitFor({ state: 'detached' });
+    await page
+      .getByText('La sesión ya no estaba activa; el estado se actualizó.', { exact: true })
+      .waitFor();
+
+    phase = 'Reader revoke all and empty state';
+    const revokeAllButton = page.getByRole('button', {
+      name: 'Revocar todas las sesiones',
+      exact: true,
+    });
+    await revokeAllButton.click();
+    const revokeAllDialog = page.getByRole('alertdialog', {
+      name: 'Confirmar revocación de sesión',
+    });
+    await revokeAllDialog.waitFor();
+    const revokeAllCopy = await revokeAllDialog.innerText();
+    assert(
+      revokeAllCopy.includes('Se revocarán todas las sesiones activas del Reader.') &&
+        revokeAllCopy.includes('podrá iniciar sesión de nuevo si el acceso lo permite.'),
+      'revoke-all confirmation states scope and future login semantics',
+    );
+    const revokeAllResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'DELETE' &&
+        new URL(response.url()).pathname === `/v1/admin/users/${regularDetailId}/sessions`,
+    );
+    await revokeAllDialog
+      .getByRole('button', { name: 'Confirmar revocación', exact: true })
+      .click();
+    const revokeAllResponseValue = await revokeAllResponse;
+    assert(revokeAllResponseValue.status() === 200, 'revoke-all request succeeds');
+    const revokeAllPayload: unknown = await revokeAllResponseValue.json();
+    const revokeAllResult = AdminReaderSessionRevocationSchema.safeParse(revokeAllPayload);
+    assert(
+      revokeAllResult.success && revokeAllResult.data.changed,
+      'revoke-all response confirms a changed state',
+    );
+    await page.getByText('No hay sesiones Reader activas.', { exact: true }).waitFor();
+    await page
+      .getByText(
+        'Se revocaron las sesiones activas. El Reader podrá iniciar sesión de nuevo si el acceso lo permite.',
+        { exact: true },
+      )
+      .waitFor();
+    phase = `revoke-all refresh counts ${String(detailReadsAfterSessionMutation)}/${String(sessionReadsAfterSessionMutation)}`;
+    assert(
+      detailReadsAfterSessionMutation > 0 && sessionReadsAfterSessionMutation >= 3,
+      'revoke-all refreshes authoritative Reader detail and sessions',
+    );
+
+    await page.getByText('No hay sesiones Reader activas.', { exact: true }).waitFor();
+    const revokeAllWhenEmpty = page.getByRole('button', {
+      name: 'Revocar todas las sesiones',
+      exact: true,
+    });
+    assert(
+      await revokeAllWhenEmpty.isDisabled(),
+      'revoke-all is disabled when active total is zero',
+    );
+    const browserStorage = await page.evaluate<string>(
+      `JSON.stringify({ local: Object.values(localStorage), session: Object.values(sessionStorage) })`,
+    );
+    assert(
+      !browserStorage.includes('session-token-private') &&
+        !browserStorage.includes('private-session-problem-detail'),
+      'session token and private error detail never enter browser storage',
+    );
+    await page.getByRole('tab', { name: 'Ciclo de vida', exact: true }).click();
     await selectTab(page, 'Ciclo de vida');
     phase = 'deletion lifecycle panel visible';
     await page.getByRole('heading', { name: 'Solicitud de eliminación', exact: true }).waitFor();
@@ -1259,7 +1632,9 @@ export async function runAdminBrowserTest(): Promise<void> {
     const verifiedCard = page.locator('li').filter({ hasText: facebookAssociation });
     const socialRequestsBeforeConfirmation = { count: 0 };
     const countSocialRequest = (request: BrowserRequest) => {
-      if (request.url().includes('/social-identities/')) socialRequestsBeforeConfirmation.count++;
+      if (request.method() === 'DELETE' && request.url().includes('/social-identities/')) {
+        socialRequestsBeforeConfirmation.count++;
+      }
     };
     page.on('request', countSocialRequest);
     phase = 'open verified unlink confirmation';
@@ -1272,7 +1647,8 @@ export async function runAdminBrowserTest(): Promise<void> {
     });
     await noOpDialog.waitFor();
     phase = 'verify verified unlink copy';
-    const verifiedConfirmation = await noOpDialog.innerText();
+    const verifiedConfirmationText = await noOpDialog.innerText();
+    const verifiedConfirmation = verifiedConfirmationText.replace(/\s+/g, ' ').trim();
     assert(
       verifiedConfirmation.includes('revocarán todas las sesiones Reader.') &&
         verifiedConfirmation.includes(
@@ -1284,16 +1660,22 @@ export async function runAdminBrowserTest(): Promise<void> {
         !verifiedConfirmation.includes('secret-scope'),
       'verified unlink confirmation explains the notice condition without exposing account or provider details',
     );
+    phase = 'verify no social mutation before confirmation';
     assert(
       socialRequestsBeforeConfirmation.count === 0,
       'unlink does not send before confirmation',
     );
     await noOpDialog.getByRole('button', { name: 'Cancelar', exact: true }).click();
+    phase = 'set unverified Reader email fixture';
     await sql(`UPDATE "user" SET email_verified = 0 WHERE id = '${regularDetailId}'`);
+    phase = 'reload unverified Reader detail';
     await page.reload();
     await visible(page, 'Detalle de usuario');
+    await page.getByRole('tab', { name: 'Ciclo de vida', exact: true }).waitFor();
+    phase = 'select lifecycle for unverified Reader';
     await selectTab(page, 'Ciclo de vida');
     const unverifiedCard = page.locator('li').filter({ hasText: facebookAssociation });
+    phase = 'open unverified social unlink dialog';
     await unverifiedCard
       .getByRole('button', { name: 'Desvincular Social provider', exact: true })
       .click();
@@ -1301,7 +1683,8 @@ export async function runAdminBrowserTest(): Promise<void> {
       name: 'Confirmar desvinculación de Social provider',
     });
     await unverifiedDialog.waitFor();
-    const unverifiedConfirmation = await unverifiedDialog.innerText();
+    phase = 'verify unverified unlink copy';
+    const unverifiedConfirmation = (await unverifiedDialog.innerText()).replace(/\s+/g, ' ').trim();
     assert(
       unverifiedConfirmation.includes(
         'No se puede programar un aviso automático porque el correo canónico no está verificado.',
@@ -1312,36 +1695,70 @@ export async function runAdminBrowserTest(): Promise<void> {
         !unverifiedConfirmation.includes('secret-scope'),
       'unverified unlink confirmation states no automatic notice and exposes no account or provider details',
     );
+    phase = 'cancel unverified unlink confirmation';
     await unverifiedDialog.getByRole('button', { name: 'Cancelar', exact: true }).click();
+    phase = 'restore verified Reader email fixture';
     await sql(`UPDATE "user" SET email_verified = 1 WHERE id = '${regularDetailId}'`);
+    phase = 'reload verified Reader detail after unverified copy';
     await page.reload();
     await visible(page, 'Detalle de usuario');
+    await page.getByRole('tab', { name: 'Ciclo de vida', exact: true }).waitFor();
+    phase = 'select lifecycle after restoring verified email';
     await selectTab(page, 'Ciclo de vida');
+    phase = 'open no-op unlink confirmation';
     const noOpCard = page.locator('li').filter({ hasText: noOpAssociation });
     await noOpCard.getByRole('button', { name: 'Desvincular Google', exact: true }).click();
+    phase = 'wait for no-op unlink confirmation';
     const noOpConfirmation = page.getByRole('alertdialog', {
       name: 'Confirmar desvinculación de Google',
     });
     await noOpConfirmation.waitFor();
+    phase = 'delete social association during no-op confirmation';
     await sql(
       `DELETE FROM account WHERE id = '${noOpAssociation}' AND user_id = '${regularDetailId}'`,
     );
     const noOpRequest = page.waitForRequest(
       (request) =>
         request.method() === 'DELETE' &&
-        request.url().endsWith(`/social-identities/${noOpAssociation}`),
+        request.url() ===
+          new URL(
+            `/v1/admin/users/${encodeURIComponent(regularDetailId)}/social-identities/${encodeURIComponent(noOpAssociation)}`,
+            base,
+          ).toString(),
     );
     const noOpResponse = page.waitForResponse(
       (response) =>
         response.request().method() === 'DELETE' &&
-        response.url().endsWith(`/social-identities/${noOpAssociation}`),
+        response.url() ===
+          new URL(
+            `/v1/admin/users/${encodeURIComponent(regularDetailId)}/social-identities/${encodeURIComponent(noOpAssociation)}`,
+            base,
+          ).toString(),
     );
+    let noOpDetailRefreshes = 0;
+    const countNoOpDetailRefresh = (request: BrowserRequest) => {
+      const url = new URL(request.url());
+      if (request.method() === 'GET' && url.pathname === `/v1/admin/users/${regularDetailId}`) {
+        noOpDetailRefreshes++;
+      }
+    };
+    page.on('request', countNoOpDetailRefresh);
     await noOpConfirmation
       .getByRole('button', { name: 'Confirmar desvinculación de Google', exact: true })
-      .focus();
-    await page.keyboard.press('Enter');
+      .click();
+    phase = 'receive no-op social unlink response';
     const [noOpRequestValue, noOpResponseValue] = await Promise.all([noOpRequest, noOpResponse]);
+    phase = 'verify exact no-op social unlink URL';
     page.off('request', countSocialRequest);
+    const expectedNoOpUrl = new URL(
+      `/v1/admin/users/${encodeURIComponent(regularDetailId)}/social-identities/${encodeURIComponent(noOpAssociation)}`,
+      base,
+    ).toString();
+    assert(
+      noOpRequestValue.url() === expectedNoOpUrl && noOpResponseValue.url() === expectedNoOpUrl,
+      'no-op unlink uses the exact scoped DELETE URL',
+    );
+    phase = 'verify no-op social unlink response';
     assert(noOpResponseValue.status() === 200, 'missing association is an HTTP no-op');
     assert(
       noOpRequestValue.headers()['if-match'] === '"1"' &&
@@ -1357,12 +1774,18 @@ export async function runAdminBrowserTest(): Promise<void> {
         noOpResult.changed === false,
       'no-op is presented as changed false, never as a committed unlink',
     );
+    phase = 'wait for stable no-op message';
     await page
       .getByText('Esta asociación ya no estaba vinculada; no se aplicó ningún cambio.', {
         exact: true,
       })
       .waitFor();
+    phase = 'wait for no-op row removal';
     await noOpCard.waitFor({ state: 'detached' });
+    phase = 'verify no-op authoritative refresh';
+    assert(noOpDetailRefreshes > 0, 'no-op unlink refreshes authoritative Reader detail');
+    page.off('request', countNoOpDetailRefresh);
+    phase = 'verify stable no-op status';
     assert(
       await page
         .getByText('Esta asociación ya no estaba vinculada; no se aplicó ningún cambio.', {
@@ -1371,7 +1794,35 @@ export async function runAdminBrowserTest(): Promise<void> {
         .isVisible(),
       'no-op status survives removal of the stale association row',
     );
-    const readerSessionAfterNoOp = await http('/v1/me', { headers: { cookie: readerCookie } });
+    phase = 'verify no-op privacy';
+    const noOpBody = await page.locator('body').innerText();
+    phase = 'verify no-op privacy';
+    assert(
+      !noOpBody.includes('social-access-secret') &&
+        !noOpBody.includes('secret-scope') &&
+        !noOpBody.includes('external-google-a-secret'),
+      'no-op unlink status and refreshed detail expose no provider secrets',
+    );
+    phase = 'establish Reader session for no-op preservation check';
+    const readerSessionAfterNoOpLogin = await http('/v1/auth/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ email: regular, password }),
+    });
+    assert(
+      readerSessionAfterNoOpLogin.status === 200,
+      'Reader can sign in after session revocation',
+    );
+    const readerCookieAfterSessionRevoke = readerSessionAfterNoOpLogin.headers
+      .get('set-cookie')
+      ?.split(';')[0];
+    assert(
+      readerCookieAfterSessionRevoke !== undefined && readerCookieAfterSessionRevoke.length > 0,
+      'fresh Reader session cookie captured for no-op preservation check',
+    );
+    const readerSessionAfterNoOp = await http('/v1/me', {
+      headers: { cookie: readerCookieAfterSessionRevoke },
+    });
     assert(readerSessionAfterNoOp.status === 200, 'no-op leaves Reader session active');
     await readerSessionAfterNoOp.arrayBuffer();
     const noOpActivity = await http(
@@ -1583,6 +2034,7 @@ export async function runAdminBrowserTest(): Promise<void> {
     await activeReaderSession.arrayBuffer();
     await page.reload();
     await visible(page, 'Detalle de usuario');
+    await page.getByRole('tab', { name: 'Ciclo de vida', exact: true }).waitFor();
     await selectTab(page, 'Ciclo de vida');
     const unlinkKeys: string[] = [];
     const unlinkEtags: string[] = [];

@@ -338,6 +338,24 @@ describe('Reader social identity HTTP boundary', () => {
     expect(await replay.json()).toEqual({ associationId, changed: true, revision: 2 });
     expect(mailer.socialIdentityUnlinkNotices).toHaveLength(1);
     expect(await socialEventCount(reader.id, 'social-identity-unlinked')).toBe(1);
+    const socialLifecycle = await workerEnv.DB.prepare(
+      `SELECT metadata FROM identity_event WHERE subject_id=? AND type='social-identity-unlinked'`,
+    )
+      .bind(reader.id)
+      .first<{ metadata: string }>();
+    expect(JSON.parse(socialLifecycle?.metadata ?? '{}')).toMatchObject({
+      associationId,
+      provider: 'google',
+      revision: 2,
+      revokedSessionCount: 1,
+    });
+    expect(
+      await workerEnv.DB.prepare(
+        `SELECT count(*) AS total FROM identity_event WHERE subject_id=? AND type IN ('session-revoked','sessions-revoked')`,
+      )
+        .bind(reader.id)
+        .first<{ total: number }>(),
+    ).toEqual({ total: 0 });
 
     const activity = await request(`/v1/admin/users/${reader.id}/activity`, 'GET', {
       cookie: administratorCookie,
@@ -347,7 +365,7 @@ describe('Reader social identity HTTP boundary', () => {
       items: [
         expect.objectContaining({
           type: 'social-identity-unlinked',
-          metadata: { associationId, provider: 'google', revision: 2 },
+          metadata: { associationId, provider: 'google', revision: 2, revokedSessionCount: 1 },
         }),
       ],
     });
@@ -359,6 +377,7 @@ describe('Reader social identity HTTP boundary', () => {
     expect(auditBody).toContain('"associationId":"' + associationId + '"');
     expect(auditBody).toContain('"provider":"google"');
     expect(auditBody).toContain('"revision":2');
+    expect(auditBody).toContain('"revokedSessionCount":1');
     expect(auditBody).not.toContain('external-account');
     expect(auditBody).not.toContain('access-secret');
 
