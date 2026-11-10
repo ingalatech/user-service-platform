@@ -719,10 +719,17 @@ async function administratorInvitationAcceptance(
   const stored = await publicPage.evaluate(
     () => `${JSON.stringify(localStorage)} ${JSON.stringify(sessionStorage)}`,
   );
-  assert(!stored.includes(invitationToken), 'token is absent from local and session storage');
+  assert(
+    !stored.includes(invitationToken) && !stored.includes('Valid-Password-41!'),
+    'token and password are absent from local and session storage',
+  );
   assert(
     emitted.every((value) => !value.includes(invitationToken)),
     'token is absent from console and page errors',
+  );
+  assert(
+    emitted.every((value) => !value.includes('Valid-Password-41!')),
+    'password is absent from console and page errors',
   );
   assert(
     (await publicPage
@@ -1505,6 +1512,10 @@ export async function runAdminBrowserTest(): Promise<void> {
     const filteredResponse = await filteredAuditResponse;
     phase = 'global Administrative Audit response status';
     assert(filteredResponse.status() === 200, 'approved audit filters return 200');
+    assert(
+      filteredResponse.headers()['cache-control'] === 'private, no-store',
+      'browser-observed Administrative Audit is private and no-store',
+    );
     phase = 'global Administrative Audit response projection';
     const filteredAudit = (await filteredResponse.json()) as { items: { id: string }[] };
     phase = 'global Administrative Audit fixture selection';
@@ -1680,7 +1691,18 @@ export async function runAdminBrowserTest(): Promise<void> {
       assert(response.status === 201, 'list fixture created through public HTTP');
       await response.arrayBuffer();
     }
+    const usersListResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === 'GET' &&
+        new URL(response.url()).pathname === '/v1/admin/users',
+    );
     await page.goto(`${base}/admin/users`);
+    const usersListResponseValue = await usersListResponse;
+    assert(
+      usersListResponseValue.status() === 200 &&
+        usersListResponseValue.headers()['cache-control'] === 'private, no-store',
+      'browser-observed Reader list is private and no-store',
+    );
     await visible(page, 'Usuarios');
     await page.getByText('14 usuarios en total', { exact: true }).waitFor();
     await page.getByText('1-10 de 14', { exact: true }).waitFor();
