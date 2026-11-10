@@ -18,6 +18,67 @@ const artifactPath = resolve(
 );
 
 describe('generated OpenAPI artifact', () => {
+  it('matches the approved integrated Administrator route inventory without generic Better Auth routes', async () => {
+    const raw = await readFile(artifactPath, 'utf8');
+    const document = JSON.parse(raw) as {
+      paths: Record<string, Record<string, unknown>>;
+    };
+    const actual = Object.entries(document.paths)
+      .filter(([path]) => path.startsWith('/v1/admin'))
+      .flatMap(([path, operations]) =>
+        Object.keys(operations).map((method) => `${method.toUpperCase()} ${path}`),
+      )
+      .sort();
+    const approved = [
+      'POST /v1/admin/auth/invitations/inspect',
+      'POST /v1/admin/auth/invitations/accept',
+      'GET /v1/admin/administrator-invitations',
+      'POST /v1/admin/administrator-invitations',
+      'POST /v1/admin/administrator-invitations/{invitationId}/messages',
+      'DELETE /v1/admin/administrator-invitations/{invitationId}',
+      'GET /v1/admin/me',
+      'POST /v1/admin/auth/login',
+      'POST /v1/admin/auth/sign-out',
+      'POST /v1/admin/auth/verify-email',
+      'POST /v1/admin/auth/request-verification',
+      'POST /v1/admin/auth/request-password-reset',
+      'POST /v1/admin/auth/check-password-reset',
+      'POST /v1/admin/auth/reset-password',
+      'GET /v1/admin/users',
+      'GET /v1/admin/administrators',
+      'GET /v1/admin/administrators/{administratorId}',
+      'GET /v1/admin/administrators/{administratorId}/activity',
+      'PUT /v1/admin/administrators/{administratorId}/access',
+      'POST /v1/admin/administrators/{administratorId}/email-verification/messages',
+      'POST /v1/admin/administrators/{administratorId}/password-recovery/messages',
+      'GET /v1/admin/audit-events',
+      'GET /v1/admin/users/{userId}',
+      'GET /v1/admin/users/{userId}/activity',
+      'GET /v1/admin/users/{userId}/sessions',
+      'DELETE /v1/admin/users/{userId}/sessions',
+      'DELETE /v1/admin/users/{userId}/sessions/{sessionId}',
+      'PUT /v1/admin/users/{userId}/access',
+      'DELETE /v1/admin/users/{userId}/social-identities/{associationId}',
+      'PUT /v1/admin/users/{userId}/email-verification',
+      'POST /v1/admin/users/{userId}/email-verification/messages',
+      'POST /v1/admin/users/{userId}/password-recovery/messages',
+      'POST /v1/admin/users/{userId}/email-changes',
+      'POST /v1/admin/users/{userId}/email-changes/{emailChangeId}/messages',
+      'DELETE /v1/admin/users/{userId}/email-changes/{emailChangeId}',
+      'POST /v1/admin/users/{userId}/deletion-requests',
+      'PUT /v1/admin/users/{userId}/deletion-requests/{requestId}/status',
+      'GET /v1/admin/users/{userId}/account-details',
+      'PATCH /v1/admin/users/{userId}/account-details',
+      'POST /v1/admin/auth/bootstrap',
+    ].sort();
+
+    expect(actual).toEqual(approved);
+    expect(Object.keys(document.paths).some((path) => path.startsWith('/api/auth'))).toBe(false);
+    expect(Object.keys(document.paths).some((path) => path.startsWith('/v1/admin/api/auth'))).toBe(
+      false,
+    );
+  });
+
   it('publishes Administrator verification and recovery command contracts', async () => {
     const raw = await readFile(artifactPath, 'utf8');
     const document = JSON.parse(raw) as {

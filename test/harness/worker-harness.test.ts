@@ -38,4 +38,20 @@ describe('whole-Worker harness', () => {
     expect(body.code).toBe('unauthenticated');
     expect(body.status).toBe(401);
   });
+
+  it('routes the integrated Admin boundary through the materialized Worker without mounting Better Auth routes', async () => {
+    const adminUsers = await server.fetch('/v1/admin/users');
+
+    expect(adminUsers.status).toBe(401);
+    expect(adminUsers.headers.get('content-type')).toContain('application/problem+json');
+    expect(adminUsers.headers.get('cache-control')).toBe('private, no-store');
+    await expect(adminUsers.json()).resolves.toMatchObject({
+      code: 'unauthenticated',
+      status: 401,
+    });
+
+    const genericAuth = await server.fetch('/api/auth/session');
+    expect(genericAuth.status).toBe(404);
+    expect(genericAuth.headers.get('content-type')).toContain('application/problem+json');
+  });
 });
