@@ -279,6 +279,38 @@ export const administratorAccessState = sqliteTable('administrator_access_state'
   updatedAt: integer('updated_at').notNull(),
 });
 
+export const administratorInvitation = sqliteTable(
+  'administrator_invitation',
+  {
+    id: text('id').primaryKey(),
+    email: text('email').notNull(),
+    normalizedEmail: text('normalized_email').notNull(),
+    tokenDigest: text('token_digest').notNull().unique(),
+    state: text('state').notNull(),
+    revision: integer('revision').notNull().default(1),
+    expiresAt: integer('expires_at').notNull(),
+    cooldownUntil: integer('cooldown_until').notNull(),
+    sealedPayload: text('sealed_payload'),
+    claimToken: text('claim_token'),
+    claimExpiresAt: integer('claim_expires_at'),
+    createdBy: text('created_by').notNull(),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+    acceptedAt: integer('accepted_at'),
+  },
+  (table) => [
+    check(
+      'administrator_invitation_state_check',
+      sql`${table.state} IN ('pending', 'accepted', 'cancelled', 'superseded', 'expired')`,
+    ),
+    uniqueIndex('administrator_invitation_pending_email_idx')
+      .on(table.normalizedEmail)
+      .where(sql`${table.state} = 'pending'`),
+    index('administrator_invitation_state_created_idx').on(table.state, table.createdAt),
+    index('administrator_invitation_expiry_idx').on(table.expiresAt),
+  ],
+);
+
 export const administratorMessageWorkflow = sqliteTable(
   // One retained latest workflow per Administrator and message kind. `pending`
   // is an active scheduling claim; verification-token expiry does not expire

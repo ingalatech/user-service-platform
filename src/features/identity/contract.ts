@@ -360,13 +360,8 @@ export type SocialIdentityUnlinkedMetadata = z.infer<typeof SocialIdentityUnlink
 
 export const AdminAuditMetadataSchema = z
   .object({
+    operation: z.enum(['create', 'resend', 'cancel', 'force-email-verification']).optional(),
     changed: z.boolean().optional(),
-    operation: z
-      .string()
-      .min(1)
-      .max(64)
-      .regex(/^[a-z][a-z0-9-]*$/)
-      .optional(),
     revision: SocialIdentityUnlinkedMetadataSchema.shape.revision.optional(),
     associationId: SocialIdentityUnlinkedMetadataSchema.shape.associationId.optional(),
     provider: SocialIdentityUnlinkedMetadataSchema.shape.provider.optional(),
@@ -419,6 +414,7 @@ export const AdminAuditProblemCodeSchema = z
     'forbidden',
     'reader-not-found',
     'administrator-not-found',
+    'invitation-not-found',
     'administrator-disabled',
     'self-disable-forbidden',
     'last-operational-administrator',
@@ -488,7 +484,12 @@ export const AdminAuditEventSchema = z
     version: z.number().int().min(1),
     type: z.string().min(1).max(128),
     occurredAt: z.iso.datetime(),
-    actor: z.object({ id: z.string().min(1).max(128), realm: z.literal('administrator') }).strict(),
+    actor: z
+      .object({
+        id: z.string().min(1).max(128).optional(),
+        realm: z.enum(['administrator', 'anonymous']),
+      })
+      .strict(),
     subject: z
       .object({
         id: z.string().min(1).max(128),
@@ -524,6 +525,95 @@ export const AdminAdministratorAccessResultSchema = z
     revision: z.number().int().min(1),
   })
   .openapi('AdminAdministratorAccessResult');
+
+export const AdministratorInvitationStateSchema = z.enum([
+  'pending',
+  'accepted',
+  'cancelled',
+  'superseded',
+  'expired',
+]);
+export const AdminAdministratorInvitationSchema = z
+  .object({
+    id: z.string().min(1).max(128),
+    email: emailField,
+    state: AdministratorInvitationStateSchema,
+    expiresAt: z.iso.datetime(),
+    revision: z.number().int().min(1),
+    createdAt: z.iso.datetime(),
+  })
+  .strict()
+  .openapi('AdminAdministratorInvitation');
+export const AdminAdministratorInvitationListQuerySchema = z
+  .object({
+    state: AdministratorInvitationStateSchema.optional(),
+    limit: z.coerce.number().int().min(1).max(100).default(25),
+    offset: z.coerce.number().int().min(0).default(0),
+  })
+  .openapi('AdminAdministratorInvitationListQuery');
+export const AdminAdministratorInvitationListSchema = z
+  .object({
+    items: z.array(AdminAdministratorInvitationSchema),
+    total: z.number().int().min(0),
+  })
+  .strict()
+  .openapi('AdminAdministratorInvitationList');
+export const AdminAdministratorInvitationCreateSchema = z
+  .object({ email: emailField })
+  .strict()
+  .openapi('AdminAdministratorInvitationCreate');
+export const AdminAdministratorInvitationMessageSchema = z
+  .object({
+    id: z.string().min(1).max(128),
+    state: z.literal('scheduled'),
+    cooldownUntil: z.iso.datetime(),
+  })
+  .strict()
+  .openapi('AdminAdministratorInvitationMessage');
+export const PublicAdministratorInvitationInspectSchema = z
+  .object({
+    email: z.string().min(3).max(254),
+    state: AdministratorInvitationStateSchema,
+    expiresAt: z.iso.datetime(),
+  })
+  .strict()
+  .openapi('PublicAdministratorInvitationInspect');
+export const PublicAdministratorInvitationInspectRequestSchema = z
+  .object({ token: z.string().min(32).max(512) })
+  .strict()
+  .openapi('PublicAdministratorInvitationInspectRequest');
+export const PublicAdministratorInvitationAcceptRequestSchema = z
+  .object({
+    token: z.string().min(32).max(512),
+    name: z.string().trim().min(1).max(200),
+    password: passwordField,
+    passwordConfirmation: z.string().min(1).max(128),
+  })
+  .strict()
+  .openapi('PublicAdministratorInvitationAcceptRequest');
+export const PublicAdministratorInvitationAcceptSchema = z
+  .object({ accepted: z.literal(true) })
+  .strict()
+  .openapi('PublicAdministratorInvitationAccept');
+export type AdminAdministratorInvitation = z.infer<typeof AdminAdministratorInvitationSchema>;
+export type AdminAdministratorInvitationList = z.infer<
+  typeof AdminAdministratorInvitationListSchema
+>;
+export type AdminAdministratorInvitationListQuery = z.infer<
+  typeof AdminAdministratorInvitationListQuerySchema
+>;
+export type AdminAdministratorInvitationCreate = z.infer<
+  typeof AdminAdministratorInvitationCreateSchema
+>;
+export type AdminAdministratorInvitationMessage = z.infer<
+  typeof AdminAdministratorInvitationMessageSchema
+>;
+export type PublicAdministratorInvitationInspect = z.infer<
+  typeof PublicAdministratorInvitationInspectSchema
+>;
+export type PublicAdministratorInvitationAcceptRequest = z.infer<
+  typeof PublicAdministratorInvitationAcceptRequestSchema
+>;
 
 export const AdminReaderAccessRequestSchema = z
   .object({ state: z.enum(['active', 'disabled']) })

@@ -19,6 +19,92 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/admin/auth/invitations/inspect": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Inspect an Administrator invitation */
+        post: operations["inspectAdminAdministratorInvitation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/auth/invitations/accept": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Accept an Administrator invitation */
+        post: operations["acceptAdminAdministratorInvitation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/administrator-invitations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Administrator invitations */
+        get: operations["listAdminAdministratorInvitations"];
+        put?: never;
+        /** Create an Administrator invitation */
+        post: operations["createAdminAdministratorInvitation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/administrator-invitations/{invitationId}/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resend an Administrator invitation */
+        post: operations["resendAdminAdministratorInvitation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/admin/administrator-invitations/{invitationId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Cancel an Administrator invitation */
+        delete: operations["cancelAdminAdministratorInvitation"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/account-details": {
         parameters: {
             query?: never;
@@ -1022,12 +1108,12 @@ export interface components {
             /** @example /v1/does-not-exist */
             instance?: string;
         };
-        AccountDetails: {
-            firstName: string | null;
-            lastName: string | null;
-            birthDate: string | null;
-            phone: string | null;
-            image: string | null;
+        PublicAdministratorInvitationInspect: {
+            email: string;
+            /** @enum {string} */
+            state: "pending" | "accepted" | "cancelled" | "superseded" | "expired";
+            /** Format: date-time */
+            expiresAt: string;
         };
         IdentityProblemDetails: {
             /** @example urn:problem:not-found */
@@ -1056,6 +1142,60 @@ export interface components {
                 minDigits: number;
                 minSymbols: number;
             };
+        };
+        PublicAdministratorInvitationInspectRequest: {
+            token: string;
+        };
+        PublicAdministratorInvitationAccept: {
+            /** @enum {boolean} */
+            accepted: true;
+        };
+        PublicAdministratorInvitationAcceptRequest: {
+            token: string;
+            name: string;
+            /** @example Correct-horse-41 */
+            password: string;
+            passwordConfirmation: string;
+        };
+        AdminAdministratorInvitationList: {
+            items: components["schemas"]["AdminAdministratorInvitation"][];
+            total: number;
+        };
+        AdminAdministratorInvitation: {
+            id: string;
+            /**
+             * Format: email
+             * @example ada@example.com
+             */
+            email: string;
+            /** @enum {string} */
+            state: "pending" | "accepted" | "cancelled" | "superseded" | "expired";
+            /** Format: date-time */
+            expiresAt: string;
+            revision: number;
+            /** Format: date-time */
+            createdAt: string;
+        };
+        AdminAdministratorInvitationCreate: {
+            /**
+             * Format: email
+             * @example ada@example.com
+             */
+            email: string;
+        };
+        AdminAdministratorInvitationMessage: {
+            id: string;
+            /** @enum {string} */
+            state: "scheduled";
+            /** Format: date-time */
+            cooldownUntil: string;
+        };
+        AccountDetails: {
+            firstName: string | null;
+            lastName: string | null;
+            birthDate: string | null;
+            phone: string | null;
+            image: string | null;
         };
         UpdateAccountDetails: {
             firstName?: string | null;
@@ -1414,9 +1554,9 @@ export interface components {
             /** Format: date-time */
             occurredAt: string;
             actor: {
-                id: string;
+                id?: string;
                 /** @enum {string} */
-                realm: "administrator";
+                realm: "administrator" | "anonymous";
             };
             subject: {
                 id: string;
@@ -1430,10 +1570,11 @@ export interface components {
             metadata: components["schemas"]["AdminAuditMetadata"];
         };
         /** @enum {string|null} */
-        AdminAuditProblemCode: "bad-request" | "conflict" | "payload-too-large" | "service-unavailable" | "not-found" | "internal-error" | "registration-disabled" | "email-password-disabled" | "email-verification-required" | "invalid-credentials" | "verification-invalid" | "reset-invalid" | "unauthenticated" | "forbidden" | "reader-not-found" | "administrator-not-found" | "administrator-disabled" | "self-disable-forbidden" | "last-operational-administrator" | "invalid-transition" | "no-usable-login-method" | "idempotency-key-reused" | "stale-revision" | "precondition-required" | "cooldown-active" | "delivery-scheduling-failed" | "admin-already-bootstrapped" | "admin-bootstrap-in-progress" | "admin-email-conflict" | "same-email" | "email-conflict" | "email-change-not-found" | "active-deletion-request" | "deletion-request-not-found" | null;
+        AdminAuditProblemCode: "bad-request" | "conflict" | "payload-too-large" | "service-unavailable" | "not-found" | "internal-error" | "registration-disabled" | "email-password-disabled" | "email-verification-required" | "invalid-credentials" | "verification-invalid" | "reset-invalid" | "unauthenticated" | "forbidden" | "reader-not-found" | "administrator-not-found" | "invitation-not-found" | "administrator-disabled" | "self-disable-forbidden" | "last-operational-administrator" | "invalid-transition" | "no-usable-login-method" | "idempotency-key-reused" | "stale-revision" | "precondition-required" | "cooldown-active" | "delivery-scheduling-failed" | "admin-already-bootstrapped" | "admin-bootstrap-in-progress" | "admin-email-conflict" | "same-email" | "email-conflict" | "email-change-not-found" | "active-deletion-request" | "deletion-request-not-found" | null;
         AdminAuditMetadata: {
+            /** @enum {string} */
+            operation?: "create" | "resend" | "cancel" | "force-email-verification";
             changed?: boolean;
-            operation?: string;
             revision?: number;
             associationId?: string;
             /** @enum {string} */
@@ -1816,6 +1957,474 @@ export interface operations {
                 };
                 content: {
                     "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
+    inspectAdminAdministratorInvitation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["PublicAdministratorInvitationInspectRequest"];
+            };
+        };
+        responses: {
+            /** @description Safe invitation status. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicAdministratorInvitationInspect"];
+                };
+            };
+            /** @description bad-request: the token request is malformed. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description verification-invalid: no invitation matches the supplied token. Terminal workflows are returned with their public terminal state. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+        };
+    };
+    acceptAdminAdministratorInvitation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["PublicAdministratorInvitationAcceptRequest"];
+            };
+        };
+        responses: {
+            /** @description Invitation accepted without creating a session. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PublicAdministratorInvitationAccept"];
+                };
+            };
+            /** @description bad-request: the name or password confirmation is invalid, or the password does not meet policy. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description email-password-disabled: email/password authentication is disabled. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description verification-invalid: the invitation token is invalid or its workflow is terminal; those failure cases share this response. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description email-conflict: an Administrator already exists for the invited email. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description internal-error: the invitation could not be accepted. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+        };
+    };
+    listAdminAdministratorInvitations: {
+        parameters: {
+            query?: {
+                state?: "pending" | "accepted" | "cancelled" | "superseded" | "expired";
+                limit?: number;
+                offset?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Invitation history. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminAdministratorInvitationList"];
+                };
+            };
+            /** @description bad-request: the pagination or state query is invalid. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description unauthenticated: no authoritative Administrator session. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description forbidden or administrator-disabled: the session is not authorized for administration. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description internal-error: the invitation list could not be read. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+        };
+    };
+    createAdminAdministratorInvitation: {
+        parameters: {
+            query?: never;
+            header: {
+                "idempotency-key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": components["schemas"]["AdminAdministratorInvitationCreate"];
+            };
+        };
+        responses: {
+            /** @description Invitation created. */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminAdministratorInvitation"];
+                };
+            };
+            /** @description bad-request: the request body is invalid. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description unauthenticated: no authoritative Administrator session. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description forbidden or administrator-disabled: the session is not authorized or the request origin is not allowed. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description email-conflict: an Administrator or pending invitation already reserves this email; idempotency-key-reused: the key was used with a different request body. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description precondition-required: Idempotency-Key is required. */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description internal-error: the invitation could not be created or audited. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description delivery-scheduling-failed: invitation remains pending and the same key may retry scheduling. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+        };
+    };
+    resendAdminAdministratorInvitation: {
+        parameters: {
+            query?: never;
+            header: {
+                "idempotency-key": string;
+            };
+            path: {
+                invitationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "application/json": Record<string, never>;
+            };
+        };
+        responses: {
+            /** @description Invitation mail accepted for scheduling. */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminAdministratorInvitationMessage"];
+                };
+            };
+            /** @description bad-request: the path, headers, or empty request body is invalid. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description unauthenticated: no authoritative Administrator session. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description forbidden or administrator-disabled: the session is not authorized or the request origin is not allowed. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description invitation-not-found: no invitation exists for this identifier. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description invalid-transition: the invitation is not pending; idempotency-key-reused: the key was used with a different request body. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description precondition-required: Idempotency-Key is required. */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description cooldown-active: wait before requesting another invitation message. */
+            429: {
+                headers: {
+                    /** @description Seconds until this invitation can be resent. */
+                    "Retry-After"?: number;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description internal-error: the resend command could not be audited or completed. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description delivery-scheduling-failed: the invitation remains pending and the same idempotency key may be retried. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+        };
+    };
+    cancelAdminAdministratorInvitation: {
+        parameters: {
+            query?: never;
+            header: {
+                "if-match": string;
+                "idempotency-key": string;
+            };
+            path: {
+                invitationId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Invitation cancelled. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminAdministratorInvitation"];
+                };
+            };
+            /** @description bad-request: the path or headers are invalid. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description unauthenticated: no authoritative Administrator session. */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description forbidden or administrator-disabled: the session is not authorized or the request origin is not allowed. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description invitation-not-found: no invitation exists for this identifier. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description invalid-transition: the invitation is not pending; idempotency-key-reused: the key was used with a different request body. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description stale-revision: If-Match does not match the current invitation revision. */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description precondition-required: If-Match and Idempotency-Key are required. */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
+                };
+            };
+            /** @description internal-error: the cancellation command could not be audited or completed. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["IdentityProblemDetails"];
                 };
             };
         };
@@ -2769,6 +3378,7 @@ export interface operations {
             query?: never;
             header?: {
                 "if-match"?: string;
+                "idempotency-key"?: string;
             };
             path: {
                 administratorId: string;

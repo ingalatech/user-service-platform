@@ -26,7 +26,7 @@ describe('version manifests', () => {
       /BETTER_AUTH_SECRET|RESEND_API_KEY|SMTP_USER|SMTP_PASSWORD|secret-marker/,
     );
     expect(manifest.fingerprint).toBe(
-      '5ee006aad284b3c95efbe931644fd13743cbdb27de53a53a00dd8fe8a8f26810',
+      '1b76f0e165c1cb54ceb7371e213888c6140ff376d071b2fee039c0c10ad7d768',
     );
     expect(
       parseVersionManifest({
@@ -70,6 +70,16 @@ describe('version manifests', () => {
       buildVersionManifest({ ...SMTP_PROFILE, AUTH_MAIL_TRANSPORT: 'resend' }, PROVENANCE)
         .fingerprint,
     ).not.toBe(buildVersionManifest(SMTP_PROFILE, PROVENANCE).fingerprint);
+  });
+
+  it('changes the deterministic fingerprint when the invitation lifetime changes', () => {
+    const first = buildVersionManifest(SMTP_PROFILE, PROVENANCE).fingerprint;
+    const changed = buildVersionManifest(
+      { ...SMTP_PROFILE, ADMIN_INVITATION_TTL_SECONDS: '172800' },
+      PROVENANCE,
+    ).fingerprint;
+    expect(first).not.toBe(changed);
+    expect(first).toBe(buildVersionManifest(SMTP_PROFILE, PROVENANCE).fingerprint);
   });
 
   it('uses the frontend-compatible human version label', () => {

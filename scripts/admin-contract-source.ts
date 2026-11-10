@@ -3,8 +3,14 @@
 // schema implementations remain owned by Identity/Problem Details.
 export {
   AccountDetailsSchema,
+  AuthConfigSchema,
   AdminAdministratorAccessRequestSchema,
   AdminAdministratorAccessResultSchema,
+  AdminAdministratorInvitationSchema,
+  AdminAdministratorInvitationListQuerySchema,
+  AdminAdministratorInvitationListSchema,
+  AdminAdministratorInvitationCreateSchema,
+  AdminAdministratorInvitationMessageSchema,
   AdminAdministratorActivitySchema,
   AdminAdministratorDetailSchema,
   AdminAdministratorListQuerySchema,
@@ -46,6 +52,10 @@ export {
   AdminUserListQuerySchema,
   AdminUserListSchema,
   AdminUserSchema,
+  PublicAdministratorInvitationInspectRequestSchema,
+  PublicAdministratorInvitationInspectSchema,
+  PublicAdministratorInvitationAcceptRequestSchema,
+  PublicAdministratorInvitationAcceptSchema,
   LoginRequestSchema,
   UpdateAccountDetailsSchema,
 } from '../src/features/identity/contract.js';

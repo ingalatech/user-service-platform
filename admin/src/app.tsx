@@ -27,6 +27,7 @@ import { UsersEdit } from './users-edit.js';
 import { AdministratorsList } from './administrators-list.js';
 import { AdministratorsShow } from './administrators-show.js';
 import { AuditList } from './audit-list.js';
+import { AcceptAdministratorInvitation } from './administrator-invitations.js';
 
 const store = memoryStore();
 
@@ -198,6 +199,7 @@ export function App() {
       />
       <Resource name="audit" list={AuditList} options={{ label: 'Auditoría administrativa' }} />
       <CustomRoutes noLayout>
+        <Route path="/aceptar-invitacion" element={<AcceptAdministratorInvitation />} />
         <Route
           path="/administrators/:id"
           element={

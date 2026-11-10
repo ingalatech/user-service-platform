@@ -74,12 +74,17 @@ interface ResolvedSettings {
 
 export interface IdentityRuntime {
   readonly authPolicy: AuthPolicy;
+  readonly administratorInvitationTtlSeconds: number;
   authentication(): ReturnType<typeof createIdentityAuth>;
   administration(): ReturnType<typeof createAdministrationAuth>;
   readerMessaging(): ReturnType<typeof createIdentityAuth>;
   administratorMessaging(): ReturnType<typeof createAdministrationAuth>;
   sealPreparedReaderMessage(): Promise<string | null>;
   sealPreparedAdministratorMessage(): Promise<string | null>;
+  sealAdministratorInvitationMessage(message: {
+    to: string;
+    token: string;
+  }): Promise<string | null>;
   retryReaderMessageScheduling(
     payload: string,
   ): Promise<'accepted' | 'rejected' | 'invalid-envelope'>;
@@ -648,11 +653,27 @@ export function createIdentityRuntime(input: IdentityRuntimeInput) {
     get authPolicy() {
       return resolveSettings().policy;
     },
+    get administratorInvitationTtlSeconds() {
+      return Number(resolveSettings().effective.config.ADMIN_INVITATION_TTL_SECONDS);
+    },
     authentication: () => readerAuth('eager'),
     readerMessaging: () => readerAuth('synchronous'),
     administratorMessaging: () => adminAuth('synchronous'),
     sealPreparedReaderMessage: () => sealPreparedMessage('reader'),
     sealPreparedAdministratorMessage: () => sealPreparedMessage('administrator'),
+    sealAdministratorInvitationMessage: async (message) => {
+      try {
+        const authInput = resolveAuthInput('administrator', 'synchronous');
+        const url = new URL('/admin/aceptar-invitacion', authInput.baseURL);
+        url.searchParams.set('token', message.token);
+        return await sealAuthMailTask(
+          { kind: 'email-verification', message: { ...message, url: url.toString() } },
+          authInput.secret,
+        );
+      } catch {
+        return null;
+      }
+    },
     retryReaderMessageScheduling: (payload) => retryMessageScheduling('reader', payload),
     retryAdministratorMessageScheduling: (payload) =>
       retryMessageScheduling('administrator', payload),

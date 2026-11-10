@@ -51,6 +51,13 @@ const ADMIN_AUDIT_EVENT_ALLOWLIST = [
   { version: 1, type: 'deletion-cancelled' },
   { version: 1, type: 'password-recovery-attempt' },
   { version: 1, type: 'password-recovery-requested' },
+  { version: 1, type: 'administrator-invitation-created' },
+  { version: 1, type: 'administrator-invitation-attempt' },
+  { version: 1, type: 'administrator-invitation-command-attempt' },
+  { version: 1, type: 'administrator-invitation-resent' },
+  { version: 1, type: 'administrator-invitation-cancelled' },
+  { version: 1, type: 'administrator-invitation-expired' },
+  { version: 1, type: 'administrator-invitation-accepted' },
 ] as const;
 
 const PROBLEM_CODE_SET = new Set<string>(AdminAuditProblemCodeSchema.options);
@@ -81,6 +88,8 @@ const METADATA_FIELDS_BY_TYPE: Readonly<Record<string, readonly string[]>> = {
   'deletion-cancelled': ['previousAccessState', 'revision', 'state', 'workflowId'],
   'password-recovery-attempt': ['retryAfterSeconds', 'state'],
   'password-recovery-requested': ['workflowId'],
+  'administrator-invitation-attempt': [],
+  'administrator-invitation-command-attempt': ['operation', 'retryAfterSeconds', 'revision'],
 };
 
 interface AuditCursor {
@@ -252,12 +261,20 @@ function safeProblemCode(value: string | null): AdminAuditProblemCode | null {
 }
 
 function projectEvent(row: AuditRow): AdminAuditEvent | null {
+  const actor =
+    row.actor_realm === 'administrator' && isOpaqueIdentifier(row.actor_id)
+      ? { id: row.actor_id, realm: 'administrator' as const }
+      : row.actor_realm === 'anonymous' &&
+          row.actor_id === 'anonymous' &&
+          row.type === 'administrator-invitation-attempt'
+        ? { realm: 'anonymous' as const }
+        : null;
   if (
     !ADMIN_AUDIT_EVENT_ALLOWLIST.some(
       (event) => event.version === row.version && event.type === row.type,
     ) ||
     !isOpaqueIdentifier(row.id) ||
-    !isOpaqueIdentifier(row.actor_id) ||
+    actor === null ||
     !isOpaqueIdentifier(row.request_id) ||
     !/^[a-z][a-z0-9.-]{0,127}$/.test(row.type) ||
     !Number.isSafeInteger(row.version) ||
@@ -276,7 +293,7 @@ function projectEvent(row: AuditRow): AdminAuditEvent | null {
     version: row.version,
     type: row.type,
     occurredAt: new Date(row.occurred_at).toISOString(),
-    actor: { id: row.actor_id, realm: 'administrator' },
+    actor,
     subject,
     result: row.result,
     requestId: row.request_id,
@@ -294,7 +311,7 @@ async function fetchAuditRows(input: {
   readonly limit: number;
 }): Promise<AuditRow[]> {
   const conditions = [
-    "actor_realm = 'administrator'",
+    "(actor_realm = 'administrator' OR (actor_realm = 'anonymous' AND actor_id = 'anonymous' AND type = 'administrator-invitation-attempt'))",
     "result IN ('success', 'failure')",
     // These two fields form the cursor key. Keep them safe before encoding a
     // continuation; all other shape failures are handled by projectEvent and

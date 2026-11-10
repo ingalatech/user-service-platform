@@ -130,6 +130,12 @@ function validateProfile(config: NonSecretProfile): void {
       'Configuration error: AUTH_EMAIL_VERIFICATION_TTL_SECONDS must be a positive integer.',
     );
   }
+  const invitationTTL = Number(config.ADMIN_INVITATION_TTL_SECONDS.trim());
+  if (!Number.isSafeInteger(invitationTTL) || invitationTTL < 60 || invitationTTL > 2_592_000) {
+    throw new Error(
+      'Configuration error: ADMIN_INVITATION_TTL_SECONDS must be an integer from 60 to 2592000.',
+    );
+  }
   for (const [name, value] of [
     ['AUTH_PASSWORD_MIN_LENGTH', config.AUTH_PASSWORD_MIN_LENGTH],
     ['AUTH_PASSWORD_MAX_LENGTH', config.AUTH_PASSWORD_MAX_LENGTH],

@@ -240,6 +240,25 @@ describe('resolveEffectiveConfig', () => {
     ).toThrow(/AUTH_REQUIRE_EMAIL_VERIFICATION/);
   });
 
+  it('defaults Administrator invitations to 24 hours and rejects unsafe TTL values', () => {
+    expect(
+      resolveEffectiveConfig({ environment: 'local', runtime: {} }).config
+        .ADMIN_INVITATION_TTL_SECONDS,
+    ).toBe('86400');
+    expect(() =>
+      resolveEffectiveConfig({
+        environment: 'local',
+        runtime: { ADMIN_INVITATION_TTL_SECONDS: '0' },
+      }),
+    ).toThrow(/ADMIN_INVITATION_TTL_SECONDS/);
+    expect(() =>
+      resolveEffectiveConfig({
+        environment: 'local',
+        runtime: { ADMIN_INVITATION_TTL_SECONDS: 'not-a-number' },
+      }),
+    ).toThrow(/ADMIN_INVITATION_TTL_SECONDS/);
+  });
+
   it('rejects password category minima whose combined requirement cannot fit', () => {
     expect(() =>
       resolveEffectiveConfig({

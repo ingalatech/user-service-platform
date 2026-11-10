@@ -11,6 +11,15 @@ import {
   AdminAdministratorActivitySchema,
   AdminAdministratorAccessRequestSchema,
   AdminAdministratorAccessResultSchema,
+  AdminAdministratorInvitationListQuerySchema,
+  AdminAdministratorInvitationListSchema,
+  AdminAdministratorInvitationCreateSchema,
+  AdminAdministratorInvitationSchema,
+  AdminAdministratorInvitationMessageSchema,
+  PublicAdministratorInvitationInspectRequestSchema,
+  PublicAdministratorInvitationInspectSchema,
+  PublicAdministratorInvitationAcceptRequestSchema,
+  PublicAdministratorInvitationAcceptSchema,
   AdminAdministratorMessageRequestSchema,
   AdminAdministratorMessageSchema,
   AdminAuditEventsQuerySchema,
@@ -81,12 +90,129 @@ const adminReaderSocialIdentityHeaders = z
   .openapi('AdminReaderSocialIdentityHeaders');
 
 const adminAdministratorIfMatchHeaders = z
-  .object({ 'if-match': z.string().min(1).max(128).optional() })
+  .object({
+    'if-match': z.string().min(1).max(128).optional(),
+    'idempotency-key': z.string().min(1).max(128).optional(),
+  })
   .openapi('AdminAdministratorIfMatchHeaders');
 
 const adminAdministratorMessageHeaders = z
   .object({ 'idempotency-key': z.string().min(1).max(128).optional() })
   .openapi('AdminAdministratorMessageHeaders');
+const adminAdministratorInvitationHeaders = z
+  .object({
+    'idempotency-key': z
+      .string()
+      .min(1)
+      .max(128)
+      .optional()
+      .openapi({ param: { in: 'header', required: true } }),
+  })
+  .openapi('AdminAdministratorInvitationHeaders');
+const adminAdministratorInvitationCancelHeaders = z
+  .object({
+    'if-match': z
+      .string()
+      .min(1)
+      .max(128)
+      .optional()
+      .openapi({ param: { in: 'header', required: true } }),
+    'idempotency-key': z
+      .string()
+      .min(1)
+      .max(128)
+      .optional()
+      .openapi({ param: { in: 'header', required: true } }),
+  })
+  .openapi('AdminAdministratorInvitationCancelHeaders');
+
+const invitationProblem = (description: string) => ({
+  content: { 'application/problem+json': { schema: IdentityProblemDetailsSchema } },
+  description,
+});
+const adminInvitationListProblems = {
+  400: invitationProblem('bad-request: the pagination or state query is invalid.'),
+  401: invitationProblem('unauthenticated: no authoritative Administrator session.'),
+  403: invitationProblem(
+    'forbidden or administrator-disabled: the session is not authorized for administration.',
+  ),
+  500: invitationProblem('internal-error: the invitation list could not be read.'),
+} as const;
+const adminInvitationCreateProblems = {
+  400: invitationProblem('bad-request: the request body is invalid.'),
+  401: invitationProblem('unauthenticated: no authoritative Administrator session.'),
+  403: invitationProblem(
+    'forbidden or administrator-disabled: the session is not authorized or the request origin is not allowed.',
+  ),
+  409: invitationProblem(
+    'email-conflict: an Administrator or pending invitation already reserves this email; idempotency-key-reused: the key was used with a different request body.',
+  ),
+  428: invitationProblem('precondition-required: Idempotency-Key is required.'),
+  500: invitationProblem('internal-error: the invitation could not be created or audited.'),
+  503: invitationProblem(
+    'delivery-scheduling-failed: invitation remains pending and the same key may retry scheduling.',
+  ),
+} as const;
+const adminInvitationResendProblems = {
+  400: invitationProblem('bad-request: the path, headers, or empty request body is invalid.'),
+  401: invitationProblem('unauthenticated: no authoritative Administrator session.'),
+  403: invitationProblem(
+    'forbidden or administrator-disabled: the session is not authorized or the request origin is not allowed.',
+  ),
+  404: invitationProblem('invitation-not-found: no invitation exists for this identifier.'),
+  409: invitationProblem(
+    'invalid-transition: the invitation is not pending; idempotency-key-reused: the key was used with a different request body.',
+  ),
+  428: invitationProblem('precondition-required: Idempotency-Key is required.'),
+  429: {
+    ...invitationProblem('cooldown-active: wait before requesting another invitation message.'),
+    headers: {
+      'Retry-After': {
+        description: 'Seconds until this invitation can be resent.',
+        schema: { type: 'integer', minimum: 1 },
+      },
+    },
+  },
+  500: invitationProblem('internal-error: the resend command could not be audited or completed.'),
+  503: invitationProblem(
+    'delivery-scheduling-failed: the invitation remains pending and the same idempotency key may be retried.',
+  ),
+} as const;
+const adminInvitationCancelProblems = {
+  400: invitationProblem('bad-request: the path or headers are invalid.'),
+  401: invitationProblem('unauthenticated: no authoritative Administrator session.'),
+  403: invitationProblem(
+    'forbidden or administrator-disabled: the session is not authorized or the request origin is not allowed.',
+  ),
+  404: invitationProblem('invitation-not-found: no invitation exists for this identifier.'),
+  409: invitationProblem(
+    'invalid-transition: the invitation is not pending; idempotency-key-reused: the key was used with a different request body.',
+  ),
+  412: invitationProblem(
+    'stale-revision: If-Match does not match the current invitation revision.',
+  ),
+  428: invitationProblem('precondition-required: If-Match and Idempotency-Key are required.'),
+  500: invitationProblem(
+    'internal-error: the cancellation command could not be audited or completed.',
+  ),
+} as const;
+const publicInvitationInspectProblems = {
+  400: invitationProblem('bad-request: the token request is malformed.'),
+  404: invitationProblem(
+    'verification-invalid: no invitation matches the supplied token. Terminal workflows are returned with their public terminal state.',
+  ),
+} as const;
+const publicInvitationAcceptProblems = {
+  400: invitationProblem(
+    'bad-request: the name or password confirmation is invalid, or the password does not meet policy.',
+  ),
+  403: invitationProblem('email-password-disabled: email/password authentication is disabled.'),
+  404: invitationProblem(
+    'verification-invalid: the invitation token is invalid or its workflow is terminal; those failure cases share this response.',
+  ),
+  409: invitationProblem('email-conflict: an Administrator already exists for the invited email.'),
+  500: invitationProblem('internal-error: the invitation could not be accepted.'),
+} as const;
 
 const adminReaderMessageHeaders = z
   .object({ 'idempotency-key': z.string().min(1).max(128).optional() })
@@ -754,6 +880,117 @@ export const adminAdministratorAccessRoute = createRoute({
       description: 'The committed Administrator access state.',
     },
     ...adminReaderCommandResponses,
+  },
+});
+
+export const adminAdministratorInvitationsRoute = createRoute({
+  method: 'get',
+  path: '/admin/administrator-invitations',
+  operationId: 'listAdminAdministratorInvitations',
+  summary: 'List Administrator invitations',
+  tags: ['admin'],
+  request: { query: AdminAdministratorInvitationListQuerySchema },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: AdminAdministratorInvitationListSchema } },
+      description: 'Invitation history.',
+    },
+    ...adminInvitationListProblems,
+  },
+});
+export const adminAdministratorInvitationCreateRoute = createRoute({
+  method: 'post',
+  path: '/admin/administrator-invitations',
+  operationId: 'createAdminAdministratorInvitation',
+  summary: 'Create an Administrator invitation',
+  tags: ['admin'],
+  request: {
+    headers: adminAdministratorInvitationHeaders,
+    body: { content: { 'application/json': { schema: AdminAdministratorInvitationCreateSchema } } },
+  },
+  responses: {
+    201: {
+      content: { 'application/json': { schema: AdminAdministratorInvitationSchema } },
+      description: 'Invitation created.',
+    },
+    ...adminInvitationCreateProblems,
+  },
+});
+export const adminAdministratorInvitationResendRoute = createRoute({
+  method: 'post',
+  path: '/admin/administrator-invitations/{invitationId}/messages',
+  operationId: 'resendAdminAdministratorInvitation',
+  summary: 'Resend an Administrator invitation',
+  tags: ['admin'],
+  request: {
+    params: z.object({ invitationId: z.string().min(1).max(128) }),
+    headers: adminAdministratorInvitationHeaders,
+    body: { content: { 'application/json': { schema: z.object({}).strict() } } },
+  },
+  responses: {
+    202: {
+      content: { 'application/json': { schema: AdminAdministratorInvitationMessageSchema } },
+      description: 'Invitation mail accepted for scheduling.',
+    },
+    ...adminInvitationResendProblems,
+  },
+});
+export const adminAdministratorInvitationCancelRoute = createRoute({
+  method: 'delete',
+  path: '/admin/administrator-invitations/{invitationId}',
+  operationId: 'cancelAdminAdministratorInvitation',
+  summary: 'Cancel an Administrator invitation',
+  tags: ['admin'],
+  request: {
+    params: z.object({ invitationId: z.string().min(1).max(128) }),
+    headers: adminAdministratorInvitationCancelHeaders,
+  },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: AdminAdministratorInvitationSchema } },
+      description: 'Invitation cancelled.',
+    },
+    ...adminInvitationCancelProblems,
+  },
+});
+export const publicAdministratorInvitationInspectRoute = createRoute({
+  method: 'post',
+  path: '/admin/auth/invitations/inspect',
+  operationId: 'inspectAdminAdministratorInvitation',
+  summary: 'Inspect an Administrator invitation',
+  tags: ['identity'],
+  request: {
+    body: {
+      content: {
+        'application/json': { schema: PublicAdministratorInvitationInspectRequestSchema },
+      },
+    },
+  },
+  responses: {
+    200: {
+      content: { 'application/json': { schema: PublicAdministratorInvitationInspectSchema } },
+      description: 'Safe invitation status.',
+    },
+    ...publicInvitationInspectProblems,
+  },
+});
+export const publicAdministratorInvitationAcceptRoute = createRoute({
+  method: 'post',
+  path: '/admin/auth/invitations/accept',
+  operationId: 'acceptAdminAdministratorInvitation',
+  summary: 'Accept an Administrator invitation',
+  tags: ['identity'],
+  request: {
+    body: {
+      content: { 'application/json': { schema: PublicAdministratorInvitationAcceptRequestSchema } },
+    },
+  },
+  responses: {
+    201: {
+      content: { 'application/json': { schema: PublicAdministratorInvitationAcceptSchema } },
+      description: 'Invitation accepted without creating a session.',
+    },
+    ...publicInvitationAcceptProblems,
   },
 });
 
