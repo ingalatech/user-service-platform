@@ -7,6 +7,7 @@ import { List } from './kit/components/admin/list.js';
 import { ListPagination } from './kit/components/admin/list-pagination.js';
 import { SearchInput } from './kit/components/admin/search-input.js';
 import { Button, buttonVariants } from './kit/components/ui/button.js';
+import { AdministratorInvitations } from './administrator-invitations.js';
 
 const perPage = 10;
 
@@ -96,16 +97,19 @@ function AdministratorsListContent() {
 
 export function AdministratorsList() {
   return (
-    <List
-      title="Administradores"
-      perPage={perPage}
-      sort={{ field: 'email', order: 'ASC' }}
-      filters={filters}
-      actions={false}
-      pagination={<ListPagination rowsPerPageOptions={[perPage]} />}
-      queryOptions={{ retry: false, staleTime: 0 }}
-    >
-      <AdministratorsListContent />
-    </List>
+    <div className="space-y-8">
+      <AdministratorInvitations />
+      <List
+        title="Administradores"
+        perPage={perPage}
+        sort={{ field: 'email', order: 'ASC' }}
+        filters={filters}
+        actions={false}
+        pagination={<ListPagination rowsPerPageOptions={[perPage]} />}
+        queryOptions={{ retry: false, staleTime: 0 }}
+      >
+        <AdministratorsListContent />
+      </List>
+    </div>
   );
 }

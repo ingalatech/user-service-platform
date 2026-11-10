@@ -56,14 +56,20 @@ async function availablePort(): Promise<number> {
   return port;
 }
 
-function startFrontend(port: number): Promise<HttpServer> {
+export function startFrontend(): Promise<HttpServer> {
   const server = createHttpServer((_request, response) => {
     response.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
     response.end('<!doctype html><meta charset="utf-8"><title>Editorial</title><h1>Editorial</h1>');
   });
   return new Promise<HttpServer>((done, reject) => {
-    server.once('error', reject);
-    server.listen(port, '127.0.0.1', () => {
+    let listening = false;
+    server.on('error', (error) => {
+      // Keep an error listener installed after startup so a later server error
+      // cannot become an unhandled EventEmitter error.
+      if (!listening) reject(error);
+    });
+    server.listen(0, '127.0.0.1', () => {
+      listening = true;
       done(server);
     });
   });
@@ -157,10 +163,15 @@ export async function runConsumerCorsBrowserTest(
   let frontend: HttpServer | undefined;
   let diagnosticPage: Page | undefined;
   let phase = 'setup';
-  const frontendPort = await availablePort();
-  const frontendBase = `http://www.rc.test:${String(frontendPort)}`;
-  const hostileBase = `http://evil.rc.test:${String(frontendPort)}`;
   try {
+    phase = 'frontend origin';
+    frontend = await startFrontend();
+    const address = frontend.address();
+    assert(address !== null && typeof address !== 'string', 'frontend TCP address allocated');
+    const frontendPort = address.port;
+    const frontendBase = `http://www.rc.test:${String(frontendPort)}`;
+    const hostileBase = `http://evil.rc.test:${String(frontendPort)}`;
+
     const config = join(state, 'wrangler.jsonc');
     const persist = join(state, 'd1');
     const envFile = join(state, '.env');
@@ -208,7 +219,9 @@ export default {
     // A unique inspector port keeps this Worker from colliding with another
     // Wrangler dev instance in the same harness run (the pinned default
     // inspector port is shared, so two concurrent browser tests would make
-    // one Worker exit immediately).
+    // one Worker exit immediately). These Wrangler-owned ports still have a
+    // probe/release gap: Wrangler must bind them itself, so they cannot be
+    // safely reserved and transferred by this harness.
     const inspectorPort = await availablePort();
     const base = `http://127.0.0.1:${String(port)}`;
     const serviceBase = `http://service.rc.test:${String(port)}`;
@@ -254,9 +267,6 @@ export default {
 
     const email = 'consumer-browser@example.com';
     const password = 'Isolated-consumer-credential-41';
-
-    phase = 'frontend origin';
-    frontend = await startFrontend(frontendPort);
 
     phase = 'browser';
     const executablePath = [

@@ -98,6 +98,8 @@ export interface Env {
   // consumer origin: same-origin-only. Wildcards, null and arbitrary
   // reflection are never granted.
   AUTH_CONSUMER_ORIGINS?: string;
+  // Administrator invitation lifetime, in seconds; defaults to 86400.
+  ADMIN_INVITATION_TTL_SECONDS?: string;
   // Provider-neutral SMTP transactional-mail configuration (ticket #58).
   // Host, port and TLS mode are deployment configuration; the authentication
   // credentials are secrets supplied via the ignored local `.env` or

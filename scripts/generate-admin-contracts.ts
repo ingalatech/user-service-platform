@@ -143,6 +143,11 @@ export type AdminAdministratorDetail = components['schemas']['AdminAdministrator
 export type AdminAdministratorActivity = components['schemas']['AdminAdministratorActivity'];
 export type AdminAdministratorAccessRequest = components['schemas']['AdminAdministratorAccessRequest'];
 export type AdminAdministratorAccessResult = components['schemas']['AdminAdministratorAccessResult'];
+export type AdminAdministratorInvitation = components['schemas']['AdminAdministratorInvitation'];
+export type AdminAdministratorInvitationList = components['schemas']['AdminAdministratorInvitationList'];
+export type AdminAdministratorInvitationListQuery = components['schemas']['AdminAdministratorInvitationListQuery'];
+export type AdminAdministratorInvitationCreate = components['schemas']['AdminAdministratorInvitationCreate'];
+export type AdminAdministratorInvitationMessage = components['schemas']['AdminAdministratorInvitationMessage'];
 export type AdminAdministratorList = components['schemas']['AdminAdministratorList'];
 export type AdminAdministratorMessage = components['schemas']['AdminAdministratorMessage'];
 export type AdminAdministratorMessageRequest = components['schemas']['AdminAdministratorMessageRequest'];
@@ -182,8 +187,14 @@ export type AdminReaderMessage = components['schemas']['AdminReaderMessage'];
 export type AdminReaderMessageRequest = components['schemas']['AdminReaderMessageRequest'];
 export type AdminUserList = components['schemas']['AdminUserList'];
 export type AccountDetails = components['schemas']['AccountDetails'];
+export type AuthConfig = components['schemas']['AuthConfig'];
+export type PasswordPolicy = components['schemas']['PasswordPolicy'];
 export type UpdateAccountDetails = components['schemas']['UpdateAccountDetails'];
 export type LoginRequest = components['schemas']['LoginRequest'];
+export type PublicAdministratorInvitationInspect = components['schemas']['PublicAdministratorInvitationInspect'];
+export type PublicAdministratorInvitationInspectRequest = components['schemas']['PublicAdministratorInvitationInspectRequest'];
+export type PublicAdministratorInvitationAccept = components['schemas']['PublicAdministratorInvitationAccept'];
+export type PublicAdministratorInvitationAcceptRequest = components['schemas']['PublicAdministratorInvitationAcceptRequest'];
 export type ProblemDetails = components['schemas']['ProblemDetails'];
 
 type AdminUserListQueryParameters = NonNullable<
@@ -235,6 +246,11 @@ export declare const AdminAdministratorDetailSchema: ZodType<AdminAdministratorD
 export declare const AdminAdministratorActivitySchema: ZodType<AdminAdministratorActivity>;
 export declare const AdminAdministratorAccessRequestSchema: ZodType<AdminAdministratorAccessRequest>;
 export declare const AdminAdministratorAccessResultSchema: ZodType<AdminAdministratorAccessResult>;
+export declare const AdminAdministratorInvitationSchema: ZodType<AdminAdministratorInvitation>;
+export declare const AdminAdministratorInvitationListQuerySchema: ZodType<components['schemas']['AdminAdministratorInvitationListQuery']>;
+export declare const AdminAdministratorInvitationListSchema: ZodType<AdminAdministratorInvitationList>;
+export declare const AdminAdministratorInvitationCreateSchema: ZodType<AdminAdministratorInvitationCreate>;
+export declare const AdminAdministratorInvitationMessageSchema: ZodType<AdminAdministratorInvitationMessage>;
 export declare const AdminAdministratorListSchema: ZodType<AdminAdministratorList>;
 export declare const AdminAdministratorMessageSchema: ZodType<AdminAdministratorMessage>;
 export declare const AdminAdministratorMessageRequestSchema: ZodType<AdminAdministratorMessageRequest>;
@@ -268,11 +284,16 @@ export declare const AdminReaderEmailChangeParamsSchema: ZodType<AdminReaderEmai
 export declare const AdminReaderMessageSchema: ZodType<AdminReaderMessage>;
 export declare const AdminReaderMessageRequestSchema: ZodType<AdminReaderMessageRequest>;
 export declare const AccountDetailsSchema: ZodType<AccountDetails>;
+export declare const AuthConfigSchema: ZodType<AuthConfig>;
 export declare const AdminUserDetailParamsSchema: ZodType<AdminUserDetailParams>;
 export declare const AdminUserSchema: ZodType<AdminUser>;
 export declare const AdminUserListSchema: ZodType<AdminUserList>;
 export declare const AdminUserListQuerySchema: ZodType<AdminUserListQuery>;
 export declare const LoginRequestSchema: ZodType<LoginRequest>;
+export declare const PublicAdministratorInvitationInspectSchema: ZodType<PublicAdministratorInvitationInspect>;
+export declare const PublicAdministratorInvitationInspectRequestSchema: ZodType<PublicAdministratorInvitationInspectRequest>;
+export declare const PublicAdministratorInvitationAcceptSchema: ZodType<PublicAdministratorInvitationAccept>;
+export declare const PublicAdministratorInvitationAcceptRequestSchema: ZodType<PublicAdministratorInvitationAcceptRequest>;
 export declare const ProblemDetailsSchema: ZodType<ProblemDetails>;
 export declare const UpdateAccountDetailsSchema: ZodType<UpdateAccountDetails>;
 `;

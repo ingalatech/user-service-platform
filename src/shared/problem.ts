@@ -34,6 +34,7 @@ export type ProblemCode =
   | 'forbidden'
   | 'reader-not-found'
   | 'administrator-not-found'
+  | 'invitation-not-found'
   | 'administrator-disabled'
   | 'self-disable-forbidden'
   | 'last-operational-administrator'

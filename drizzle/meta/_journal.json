@@ -162,6 +162,20 @@
       "when": 1793834075155,
       "tag": "0022_third_freak",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "6",
+      "when": 1794268055117,
+      "tag": "0023_administrator_invitations",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "6",
+      "when": 1794274804990,
+      "tag": "0024_administrator_invitation_dispatch_lease",
+      "breakpoints": true
     }
   ]
 }

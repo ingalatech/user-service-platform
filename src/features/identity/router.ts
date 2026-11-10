@@ -38,6 +38,14 @@ import {
   type RequestAdministratorMessageOutcome,
 } from './admin-administrator-email.js';
 import {
+  acceptAdministratorInvitation,
+  cancelAdministratorInvitation,
+  createAdministratorInvitation,
+  inspectAdministratorInvitation,
+  listAdministratorInvitations,
+  resendAdministratorInvitation,
+} from './admin-administrator-invitations.js';
+import {
   forceReaderEmailVerification,
   READER_EMAIL_VERIFICATION_MESSAGE_PATH,
   READER_PASSWORD_RECOVERY_MESSAGE_PATH,
@@ -97,6 +105,12 @@ import {
   adminAdministratorDetailRoute,
   adminAdministratorActivityRoute,
   adminAdministratorAccessRoute,
+  adminAdministratorInvitationsRoute,
+  adminAdministratorInvitationCreateRoute,
+  adminAdministratorInvitationResendRoute,
+  adminAdministratorInvitationCancelRoute,
+  publicAdministratorInvitationInspectRoute,
+  publicAdministratorInvitationAcceptRoute,
   adminAdministratorVerificationMessageRoute,
   adminAdministratorPasswordRecoveryMessageRoute,
   adminAuditEventsRoute,
@@ -155,6 +169,8 @@ export interface IdentityRouterOptions {
   readonly administratorMessageScheduler?: (
     payload: string,
   ) => Promise<AdministratorMessageSchedulingResult>;
+  // Narrow deterministic race seam for invitation acceptance tests.
+  readonly administratorInvitationAcceptBeforeCommit?: () => Promise<void>;
   // Identity-engine seam for proving post-commit response failures on Account
   // Photo reference writes. Production uses Better Auth directly.
   readonly accountPhotoReferenceWriter?: AccountPhotoReferenceWriter;
@@ -543,6 +559,190 @@ function forwardSessionCookies(c: IdentityContext, cookies: readonly string[]): 
 export function createIdentityRouter(options: IdentityRouterOptions = {}) {
   const router = new OpenAPIHono<{ Bindings: Env; Variables: { requestId: string } }>();
   const override = options.authMailer;
+
+  router.openapi(publicAdministratorInvitationInspectRoute, async (c) => {
+    c.header('Cache-Control', 'no-store');
+    const outcome = await inspectAdministratorInvitation({
+      db: c.env.DB,
+      token: c.req.valid('json').token,
+      requestId: c.get('requestId'),
+    });
+    if (outcome.kind !== 'success')
+      return problem(c, 404, 'verification-invalid', 'Invitation unavailable') as never;
+    return c.json(outcome.value, 200);
+  });
+  router.openapi(publicAdministratorInvitationAcceptRoute, async (c) => {
+    c.header('Cache-Control', 'no-store');
+    const runtime = requestIdentityRuntime(c, override);
+    const outcome = await acceptAdministratorInvitation({
+      db: c.env.DB,
+      runtime,
+      body: c.req.valid('json'),
+      requestId: c.get('requestId'),
+      ...(options.administratorInvitationAcceptBeforeCommit === undefined
+        ? {}
+        : { beforeCommit: options.administratorInvitationAcceptBeforeCommit }),
+    });
+    if (outcome.kind === 'invalid-invitation')
+      return problem(c, 404, 'verification-invalid', 'Invitation unavailable') as never;
+    if (outcome.kind === 'password-policy-violation')
+      return problem(c, 400, 'bad-request', 'Password does not meet policy') as never;
+    if (outcome.kind === 'password-confirmation-mismatch')
+      return problem(c, 400, 'bad-request', 'Password confirmation does not match') as never;
+    if (outcome.kind === 'email-password-disabled')
+      return problem(
+        c,
+        403,
+        'email-password-disabled',
+        'Email/password authentication is disabled',
+      ) as never;
+    if (outcome.kind === 'email-conflict')
+      return problem(c, 409, 'email-conflict', 'Administrator email already exists') as never;
+    if (outcome.kind !== 'success')
+      return problem(c, 500, 'internal-error', 'Internal Server Error') as never;
+    return c.json(outcome.value, 201);
+  });
+
+  router.openapi(adminAdministratorInvitationsRoute, async (c) => {
+    c.header('Cache-Control', 'private, no-store');
+    const runtime = requestIdentityRuntime(c, override);
+    const session = await runtime.resolveAdministratorSessionContext(
+      c.req.raw.headers,
+      c.get('requestId'),
+    );
+    if (session === null) return administratorSessionProblem(c) as never;
+    const result = await listAdministratorInvitations({
+      db: c.env.DB,
+      runtime,
+      actorId: session.administrator.id,
+      headers: c.req.raw.headers,
+      query: c.req.valid('query'),
+    });
+    if (result.kind === 'forbidden') return problem(c, 403, 'forbidden', 'Forbidden') as never;
+    if (result.kind === 'administrator-disabled')
+      return problem(c, 403, 'administrator-disabled', 'Administrator disabled') as never;
+    if (result.kind !== 'success')
+      return problem(c, 500, 'internal-error', 'Internal Server Error') as never;
+    return c.json(result.value, 200);
+  });
+  router.openapi(adminAdministratorInvitationCreateRoute, async (c) => {
+    c.header('Cache-Control', 'private, no-store');
+    const runtime = requestIdentityRuntime(c, override);
+    const rejected = guardCookieMutation(c, runtime, 'private, no-store');
+    if (rejected !== null) return rejected as never;
+    const session = await runtime.resolveAdministratorSessionContext(
+      c.req.raw.headers,
+      c.get('requestId'),
+    );
+    if (session === null) return administratorSessionProblem(c) as never;
+    const result = await createAdministratorInvitation({
+      db: c.env.DB,
+      runtime,
+      actorId: session.administrator.id,
+      headers: c.req.raw.headers,
+      body: c.req.valid('json'),
+      idempotencyKey: c.req.header('idempotency-key'),
+      requestId: c.get('requestId'),
+      ...(options.administratorMessageScheduler === undefined
+        ? {}
+        : { schedule: options.administratorMessageScheduler }),
+    });
+    if (result.kind === 'conflict')
+      return problem(c, 409, 'email-conflict', 'Administrator email is already reserved') as never;
+    if (result.kind === 'precondition-required')
+      return problem(c, 428, 'precondition-required', 'Idempotency-Key required') as never;
+    if (result.kind === 'idempotency-key-reused')
+      return problem(c, 409, 'idempotency-key-reused', 'Idempotency key reused') as never;
+    if (result.kind === 'delivery-scheduling-failed')
+      return problem(c, 503, 'delivery-scheduling-failed', 'Message scheduling failed') as never;
+    if (result.kind === 'forbidden') return problem(c, 403, 'forbidden', 'Forbidden') as never;
+    if (result.kind === 'administrator-disabled')
+      return problem(c, 403, 'administrator-disabled', 'Administrator disabled') as never;
+    if (result.kind !== 'success')
+      return problem(c, 500, 'internal-error', 'Internal Server Error') as never;
+    return c.json(result.value, 201);
+  });
+  router.openapi(adminAdministratorInvitationResendRoute, async (c) => {
+    c.header('Cache-Control', 'private, no-store');
+    const runtime = requestIdentityRuntime(c, override);
+    const rejected = guardCookieMutation(c, runtime, 'private, no-store');
+    if (rejected !== null) return rejected as never;
+    const session = await runtime.resolveAdministratorSessionContext(
+      c.req.raw.headers,
+      c.get('requestId'),
+    );
+    if (session === null) return administratorSessionProblem(c) as never;
+    const result = await resendAdministratorInvitation({
+      db: c.env.DB,
+      runtime,
+      actorId: session.administrator.id,
+      headers: c.req.raw.headers,
+      id: c.req.valid('param').invitationId,
+      idempotencyKey: c.req.header('idempotency-key'),
+      requestId: c.get('requestId'),
+      ...(options.administratorMessageScheduler === undefined
+        ? {}
+        : { schedule: options.administratorMessageScheduler }),
+    });
+    if (result.kind === 'cooldown-active') {
+      c.header('Retry-After', String(result.retryAfter));
+      return problem(c, 429, 'cooldown-active', 'Invitation resend cooldown active') as never;
+    }
+    if (result.kind === 'delivery-scheduling-failed')
+      return problem(c, 503, 'delivery-scheduling-failed', 'Message scheduling failed') as never;
+    if (result.kind === 'not-found')
+      return problem(c, 404, 'invitation-not-found', 'Invitation not found') as never;
+    if (result.kind === 'conflict')
+      return problem(c, 409, 'invalid-transition', 'Invitation is not pending') as never;
+    if (result.kind === 'precondition-required')
+      return problem(c, 428, 'precondition-required', 'Idempotency-Key required') as never;
+    if (result.kind === 'idempotency-key-reused')
+      return problem(c, 409, 'idempotency-key-reused', 'Idempotency key reused') as never;
+    if (result.kind === 'forbidden') return problem(c, 403, 'forbidden', 'Forbidden') as never;
+    if (result.kind === 'administrator-disabled')
+      return problem(c, 403, 'administrator-disabled', 'Administrator disabled') as never;
+    if (result.kind !== 'success')
+      return problem(c, 500, 'internal-error', 'Internal Server Error') as never;
+    return c.json(result.value, 202);
+  });
+  router.openapi(adminAdministratorInvitationCancelRoute, async (c) => {
+    c.header('Cache-Control', 'private, no-store');
+    const runtime = requestIdentityRuntime(c, override);
+    const rejected = guardCookieMutation(c, runtime, 'private, no-store');
+    if (rejected !== null) return rejected as never;
+    const session = await runtime.resolveAdministratorSessionContext(
+      c.req.raw.headers,
+      c.get('requestId'),
+    );
+    if (session === null) return administratorSessionProblem(c) as never;
+    const result = await cancelAdministratorInvitation({
+      db: c.env.DB,
+      runtime,
+      actorId: session.administrator.id,
+      headers: c.req.raw.headers,
+      id: c.req.valid('param').invitationId,
+      ifMatch: c.req.header('if-match'),
+      idempotencyKey: c.req.header('idempotency-key'),
+      requestId: c.get('requestId'),
+    });
+    if (result.kind === 'precondition-required')
+      return problem(c, 428, 'precondition-required', 'If-Match required') as never;
+    if (result.kind === 'idempotency-key-reused')
+      return problem(c, 409, 'idempotency-key-reused', 'Idempotency key reused') as never;
+    if (result.kind === 'stale-revision')
+      return problem(c, 412, 'stale-revision', 'Invitation revision is stale') as never;
+    if (result.kind === 'not-found')
+      return problem(c, 404, 'invitation-not-found', 'Invitation not found') as never;
+    if (result.kind === 'conflict')
+      return problem(c, 409, 'invalid-transition', 'Invitation is not pending') as never;
+    if (result.kind === 'forbidden') return problem(c, 403, 'forbidden', 'Forbidden') as never;
+    if (result.kind === 'administrator-disabled')
+      return problem(c, 403, 'administrator-disabled', 'Administrator disabled') as never;
+    if (result.kind !== 'success')
+      return problem(c, 500, 'internal-error', 'Internal Server Error') as never;
+    c.header('ETag', result.etag ?? `"${String(result.value.revision)}"`);
+    return c.json(result.value, 200);
+  });
 
   // The strict Zod deletion status contract runs only after resolving and
   // authorizing an Administrator. Authenticated request-validation failures

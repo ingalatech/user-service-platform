@@ -1,4 +1,13 @@
 import {
+  AuthConfigSchema,
+  AdminAdministratorInvitationCreateSchema,
+  AdminAdministratorInvitationListSchema,
+  AdminAdministratorInvitationMessageSchema,
+  AdminAdministratorInvitationSchema,
+  PublicAdministratorInvitationAcceptRequestSchema,
+  PublicAdministratorInvitationAcceptSchema,
+  PublicAdministratorInvitationInspectRequestSchema,
+  PublicAdministratorInvitationInspectSchema,
   AccountDetailsSchema,
   AdminAdministratorAccessRequestSchema,
   AdminAdministratorAccessResultSchema,
@@ -49,6 +58,9 @@ import {
   type AdminAdministratorList,
   type AdminAdministratorListQuery,
   type AdminAdministratorMessage,
+  type AdminAdministratorInvitation,
+  type AdminAdministratorInvitationList,
+  type AdminAdministratorInvitationMessage,
   type AdminAdministratorParams,
   type AdminAuditEvents,
   type AdminAuditEventsQuery,
@@ -69,6 +81,9 @@ import {
   type AdminUserDetailParams,
   type AdminUserList,
   type AdminUserListQuery,
+  type AuthConfig,
+  type PublicAdministratorInvitationAcceptRequest,
+  type PublicAdministratorInvitationInspect,
   type AccountDetails,
 } from './generated/contracts.js';
 
@@ -263,6 +278,105 @@ export async function adminAdministratorActivity(
       signal,
     ),
   );
+  if (!parsed.success) throw new ApiError(502);
+  return parsed.data;
+}
+
+export async function adminAdministratorInvitations(
+  query: {
+    limit: number;
+    offset: number;
+    state?: 'pending' | 'accepted' | 'cancelled' | 'superseded' | 'expired';
+  },
+  signal?: AbortSignal,
+): Promise<AdminAdministratorInvitationList> {
+  const search = new URLSearchParams({
+    limit: String(query.limit),
+    offset: String(query.offset),
+  });
+  if (query.state !== undefined) search.set('state', query.state);
+  const parsed = AdminAdministratorInvitationListSchema.safeParse(
+    await request(`/v1/admin/administrator-invitations?${search.toString()}`, undefined, signal),
+  );
+  if (!parsed.success) throw new ApiError(502);
+  return parsed.data;
+}
+
+export async function createAdminAdministratorInvitation(
+  email: string,
+  idempotencyKey: string,
+): Promise<AdminAdministratorInvitation> {
+  const body = AdminAdministratorInvitationCreateSchema.safeParse({ email });
+  if (!body.success) throw new ApiError(400, 'bad-request');
+  const parsed = AdminAdministratorInvitationSchema.safeParse(
+    await request('/v1/admin/administrator-invitations', body.data, undefined, 'POST', {
+      'idempotency-key': idempotencyKey,
+    }),
+  );
+  if (!parsed.success) throw new ApiError(502);
+  return parsed.data;
+}
+
+export async function resendAdminAdministratorInvitation(
+  id: string,
+  idempotencyKey: string,
+): Promise<AdminAdministratorInvitationMessage> {
+  const parsed = AdminAdministratorInvitationMessageSchema.safeParse(
+    await request(
+      `/v1/admin/administrator-invitations/${encodeURIComponent(id)}/messages`,
+      {},
+      undefined,
+      'POST',
+      { 'idempotency-key': idempotencyKey },
+    ),
+  );
+  if (!parsed.success) throw new ApiError(502);
+  return parsed.data;
+}
+
+export async function cancelAdminAdministratorInvitation(
+  id: string,
+  revision: number,
+  idempotencyKey: string,
+): Promise<AdminAdministratorInvitation> {
+  const parsed = AdminAdministratorInvitationSchema.safeParse(
+    await request(
+      `/v1/admin/administrator-invitations/${encodeURIComponent(id)}`,
+      undefined,
+      undefined,
+      'DELETE',
+      { 'if-match': `"${String(revision)}"`, 'idempotency-key': idempotencyKey },
+    ),
+  );
+  if (!parsed.success) throw new ApiError(502);
+  return parsed.data;
+}
+
+export async function inspectPublicAdministratorInvitation(
+  token: string,
+): Promise<PublicAdministratorInvitationInspect> {
+  const body = PublicAdministratorInvitationInspectRequestSchema.safeParse({ token });
+  if (!body.success) throw new ApiError(404, 'verification-invalid');
+  const parsed = PublicAdministratorInvitationInspectSchema.safeParse(
+    await request('/v1/admin/auth/invitations/inspect', body.data),
+  );
+  if (!parsed.success) throw new ApiError(502);
+  return parsed.data;
+}
+
+export async function acceptPublicAdministratorInvitation(
+  input: PublicAdministratorInvitationAcceptRequest,
+): Promise<void> {
+  const body = PublicAdministratorInvitationAcceptRequestSchema.safeParse(input);
+  if (!body.success) throw new ApiError(400, 'bad-request');
+  const parsed = PublicAdministratorInvitationAcceptSchema.safeParse(
+    await request('/v1/admin/auth/invitations/accept', body.data),
+  );
+  if (!parsed.success) throw new ApiError(502);
+}
+
+export async function publicAuthConfig(): Promise<AuthConfig> {
+  const parsed = AuthConfigSchema.safeParse(await request('/v1/auth/config'));
   if (!parsed.success) throw new ApiError(502);
   return parsed.data;
 }

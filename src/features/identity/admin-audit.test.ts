@@ -4,6 +4,7 @@ import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from '../../app.js';
 import type { Env } from '../../env.js';
 import { InMemoryAuthMailer } from './mailer.js';
+import { AdminAuditMetadataSchema } from './contract.js';
 
 const workerEnv = env;
 const testMigrations = env.TEST_MIGRATIONS as D1Migration[];
@@ -193,6 +194,44 @@ beforeEach(async () => {
 });
 
 describe('GET /v1/admin/audit-events', () => {
+  it('accepts known email-verification operations and rejects malformed metadata', () => {
+    expect(
+      AdminAuditMetadataSchema.safeParse({ operation: 'force-email-verification', revision: 2 })
+        .success,
+    ).toBe(true);
+    expect(
+      AdminAuditMetadataSchema.safeParse({
+        operation: 'force-email-verification;secret',
+        revision: 2,
+      }).success,
+    ).toBe(false);
+    expect(
+      AdminAuditMetadataSchema.safeParse({ operation: 'unknown-operation', revision: 2 }).success,
+    ).toBe(false);
+  });
+
+  it('projects public invitation failures as an anonymous actor with no identifier or subject', async () => {
+    const actor = await bootstrapAdministrator();
+    const invalid = await post('/v1/admin/auth/invitations/inspect', {
+      token: 'opaque-invalid-invitation-token-1234567890',
+    });
+    expect(invalid.status).toBe(404);
+    const response = await get(
+      '/v1/admin/audit-events?action=administrator-invitation-attempt&result=failure',
+      actor.cookie,
+    );
+    expect(response.status).toBe(200);
+    const result = (await response.json()) as {
+      items: { actor: { realm: string; id?: string }; subject: unknown; metadata: unknown }[];
+    };
+    expect(result.items[0]).toMatchObject({
+      actor: { realm: 'anonymous' },
+      subject: null,
+      metadata: null,
+    });
+    expect(result.items[0]?.actor).not.toHaveProperty('id');
+  });
+
   it('publishes its filters and responses in the generated OpenAPI document', async () => {
     const response = await get('/v1/openapi.json');
     expect(response.status).toBe(200);
@@ -236,6 +275,7 @@ describe('GET /v1/admin/audit-events', () => {
     expect(schemas.AdminAuditEvents?.additionalProperties).toBe(false);
     expect(auditEvent?.additionalProperties).toBe(false);
     expect(eventProperties.actor?.additionalProperties).toBe(false);
+    expect((eventProperties.actor?.required as string[]).includes('id')).toBe(false);
     expect(eventProperties.subject?.additionalProperties).toBe(false);
     expect(schemas.AdminAuditMetadata?.additionalProperties).toBe(false);
   });

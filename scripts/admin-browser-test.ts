@@ -110,6 +110,692 @@ async function signIn(page: Page, email: string, password: string): Promise<void
   await page.getByRole('button', { name: 'Iniciar sesión', exact: true }).click();
 }
 
+const invitationToken = 'fixture-admin-invitation-token-0123456789abcdef0123456789abcdef';
+const invitationFixture = {
+  id: 'fixture-invitation-1',
+  email: 'new-admin@example.test',
+  state: 'pending',
+  expiresAt: '2027-01-02T03:04:05.000Z',
+  revision: 1,
+  createdAt: '2026-11-09T03:04:05.000Z',
+};
+
+function fixtureProblem(status: number, code: string) {
+  return {
+    type: `urn:problem:${code}`,
+    title: 'Fixture problem',
+    status,
+    code,
+    detail: 'private fixture detail',
+  };
+}
+
+async function administratorInvitationAcceptance(
+  page: Page,
+  base: string,
+  browser: Browser,
+  setPhase: (value: string) => void,
+): Promise<void> {
+  let state = 'pending';
+  let revision = 1;
+  let itemEmail = invitationFixture.email;
+  let createCount = 0;
+  let resendCount = 0;
+  let cancelCount = 0;
+  let acceptCount = 0;
+  const getAcceptCount = () => acceptCount;
+  let forceConflict = false;
+  const requests: {
+    path: string;
+    method: string;
+    key?: string;
+    ifMatch?: string;
+    body?: string;
+  }[] = [];
+  await page.context().route('**/v1/admin/administrator-invitations**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    const method = request.method();
+    const body = request.postData() ?? undefined;
+    requests.push({
+      path: url.pathname,
+      method,
+      key: request.headers()['idempotency-key'],
+      ifMatch: request.headers()['if-match'],
+      body,
+    });
+    const respond = (status: number, value: unknown, headers: Record<string, string> = {}) =>
+      route.fulfill({
+        status,
+        contentType: 'application/json',
+        headers,
+        body: JSON.stringify(value),
+      });
+    if (method === 'GET') {
+      const item = { ...invitationFixture, email: itemEmail, state, revision };
+      const requestedState = url.searchParams.get('state');
+      const matches = requestedState === null || requestedState === state;
+      const items = matches ? [item] : [];
+      const limit = Number(url.searchParams.get('limit') ?? '10');
+      const offset = Number(url.searchParams.get('offset') ?? '0');
+      await respond(200, {
+        items: items.slice(offset, offset + limit),
+        total: items.length,
+      });
+    } else if (method === 'POST' && url.pathname === '/v1/admin/administrator-invitations') {
+      createCount += 1;
+      itemEmail = 'normalized@example.test';
+      if (forceConflict) await respond(409, fixtureProblem(409, 'email-conflict'));
+      else if (createCount === 1)
+        await respond(503, fixtureProblem(503, 'delivery-scheduling-failed'));
+      else await respond(201, { ...invitationFixture, email: itemEmail });
+    } else if (method === 'POST' && url.pathname.endsWith('/messages')) {
+      resendCount += 1;
+      if (resendCount === 1) await respond(503, fixtureProblem(503, 'delivery-scheduling-failed'));
+      else if (resendCount === 2)
+        await respond(202, {
+          id: invitationFixture.id,
+          state: 'scheduled',
+          cooldownUntil: new Date(Date.now() + 60_000).toISOString(),
+        });
+      else await respond(429, fixtureProblem(429, 'cooldown-active'), { 'retry-after': '17' });
+    } else if (method === 'DELETE') {
+      cancelCount += 1;
+      if (cancelCount === 1) {
+        revision += 1;
+        await respond(412, fixtureProblem(412, 'stale-revision'));
+      } else {
+        state = 'cancelled';
+        revision += 1;
+        await respond(200, { ...invitationFixture, email: itemEmail, state, revision });
+      }
+    } else await respond(404, fixtureProblem(404, 'not-found'));
+  });
+  await page.context().route('**/v1/admin/auth/invitations/**', async (route) => {
+    const url = new URL(route.request().url());
+    const requestBody = route.request().postData() ?? '{}';
+    const submitted = (JSON.parse(requestBody) as { token?: unknown }).token;
+    const respond = (status: number, value: unknown) =>
+      route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(value) });
+    if (url.pathname.endsWith('/inspect')) {
+      if (submitted !== invitationToken)
+        await respond(404, fixtureProblem(404, 'verification-invalid'));
+      else
+        await respond(200, {
+          email: 'n•••@example.test',
+          state,
+          expiresAt: invitationFixture.expiresAt,
+        });
+    } else if (url.pathname.endsWith('/accept')) {
+      acceptCount += 1;
+      state = 'accepted';
+      await respond(200, { accepted: true });
+    } else await respond(404, fixtureProblem(404, 'not-found'));
+  });
+  await page.context().route('**/v1/auth/config', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        capabilities: {
+          registration: true,
+          emailPassword: true,
+          emailVerification: true,
+          passwordReset: true,
+        },
+        passwordPolicy: {
+          minLength: 12,
+          maxLength: 128,
+          minUppercase: 1,
+          minLowercase: 1,
+          minDigits: 1,
+          minSymbols: 1,
+        },
+      }),
+    }),
+  );
+
+  setPhase('invitation fixtures and management route');
+  await page.goto(`${base}/admin/administrators`);
+  await page.getByRole('heading', { name: 'Invitaciones de Administrator', exact: true }).waitFor();
+  setPhase('invitation create retry');
+  await page.getByLabel('Correo electrónico', { exact: true }).fill('NORMALIZED@example.test');
+  await page.getByLabel('Correo electrónico', { exact: true }).press('Enter');
+  await page
+    .getByText(
+      'No pudimos confirmar la programación. La invitación queda pendiente; reintenta con el mismo intento.',
+      { exact: true },
+    )
+    .waitFor();
+  await page.getByText('Pendiente', { exact: true }).waitFor();
+  await page
+    .getByText('Programación del correo sin confirmar; reintenta con el mismo intento.', {
+      exact: true,
+    })
+    .waitFor();
+  assert(!(await page.getByText(/entregado|entregada/i).count()), '503 never claims delivery');
+  await page.getByRole('button', { name: 'Reintentar programación', exact: true }).click();
+  await page
+    .getByText(
+      'Invitación creada. La programación del correo quedó aceptada; la entrega no está confirmada.',
+      { exact: true },
+    )
+    .waitFor();
+  await page.getByText('normalized@example.test', { exact: true }).waitFor();
+  const createRequests = requests.filter(
+    (request) =>
+      request.method === 'POST' && request.path === '/v1/admin/administrator-invitations',
+  );
+  assert(
+    createRequests.length === 2 && createRequests[0]?.key === createRequests[1]?.key,
+    'create scheduling retry reuses the same idempotency key',
+  );
+  assert(
+    createRequests[0]?.body?.includes('normalized@example.test') === true,
+    'email is normalized before create request submission',
+  );
+  assert(
+    !(await page.getByText(/entregado|entregada/i).count()),
+    'creation avoids delivery claims',
+  );
+  setPhase('invitation reservation conflict');
+  forceConflict = true;
+  await page.getByLabel('Correo electrónico', { exact: true }).fill('reserved@example.test');
+  await page.getByRole('button', { name: 'Crear invitación', exact: true }).click();
+  await page
+    .getByText('Ese correo ya está reservado o pertenece a un Administrator.', { exact: true })
+    .waitFor();
+  forceConflict = false;
+
+  setPhase('invitation resend retry and cooldown');
+  await page.getByRole('button', { name: 'Reenviar invitación', exact: true }).click();
+  await page
+    .getByText(
+      'No pudimos confirmar la programación. La invitación sigue pendiente; reintenta con el mismo intento.',
+      { exact: true },
+    )
+    .waitFor();
+  await page.getByRole('button', { name: 'Reintentar reenvío', exact: true }).click();
+  await page
+    .getByText('Reenvío aceptado para programación; la entrega no está confirmada.', {
+      exact: true,
+    })
+    .waitFor();
+  const resendRequests = requests.filter((request) => request.path.endsWith('/messages'));
+  assert(
+    resendRequests.length === 2 && resendRequests[0]?.key === resendRequests[1]?.key,
+    'resend retry reuses idempotency key',
+  );
+  assert(
+    resendRequests.every((request) => request.ifMatch === undefined),
+    'resend does not send If-Match',
+  );
+  assert(
+    await page.getByRole('button', { name: 'Reenviar invitación', exact: true }).isDisabled(),
+    'cooldown prevents immediate resend',
+  );
+  assert(
+    (await page.getByText(/^Reenvío disponible en \d+ s\.$/).count()) === 1,
+    'successful resend displays its cooldown countdown',
+  );
+  assert(!(await page.getByText(/entregado/i).count()), 'resend avoids delivery claims');
+  await page.evaluate(() => {
+    sessionStorage.removeItem('admin-invitation:cooldown:fixture-invitation-1');
+  });
+  await page.reload();
+  await page.getByRole('button', { name: 'Reenviar invitación', exact: true }).click();
+  await page.getByText('Espera 17 segundos antes de reenviar.', { exact: true }).waitFor();
+  await page.getByText(/^Reenvío disponible en (?:1[0-7]|[1-9]) s\.$/).waitFor();
+
+  setPhase('invitation resend not-found');
+  await page.evaluate(() => {
+    sessionStorage.removeItem('admin-invitation:cooldown:fixture-invitation-1');
+  });
+  await page.reload();
+  await page.getByRole('heading', { name: 'Invitaciones de Administrator', exact: true }).waitFor();
+  let invitationListReads = 0;
+  const countInvitationListRead = (request: BrowserRequest) => {
+    const url = new URL(request.url());
+    if (request.method() === 'GET' && url.pathname === '/v1/admin/administrator-invitations') {
+      invitationListReads += 1;
+    }
+  };
+  page.on('request', countInvitationListRead);
+  let resendNotFound = true;
+  await page.route(
+    '**/v1/admin/administrator-invitations/fixture-invitation-1/messages',
+    async (route) => {
+      if (!resendNotFound) {
+        await route.continue();
+        return;
+      }
+      resendNotFound = false;
+      await route.fulfill({
+        status: 404,
+        contentType: 'application/problem+json',
+        body: JSON.stringify(fixtureProblem(404, 'invitation-not-found')),
+      });
+    },
+  );
+  const listReadsBeforeResendNotFound = invitationListReads;
+  await page.getByRole('button', { name: 'Reenviar invitación', exact: true }).click();
+  await page
+    .getByText('No encontramos esta invitación. Actualizamos el listado.', { exact: true })
+    .waitFor();
+  await page.getByRole('button', { name: 'Reenviar invitación', exact: true }).waitFor();
+  assert(
+    invitationListReads > listReadsBeforeResendNotFound,
+    'resend invitation-not-found refreshes the authoritative list',
+  );
+  await page.unroute('**/v1/admin/administrator-invitations/fixture-invitation-1/messages');
+
+  setPhase('invitation cancel not-found');
+  let cancelNotFound = true;
+  await page.route('**/v1/admin/administrator-invitations/fixture-invitation-1', async (route) => {
+    if (!cancelNotFound || route.request().method() !== 'DELETE') {
+      await route.continue();
+      return;
+    }
+    cancelNotFound = false;
+    await route.fulfill({
+      status: 404,
+      contentType: 'application/problem+json',
+      body: JSON.stringify(fixtureProblem(404, 'invitation-not-found')),
+    });
+  });
+  const listReadsBeforeCancelNotFound = invitationListReads;
+  await page.getByRole('button', { name: 'Cancelar', exact: true }).click();
+  await page
+    .getByRole('alertdialog')
+    .getByRole('button', { name: 'Confirmar cancelación', exact: true })
+    .click();
+  await page
+    .getByText('No encontramos esta invitación. Actualizamos el listado.', { exact: true })
+    .waitFor();
+  assert(
+    (await page.getByRole('alertdialog').count()) === 0,
+    'cancel invitation-not-found closes the confirmation dialog',
+  );
+  assert(
+    invitationListReads > listReadsBeforeCancelNotFound,
+    'cancel invitation-not-found refreshes the authoritative list',
+  );
+  await page.unroute('**/v1/admin/administrator-invitations/fixture-invitation-1');
+  page.off('request', countInvitationListRead);
+
+  setPhase('invitation stale cancellation command');
+  await page.getByRole('button', { name: 'Cancelar', exact: true }).click();
+  await page
+    .getByRole('alertdialog')
+    .getByRole('button', { name: 'Confirmar cancelación', exact: true })
+    .click();
+  await page
+    .getByText('La invitación cambió. Revisa el estado actualizado y decide de nuevo.', {
+      exact: true,
+    })
+    .waitFor();
+  await page.getByRole('button', { name: 'Cancelar', exact: true }).click();
+  await page
+    .getByRole('alertdialog')
+    .getByRole('button', { name: 'Confirmar cancelación', exact: true })
+    .click();
+  await page.getByText('Invitación cancelada.', { exact: true }).waitFor();
+  setPhase('invitation cancellation command assertions');
+  const cancelRequests = requests.filter((request) => request.method === 'DELETE');
+  assert(
+    cancelRequests.length === 2 &&
+      cancelRequests[0]?.ifMatch === '"1"' &&
+      cancelRequests[1]?.ifMatch === '"2"',
+    'stale cancellation refetches current ETag/revision',
+  );
+  assert(
+    cancelRequests[0].key !== cancelRequests[1].key,
+    'stale cancellation starts with a new idempotency key',
+  );
+  setPhase('invitation terminal history and responsive view');
+  await page.getByRole('button', { name: 'Historial terminal', exact: true }).click();
+  await page.getByText('Cancelada', { exact: true }).waitFor();
+  assert(
+    await page.evaluate<boolean>(`(() => {
+      const section = document.querySelector('#administrator-invitations-title')?.closest('section');
+      return section !== null && section !== undefined && section.getBoundingClientRect().right <= window.innerWidth + 1;
+    })()`),
+    'invitation management fits mobile viewport',
+  );
+  assert(
+    (await page.getByRole('button', { name: 'Cancelar', exact: true }).count()) === 0,
+    'terminal invitation has no action',
+  );
+
+  setPhase('invitation pagination edges');
+  const paginationBase = Date.parse('2026-11-01T12:00:00.000Z');
+  const paginationInvitation = (
+    state: 'pending' | 'accepted' | 'cancelled' | 'superseded' | 'expired',
+    index: number,
+    order: number,
+  ) => ({
+    id: `page-${state}-${String(index)}`,
+    email: `page-${state}-${String(index)}@example.test`,
+    state,
+    expiresAt: '2027-06-01T00:00:00.000Z',
+    revision: 1,
+    createdAt: new Date(paginationBase - order * 60_000).toISOString(),
+  });
+  const paginationData: Readonly<Record<string, ReturnType<typeof paginationInvitation>[]>> = {
+    pending: Array.from({ length: 23 }, (_, index) =>
+      paginationInvitation('pending', index, index),
+    ),
+    accepted: Array.from({ length: 4 }, (_, index) =>
+      paginationInvitation('accepted', index, 100 + index),
+    ),
+    cancelled: Array.from({ length: 4 }, (_, index) =>
+      paginationInvitation('cancelled', index, 200 + index),
+    ),
+    superseded: Array.from({ length: 2 }, (_, index) =>
+      paginationInvitation('superseded', index, 300 + index),
+    ),
+    expired: [paginationInvitation('expired', 0, 400)],
+  };
+  let paginationEmpty = false;
+  await page.route('**/v1/admin/administrator-invitations**', async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (request.method() !== 'GET') {
+      await route.fulfill({
+        status: 404,
+        contentType: 'application/problem+json',
+        body: JSON.stringify(fixtureProblem(404, 'not-found')),
+      });
+      return;
+    }
+    const state = url.searchParams.get('state');
+    const limit = Number(url.searchParams.get('limit') ?? '10');
+    const offset = Number(url.searchParams.get('offset') ?? '0');
+    const source = paginationEmpty || state === null ? [] : (paginationData[state] ?? []);
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ items: source.slice(offset, offset + limit), total: source.length }),
+    });
+  });
+  const invitationSection = page.locator(
+    'section[aria-labelledby="administrator-invitations-title"]',
+  );
+  const invitationRows = invitationSection.locator('ul[aria-label="Invitaciones"] li');
+  setPhase('pending pagination page one');
+  await invitationSection.getByRole('button', { name: 'Pendientes', exact: true }).click();
+  await page.getByText('23 invitaciones encontradas', { exact: true }).waitFor();
+  await waitForLocatorCount(
+    page,
+    'section[aria-labelledby="administrator-invitations-title"] ul[aria-label="Invitaciones"] li',
+    10,
+  );
+  await invitationSection.getByText('page-pending-0@example.test', { exact: true }).waitFor();
+  assert(
+    (await invitationSection.getByText('page-pending-10@example.test', { exact: true }).count()) ===
+      0,
+    'pending page one excludes the next page',
+  );
+  setPhase('pending pagination page two');
+  await invitationSection.getByRole('button', { name: 'Siguiente', exact: true }).click();
+  await invitationSection.getByText('page-pending-10@example.test', { exact: true }).waitFor();
+  assert((await invitationRows.count()) === 10, 'pending page two is full');
+  setPhase('pending pagination short final page');
+  await invitationSection.getByRole('button', { name: 'Siguiente', exact: true }).click();
+  await invitationSection.getByText('page-pending-22@example.test', { exact: true }).waitFor();
+  assert((await invitationRows.count()) === 3, 'short final pending page is accurate');
+  assert(
+    await invitationSection.getByRole('button', { name: 'Siguiente', exact: true }).isDisabled(),
+    'pending pagination stops at the last page',
+  );
+
+  setPhase('terminal history pagination page one');
+  await invitationSection.getByRole('button', { name: 'Historial terminal', exact: true }).click();
+  await page.getByText('11 invitaciones encontradas', { exact: true }).waitFor();
+  await invitationSection.getByText('page-accepted-0@example.test', { exact: true }).waitFor();
+  assert((await invitationRows.count()) === 10, 'terminal page one combines terminal states');
+  assert(
+    (await invitationSection.getByText('page-expired-0@example.test', { exact: true }).count()) ===
+      0,
+    'terminal page one does not include the short final page',
+  );
+  await invitationSection.getByRole('button', { name: 'Siguiente', exact: true }).click();
+  await invitationSection.getByText('page-expired-0@example.test', { exact: true }).waitFor();
+  assert((await invitationRows.count()) === 1, 'short final terminal page is accurate');
+  assert(
+    await invitationSection.getByRole('button', { name: 'Siguiente', exact: true }).isDisabled(),
+    'terminal pagination stops at the last page',
+  );
+
+  setPhase('invitation empty-page edge');
+  paginationEmpty = true;
+  await invitationSection.getByRole('button', { name: 'Pendientes', exact: true }).click();
+  await page.getByText('No hay invitaciones pendientes.', { exact: true }).waitFor();
+  assert((await invitationRows.count()) === 0, 'empty pending list renders no stale rows');
+  assert(
+    (await invitationSection.getByRole('button', { name: 'Siguiente', exact: true }).count()) === 0,
+    'empty pending list hides pagination',
+  );
+  await invitationSection.getByRole('button', { name: 'Historial terminal', exact: true }).click();
+  await page.getByText('No hay historial terminal.', { exact: true }).waitFor();
+  assert((await invitationRows.count()) === 0, 'empty terminal history renders no stale rows');
+  assert(
+    (await invitationSection.getByRole('button', { name: 'Siguiente', exact: true }).count()) === 0,
+    'empty terminal history hides pagination',
+  );
+  await page.unroute('**/v1/admin/administrator-invitations**');
+
+  setPhase('public invitation inspection and acceptance');
+  const publicContext = await browser.newContext({ viewport: { width: 360, height: 740 } });
+  const publicInspectRequests: { method: string; url: string; body: string }[] = [];
+  await publicContext.route('**/v1/admin/auth/invitations/**', async (route) => {
+    const url = new URL(route.request().url());
+    const requestBody = route.request().postData() ?? '{}';
+    const submitted = (JSON.parse(requestBody) as { token?: unknown }).token;
+    if (url.pathname.endsWith('/inspect')) {
+      publicInspectRequests.push({
+        method: route.request().method(),
+        url: route.request().url(),
+        body: requestBody,
+      });
+    }
+    const respond = (status: number, value: unknown) =>
+      route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(value) });
+    if (url.pathname.endsWith('/inspect')) {
+      if (submitted !== invitationToken)
+        await respond(404, fixtureProblem(404, 'verification-invalid'));
+      else
+        await respond(200, {
+          email: 'n•••@example.test',
+          state,
+          expiresAt: invitationFixture.expiresAt,
+        });
+    } else if (url.pathname.endsWith('/accept')) {
+      acceptCount += 1;
+      state = 'accepted';
+      await respond(200, { accepted: true });
+    } else await respond(404, fixtureProblem(404, 'not-found'));
+  });
+  await publicContext.route('**/v1/auth/config', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        capabilities: {
+          registration: true,
+          emailPassword: true,
+          emailVerification: true,
+          passwordReset: true,
+        },
+        passwordPolicy: {
+          minLength: 12,
+          maxLength: 128,
+          minUppercase: 1,
+          minLowercase: 1,
+          minDigits: 1,
+          minSymbols: 1,
+        },
+      }),
+    }),
+  );
+  const publicPage = await publicContext.newPage();
+  publicPage.setDefaultTimeout(15_000);
+  await publicPage.addInitScript(`(() => {
+    const observations = [];
+    Object.defineProperty(window, '__invitationPrivacyObservations', { value: observations });
+    const record = (kind, value) =>
+      observations.push({ kind, value, text: document.body?.textContent ?? '' });
+    const originalReplaceState = history.replaceState.bind(history);
+    history.replaceState = (data, unused, url) => {
+      record('replaceState', String(url ?? location.href));
+      originalReplaceState(data, unused, url);
+    };
+    for (const storage of [localStorage, sessionStorage]) {
+      const originalSetItem = storage.setItem.bind(storage);
+      storage.setItem = (key, value) => {
+        record('storage', key + '=' + value);
+        originalSetItem(key, value);
+      };
+    }
+    new MutationObserver(() => record('dom', document.documentElement?.innerHTML ?? '')).observe(
+      document,
+      { childList: true, subtree: true, characterData: true },
+    );
+  })()`);
+  const emitted: string[] = [];
+  publicPage.on('console', (message) => emitted.push(message.text()));
+  publicPage.on('pageerror', (error) => emitted.push(error.message));
+  state = 'pending';
+  await publicPage.goto(
+    `${base}/admin/aceptar-invitacion?token=${encodeURIComponent(invitationToken)}`,
+  );
+  await publicPage.getByText('n•••@example.test').waitFor();
+  assert(!publicPage.url().includes(invitationToken), 'token is scrubbed from the visible URL');
+  const privacyObservations = await publicPage.evaluate<
+    { kind: string; value: string; text: string }[]
+  >('window.__invitationPrivacyObservations');
+  const scrub = privacyObservations.find((observation) => observation.kind === 'replaceState');
+  assert(scrub !== undefined, 'history is scrubbed synchronously at route module entry');
+  assert(
+    !scrub.value.includes(invitationToken) && !scrub.text.includes(invitationToken),
+    'earliest history replacement and DOM contain no raw invitation token',
+  );
+  assert(
+    privacyObservations.every(
+      (observation) =>
+        !observation.value.includes(invitationToken) && !observation.text.includes(invitationToken),
+    ),
+    'instrumented storage and DOM never observe the raw token',
+  );
+  assert(
+    publicInspectRequests.length === 1 &&
+      publicInspectRequests[0]?.method === 'POST' &&
+      !publicInspectRequests[0].url.includes(invitationToken) &&
+      (JSON.parse(publicInspectRequests[0].body) as { token?: string }).token === invitationToken,
+    'inspection sends the captured token only in one POST body, not its URL',
+  );
+  const inspectedText = await publicPage.locator('body').innerText();
+  assert(
+    !inspectedText.includes('new-admin@example.test') &&
+      !inspectedText.includes(invitationFixture.id) &&
+      !inspectedText.includes(invitationToken),
+    'public inspect displays neither full email, internal invitation id, nor token',
+  );
+  await publicPage.getByLabel('Nombre visible').fill('Invited Admin');
+  await publicPage.getByLabel('Contraseña', { exact: true }).fill('short');
+  await publicPage.getByLabel('Confirmar contraseña').fill('different');
+  await publicPage.getByRole('button', { name: 'Aceptar invitación', exact: true }).click();
+  await publicPage.getByText(/no cumple los requisitos actuales/i).waitFor();
+  assert(getAcceptCount() === 0, 'invalid client-side password does not consume invitation');
+  await publicPage.getByLabel('Contraseña', { exact: true }).fill('Valid-Password-41!');
+  await publicPage.getByLabel('Confirmar contraseña').fill('Valid-Password-41?');
+  await publicPage.getByRole('button', { name: 'Aceptar invitación', exact: true }).click();
+  await publicPage.getByText('Las contraseñas no coinciden.', { exact: true }).waitFor();
+  assert(getAcceptCount() === 0, 'password mismatch does not consume invitation');
+  await publicPage.getByLabel('Confirmar contraseña').fill('Valid-Password-41!');
+  await publicPage.getByRole('button', { name: 'Aceptar invitación', exact: true }).click();
+  await publicPage.getByText(/Invitación aceptada/).waitFor();
+  assert(getAcceptCount() === 1, 'accept flow submits exactly once');
+  const stored = await publicPage.evaluate(
+    () => `${JSON.stringify(localStorage)} ${JSON.stringify(sessionStorage)}`,
+  );
+  assert(!stored.includes(invitationToken), 'token is absent from local and session storage');
+  assert(
+    emitted.every((value) => !value.includes(invitationToken)),
+    'token is absent from console and page errors',
+  );
+  assert(
+    (await publicPage
+      .getByRole('button', { name: 'Ir al inicio de sesión', exact: true })
+      .count()) === 1,
+    'acceptance explicitly links to login',
+  );
+  assert(
+    (await publicContext.cookies()).every((cookie) => !cookie.name.endsWith('session_token')),
+    'public acceptance does not establish an Administrator session',
+  );
+  setPhase('public invitation privacy and login navigation');
+  await publicPage.getByRole('button', { name: 'Ir al inicio de sesión', exact: true }).click();
+  await publicPage.waitForURL('**/admin/login');
+  await publicPage.goBack();
+  assert(
+    !publicPage.url().includes(invitationToken),
+    'back navigation does not restore invitation token',
+  );
+  for (const terminalState of ['accepted', 'cancelled', 'superseded', 'expired']) {
+    state = terminalState;
+    await publicPage.goto(
+      `${base}/admin/aceptar-invitacion?token=${encodeURIComponent(invitationToken)}`,
+    );
+    await publicPage
+      .getByText('Esta invitación ya no se puede aceptar.', { exact: false })
+      .waitFor();
+    assert(
+      (await publicPage
+        .getByRole('button', { name: 'Aceptar invitación', exact: true })
+        .count()) === 0,
+      `${terminalState} invitation is terminal on repeat inspection`,
+    );
+    assert(
+      (await publicPage
+        .getByRole('link', { name: 'Ir al inicio de sesión de Administrator', exact: true })
+        .count()) === 1,
+      `${terminalState} invitation offers Administrator login`,
+    );
+  }
+  await publicPage.goto(`${base}/admin/aceptar-invitacion?token=invalid-short-token`);
+  await publicPage
+    .getByText('La invitación no está disponible o no es válida.', { exact: true })
+    .waitFor();
+  assert(!publicPage.url().includes('invalid-short-token'), 'invalid token is scrubbed from URL');
+  assert(
+    (await publicPage.getByText('new-admin@example.test', { exact: true }).count()) === 0,
+    'invalid token reveals no email',
+  );
+  assert(
+    (await publicPage
+      .getByRole('link', { name: 'Volver al inicio de sesión', exact: true })
+      .count()) === 1,
+    'invalid invitation offers Administrator login',
+  );
+  await publicPage.goto(`${base}/admin/aceptar-invitacion`);
+  await publicPage
+    .getByText('La invitación no está disponible o no es válida.', { exact: true })
+    .waitFor();
+  assert(
+    (await publicPage
+      .getByRole('link', { name: 'Volver al inicio de sesión', exact: true })
+      .count()) === 1,
+    'direct navigation without a token offers Administrator login',
+  );
+  assert(
+    await publicPage.evaluate<boolean>('document.documentElement.scrollWidth <= window.innerWidth'),
+    'public flow fits mobile viewport',
+  );
+  await publicPage.close();
+  await publicContext.close();
+}
+
 // Real browser + real built Worker/D1. Fixture-only SQL is restricted to a
 // fresh mkdtemp database; ordinary local state and remote resources are untouched.
 // No API response mocks, copied account tokens, or default-database reset.
@@ -411,6 +1097,15 @@ export async function runAdminBrowserTest(): Promise<void> {
         'administrator', 'qa-disabled-admin', 'reader', 'opaque-reader-subject', 'failure',
         'browser-audit-request', 'stale-revision',
          '{"changed":false,"token":"browser-secret-token","email":"browser-secret@example.com","emailBody":"browser-private-email-body-secret"}')`,
+    );
+    await sql(
+      `INSERT INTO identity_event
+       (id, version, type, occurred_at, actor_realm, actor_id, subject_realm, subject_id,
+        result, request_id, problem_code, metadata)
+       VALUES ('browser-audit-anonymous', 1, 'administrator-invitation-attempt', ${String(auditOccurredAt + 1)},
+        'anonymous', 'anonymous', NULL, NULL, 'failure',
+        'browser-anonymous-request', 'verification-invalid',
+         '{"token":"anonymous-secret-token","email":"anonymous-secret@example.com"}')`,
     );
     phase = 'Administrator verification and recovery actions';
     await page.goto(`${base}/admin/administrators/qa-disabled-admin`);
@@ -831,6 +1526,35 @@ export async function runAdminBrowserTest(): Promise<void> {
     ]) {
       assert(!auditText.includes(secret), 'Audit UI renders only the safe projection');
     }
+    phase = 'public/system audit event without an actor id';
+    const anonymousActorLookups: string[] = [];
+    const recordAnonymousLookup = (request: BrowserRequest) => {
+      const url = new URL(request.url());
+      if (url.pathname.startsWith('/v1/admin/administrators/')) {
+        anonymousActorLookups.push(url.pathname);
+      }
+    };
+    page.on('request', recordAnonymousLookup);
+    await auditActorFilter.fill('');
+    await page
+      .getByRole('textbox', { name: 'Acción (tipo exacto)', exact: true })
+      .fill('administrator-invitation-attempt');
+    await page.getByRole('button', { name: 'Aplicar filtros', exact: true }).click();
+    await page.getByText('browser-anonymous-request', { exact: true }).waitFor();
+    await page.getByText('Sistema público', { exact: false }).first().waitFor();
+    const anonymousAuditText = await page.locator('body').innerText();
+    assert(
+      !anonymousAuditText.includes('undefined') &&
+        !anonymousAuditText.includes('anonymous-secret-token') &&
+        !anonymousAuditText.includes('anonymous-secret@example.com') &&
+        !anonymousAuditText.includes('browser-audit-anonymous'),
+      'anonymous audit event renders no synthetic id, actor lookup or token/email',
+    );
+    assert(
+      anonymousActorLookups.length === 0,
+      'anonymous audit actor triggers no Administrator detail lookup',
+    );
+    page.off('request', recordAnonymousLookup);
     await auditActorFilter.fill('actor-with-no-audit-events');
     await page.getByRole('button', { name: 'Aplicar filtros', exact: true }).click();
     await page
@@ -2988,6 +3712,10 @@ export async function runAdminBrowserTest(): Promise<void> {
       detailOverflow.fits,
       `narrow user detail fits viewport (${detailOverflow.offenders.join(',')})`,
     );
+    phase = 'Administrator invitation browser acceptance';
+    await administratorInvitationAcceptance(page, base, browser, (value) => {
+      phase = value;
+    });
     await context.close();
     console.log(
       'Administration browser acceptance passed: admin, list/detail, regular denial, retry, expiry, logout, routing and keyboard/mobile.',

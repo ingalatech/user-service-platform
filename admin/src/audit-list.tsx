@@ -4,7 +4,7 @@ import { useState } from 'react';
 import { useGetIdentity } from 'ra-core';
 import { Link } from 'react-router';
 import { AdminMeSchema } from './generated/contracts.js';
-import type { AdminAuditEventsQuery } from './generated/contracts.js';
+import type { AdminAuditEvent, AdminAuditEventsQuery } from './generated/contracts.js';
 import { adminAdministratorDetail, adminAuditEvents, ApiError } from './api.js';
 import { Button } from './kit/components/ui/button.js';
 import { Input } from './kit/components/ui/input.js';
@@ -78,7 +78,11 @@ export function AuditList() {
   const administratorIds = [
     ...new Set(
       events.flatMap((event) => [
-        event.actor.id,
+        // Public/system invitation attempts carry no actor identifier. Never
+        // borrow the current Administrator identity or synthesize a lookup id.
+        ...(event.actor.realm === 'administrator' && event.actor.id !== undefined
+          ? [event.actor.id]
+          : []),
         ...(event.subject?.realm === 'administrator' ? [event.subject.id] : []),
       ]),
     ),
@@ -100,6 +104,11 @@ export function AuditList() {
     if (lookup?.data !== undefined) return lookup.data.email;
     if (lookup?.isPending) return 'Cargando Administrator…';
     return `Administrator (${administratorId})`;
+  };
+  const actorLabel = (actor: AdminAuditEvent['actor']): string => {
+    if (actor.realm === 'anonymous') return 'Sistema público';
+    if (actor.id === undefined) return 'Administrator sin identificador';
+    return administratorLabel(actor.id);
   };
   const applyFilters = (event: SyntheticEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -149,6 +158,10 @@ export function AuditList() {
             }}
           />
         </label>
+        <p className="text-xs text-muted-foreground sm:col-span-2 lg:col-span-3">
+          Los intentos públicos no tienen actor ID. Fíltralos por acción, por ejemplo
+          administrator-invitation-attempt.
+        </p>
         <label className="flex flex-col gap-1">
           <span>Acción (tipo exacto)</span>
           <Input
@@ -261,8 +274,17 @@ export function AuditList() {
                 </div>
                 <dl className="mt-3 grid gap-2 text-sm sm:grid-cols-2">
                   <div>
-                    <dt className="text-muted-foreground">Administrator actor</dt>
-                    <dd className="break-all">{administratorLabel(event.actor.id)}</dd>
+                    <dt className="text-muted-foreground">Actor</dt>
+                    <dd className="break-all">
+                      {event.actor.realm === 'anonymous' ? (
+                        <span>
+                          Sistema público{' '}
+                          <span className="text-muted-foreground">(sin identificador)</span>
+                        </span>
+                      ) : (
+                        actorLabel(event.actor)
+                      )}
+                    </dd>
                   </div>
                   <div>
                     <dt className="text-muted-foreground">Sujeto</dt>

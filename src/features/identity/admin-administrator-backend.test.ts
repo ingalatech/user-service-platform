@@ -7,6 +7,8 @@ import type { Env } from '../../env.js';
 import { setAdminAdministratorAccess } from './admin-administrators.js';
 import { createIdentityRuntime } from './identity-runtime.js';
 import { InMemoryAuthMailer } from './mailer.js';
+import { digestVerificationToken } from './verification-token.js';
+import { maskInvitationEmail } from './admin-administrator-invitations.js';
 
 const workerEnv = env;
 const testMigrations = env.TEST_MIGRATIONS as D1Migration[];
@@ -219,6 +221,782 @@ async function emptyBodyHash(): Promise<string> {
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
+describe('Administrator invitation HTTP lifecycle', () => {
+  it('masks short and Unicode-normalized addresses without exposing full addresses or identity substrings', () => {
+    expect(maskInvitationEmail('a@x.io')).toBe('*@****');
+    const source = 'e\u0301clair@exämple.com';
+    const masked = maskInvitationEmail(source);
+    expect(masked).toBe('é***@e***.com');
+    expect(masked).not.toContain(source);
+    expect(masked).not.toContain('éclair');
+    expect(masked).not.toContain('exämple');
+    expect(maskInvitationEmail('ab@xy')).toBe('*@****');
+  });
+
+  it('audits invalid public-token attempts without persisting token material or a subject', async () => {
+    const token = 'opaque-token-that-must-not-be-stored-9f31a9';
+    const response = await post('/v1/admin/auth/invitations/inspect', { token });
+    expect(response.status).toBe(404);
+    const attempt = await workerEnv.DB.prepare(
+      `SELECT actor_id,subject_realm,subject_id,result,problem_code,metadata
+       FROM identity_event WHERE type='administrator-invitation-attempt' ORDER BY occurred_at DESC LIMIT 1`,
+    ).first<{
+      actor_id: string;
+      subject_realm: string | null;
+      subject_id: string | null;
+      result: string;
+      problem_code: string;
+      metadata: string | null;
+    }>();
+    expect(attempt).toMatchObject({
+      actor_id: 'anonymous',
+      subject_realm: null,
+      subject_id: null,
+      result: 'failure',
+      problem_code: 'verification-invalid',
+      metadata: null,
+    });
+    expect(JSON.stringify(attempt)).not.toContain(token);
+    const persisted = await workerEnv.DB.prepare(
+      'SELECT count(*) AS total FROM administrator_invitation WHERE token_digest=?',
+    )
+      .bind(await digestVerificationToken(token))
+      .first<{ total: number }>();
+    expect(persisted?.total).toBe(0);
+  });
+
+  it('returns 503 for create scheduling rejection and retries the exact sealed workflow', async () => {
+    const actor = await bootstrapAdministrator();
+    const payloads: string[] = [];
+    const rejectedApp = createApp({
+      authMailer: mailer,
+      administratorMessageScheduler: (payload) => {
+        payloads.push(payload);
+        return Promise.resolve('rejected');
+      },
+    });
+    const request = (application: ReturnType<typeof createApp>) =>
+      postWithCookie(
+        '/v1/admin/administrator-invitations',
+        { email: 'schedule-create@example.com' },
+        actor.cookie,
+        { 'idempotency-key': 'create-schedule-retry' },
+        application,
+      );
+    const failed = await request(rejectedApp);
+    expect(failed.status).toBe(503);
+    const pending = await workerEnv.DB.prepare(
+      "SELECT id,state,sealed_payload FROM administrator_invitation WHERE normalized_email='schedule-create@example.com'",
+    ).first<{ id: string; state: string; sealed_payload: string | null }>();
+    expect(pending?.state).toBe('pending');
+    expect(pending?.sealed_payload).toBe(payloads[0]);
+
+    const throwingApp = createApp({
+      authMailer: mailer,
+      administratorMessageScheduler: (payload) => {
+        payloads.push(payload);
+        throw new Error('scheduler unavailable');
+      },
+    });
+    expect((await request(throwingApp)).status).toBe(503);
+    const acceptedApp = createApp({
+      authMailer: mailer,
+      administratorMessageScheduler: (payload) => {
+        payloads.push(payload);
+        return Promise.resolve('accepted');
+      },
+    });
+    const accepted = await request(acceptedApp);
+    expect(accepted.status).toBe(201);
+    const acceptedValue = (await accepted.json()) as { id: string };
+    expect(acceptedValue.id).toBe(pending?.id);
+    expect(payloads).toHaveLength(3);
+    expect(payloads[1]).toBe(payloads[0]);
+    expect(payloads[2]).toBe(payloads[0]);
+    const replay = await request(acceptedApp);
+    expect(replay.status).toBe(201);
+    expect(await replay.json()).toEqual(acceptedValue);
+    expect(payloads).toHaveLength(3);
+  });
+
+  it('does not dispatch concurrent retries of one create key and recovers an abandoned lease', async () => {
+    const actor = await bootstrapAdministrator();
+    let schedules = 0;
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const blockedApp = createApp({
+      authMailer: mailer,
+      administratorMessageScheduler: async () => {
+        schedules += 1;
+        await barrier;
+        return 'accepted';
+      },
+    });
+    const makeRequest = (application: ReturnType<typeof createApp>) =>
+      postWithCookie(
+        '/v1/admin/administrator-invitations',
+        { email: 'lease-create@example.com' },
+        actor.cookie,
+        { 'idempotency-key': 'lease-create-key' },
+        application,
+      );
+    const firstPromise = makeRequest(blockedApp);
+    let firstSettled = false;
+    void firstPromise.then(() => {
+      firstSettled = true;
+    });
+    const second = await makeRequest(blockedApp);
+    expect(second.status).toBe(503);
+    expect(schedules).toBe(1);
+    release();
+    const first = await firstPromise;
+    expect(first.status).toBe(201);
+    expect(firstSettled).toBe(true);
+
+    const abandonedFailureApp = createApp({
+      authMailer: mailer,
+      administratorMessageScheduler: () => {
+        schedules += 1;
+        return Promise.resolve('rejected');
+      },
+    });
+    const abandonedAcceptedApp = createApp({
+      authMailer: mailer,
+      administratorMessageScheduler: () => {
+        schedules += 1;
+        return Promise.resolve('accepted');
+      },
+    });
+    const abandonedRequest = (application: ReturnType<typeof createApp>) =>
+      postWithCookie(
+        '/v1/admin/administrator-invitations',
+        { email: 'abandoned-create@example.com' },
+        actor.cookie,
+        { 'idempotency-key': 'abandoned-create-key' },
+        application,
+      );
+    expect((await abandonedRequest(abandonedFailureApp)).status).toBe(503);
+    const pending = await workerEnv.DB.prepare(
+      "SELECT id FROM administrator_invitation WHERE normalized_email='abandoned-create@example.com'",
+    ).first<{ id: string }>();
+    await workerEnv.DB.prepare(
+      "UPDATE administrator_invitation SET claim_token='dispatching:abandoned',claim_expires_at=? WHERE id=?",
+    )
+      .bind(Date.now() + 60_000, pending?.id)
+      .run();
+    expect((await abandonedRequest(abandonedAcceptedApp)).status).toBe(503);
+    await workerEnv.DB.prepare('UPDATE administrator_invitation SET claim_expires_at=0 WHERE id=?')
+      .bind(pending?.id)
+      .run();
+    expect((await abandonedRequest(abandonedAcceptedApp)).status).toBe(201);
+    expect(schedules).toBe(3);
+  });
+
+  it('does not acknowledge create until its accepted-dispatch marker is durable', async () => {
+    const actor = await bootstrapAdministrator();
+    const payloads: string[] = [];
+    const acceptedApp = createApp({
+      authMailer: mailer,
+      administratorMessageScheduler: (payload) => {
+        payloads.push(payload);
+        return Promise.resolve('accepted');
+      },
+    });
+    await workerEnv.DB.prepare(
+      `CREATE TRIGGER reject_create_dispatch_marker BEFORE UPDATE OF claim_token ON administrator_invitation
+       WHEN NEW.sealed_payload IS NULL AND NEW.claim_token LIKE 'dispatched:%'
+       BEGIN SELECT RAISE(FAIL, 'marker unavailable'); END`,
+    ).run();
+    const request = () =>
+      postWithCookie(
+        '/v1/admin/administrator-invitations',
+        { email: 'create-marker@example.com' },
+        actor.cookie,
+        { 'idempotency-key': 'create-marker-key' },
+        acceptedApp,
+      );
+    try {
+      expect((await request()).status).toBe(503);
+      expect((await request()).status).toBe(503);
+      expect(payloads).toHaveLength(1);
+      const stored = await workerEnv.DB.prepare(
+        "SELECT id,sealed_payload,claim_expires_at FROM administrator_invitation WHERE normalized_email='create-marker@example.com'",
+      ).first<{ id: string; sealed_payload: string | null; claim_expires_at: number | null }>();
+      expect(stored?.sealed_payload).toBe(payloads[0]);
+      expect(stored?.claim_expires_at).toBeGreaterThan(Date.now());
+      await workerEnv.DB.prepare(
+        'UPDATE administrator_invitation SET claim_expires_at=0 WHERE id=?',
+      )
+        .bind(stored?.id)
+        .run();
+      await workerEnv.DB.prepare('DROP TRIGGER reject_create_dispatch_marker').run();
+      const accepted = await request();
+      expect(accepted.status).toBe(201);
+      expect(payloads).toHaveLength(2);
+      expect(payloads[1]).toBe(payloads[0]);
+    } finally {
+      await workerEnv.DB.prepare('DROP TRIGGER IF EXISTS reject_create_dispatch_marker').run();
+    }
+  });
+
+  it('rolls back create and cancel when their idempotency reservation fails', async () => {
+    const actor = await bootstrapAdministrator();
+    await workerEnv.DB.prepare(
+      `CREATE TRIGGER reject_invitation_create_idempotency BEFORE INSERT ON admin_idempotency_record
+      WHEN NEW.normalized_path='/v1/admin/administrator-invitations'
+      BEGIN SELECT RAISE(FAIL, 'create replay unavailable'); END`,
+    ).run();
+    try {
+      const create = await postWithCookie(
+        '/v1/admin/administrator-invitations',
+        { email: 'atomic-create@example.com' },
+        actor.cookie,
+        { 'idempotency-key': 'atomic-create-key' },
+      );
+      expect(create.status).toBe(500);
+      expect(
+        await workerEnv.DB.prepare(
+          "SELECT count(*) AS n FROM administrator_invitation WHERE normalized_email='atomic-create@example.com'",
+        ).first(),
+      ).toEqual({ n: 0 });
+      expect(
+        await workerEnv.DB.prepare(
+          "SELECT count(*) AS n FROM identity_event WHERE type='administrator-invitation-created'",
+        ).first(),
+      ).toEqual({ n: 0 });
+    } finally {
+      await workerEnv.DB.prepare('DROP TRIGGER reject_invitation_create_idempotency').run();
+    }
+    const created = await postWithCookie(
+      '/v1/admin/administrator-invitations',
+      { email: 'atomic-cancel@example.com' },
+      actor.cookie,
+      { 'idempotency-key': 'atomic-cancel-create' },
+    );
+    const invitation = (await created.json()) as { id: string };
+    await workerEnv.DB.prepare(
+      `CREATE TRIGGER reject_invitation_cancel_idempotency BEFORE INSERT ON admin_idempotency_record
+      WHEN NEW.method='DELETE' AND NEW.target_id='${invitation.id}'
+      BEGIN SELECT RAISE(FAIL, 'cancel replay unavailable'); END`,
+    ).run();
+    try {
+      const cancel = await app.request(
+        `/v1/admin/administrator-invitations/${invitation.id}`,
+        {
+          method: 'DELETE',
+          headers: {
+            cookie: actor.cookie,
+            'if-match': '"1"',
+            'idempotency-key': 'atomic-cancel-key',
+          },
+        },
+        testEnv(),
+        executionContext,
+      );
+      expect(cancel.status).toBe(500);
+      expect(
+        await workerEnv.DB.prepare('SELECT state,revision FROM administrator_invitation WHERE id=?')
+          .bind(invitation.id)
+          .first(),
+      ).toEqual({ state: 'pending', revision: 1 });
+      expect(
+        await workerEnv.DB.prepare(
+          "SELECT count(*) AS n FROM identity_event WHERE type='administrator-invitation-cancelled'",
+        ).first(),
+      ).toEqual({ n: 0 });
+    } finally {
+      await workerEnv.DB.prepare('DROP TRIGGER reject_invitation_cancel_idempotency').run();
+    }
+  });
+
+  it('serializes same-key cancellation and concurrent expiry materialization to one event each', async () => {
+    const actor = await bootstrapAdministrator();
+    const created = await postWithCookie(
+      '/v1/admin/administrator-invitations',
+      { email: 'race-transitions@example.com' },
+      actor.cookie,
+      { 'idempotency-key': 'race-transition-create' },
+    );
+    const invitation = (await created.json()) as { id: string };
+    const cancelRequest = () =>
+      app.request(
+        `/v1/admin/administrator-invitations/${invitation.id}`,
+        {
+          method: 'DELETE',
+          headers: {
+            cookie: actor.cookie,
+            'if-match': '"1"',
+            'idempotency-key': 'race-cancel-key',
+          },
+        },
+        testEnv(),
+        executionContext,
+      );
+    const cancelResults = await Promise.all([cancelRequest(), cancelRequest()]);
+    expect(cancelResults.map(({ status }) => status).sort()).toEqual([200, 200]);
+    expect(
+      await workerEnv.DB.prepare(
+        "SELECT count(*) AS n FROM identity_event WHERE type='administrator-invitation-cancelled'",
+      ).first(),
+    ).toEqual({ n: 1 });
+
+    const expired = await postWithCookie(
+      '/v1/admin/administrator-invitations',
+      { email: 'race-expiry@example.com' },
+      actor.cookie,
+      { 'idempotency-key': 'race-expiry-create' },
+    );
+    const expiring = (await expired.json()) as { id: string };
+    const token = new URL(mailer.sent.at(-1)?.url ?? 'https://invalid').searchParams.get('token');
+    await workerEnv.DB.prepare('UPDATE administrator_invitation SET expires_at=0 WHERE id=?')
+      .bind(expiring.id)
+      .run();
+    const inspect = () => post('/v1/admin/auth/invitations/inspect', { token });
+    const results = await Promise.all([inspect(), inspect()]);
+    expect(results.map(({ status }) => status)).toEqual([200, 200]);
+    expect(
+      await workerEnv.DB.prepare(
+        "SELECT count(*) AS n FROM identity_event WHERE type='administrator-invitation-expired'",
+      ).first(),
+    ).toEqual({ n: 1 });
+  });
+
+  it('serializes concurrent acceptance so only one request creates the Administrator', async () => {
+    const actor = await bootstrapAdministrator();
+    const created = await postWithCookie(
+      '/v1/admin/administrator-invitations',
+      { email: 'concurrent-accept@example.com' },
+      actor.cookie,
+      { 'idempotency-key': 'concurrent-accept-create' },
+    );
+    expect(created.status).toBe(201);
+    const token = new URL(mailer.sent.at(-1)?.url ?? 'https://invalid').searchParams.get('token');
+    if (token === null) throw new Error('Expected invitation token');
+    let arrivals = 0;
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const raceApp = createApp({
+      authMailer: mailer,
+      administratorInvitationAcceptBeforeCommit: async () => {
+        arrivals += 1;
+        if (arrivals === 2) release();
+        await barrier;
+      },
+    });
+    const acceptRequest = () =>
+      raceApp.request(
+        '/v1/admin/auth/invitations/accept',
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            token,
+            name: 'Racing Admin',
+            password: 'Correct-horse-44',
+            passwordConfirmation: 'Correct-horse-44',
+          }),
+        },
+        testEnv(),
+        executionContext,
+      );
+    const outcomes = await Promise.all([acceptRequest(), acceptRequest()]);
+    expect(outcomes.map(({ status }) => status).sort()).toEqual([201, 404]);
+    const adminCount = await workerEnv.DB.prepare(
+      "SELECT count(*) AS total FROM admin_user WHERE lower(email)='concurrent-accept@example.com'",
+    ).first<{ total: number }>();
+    const acceptedEvents = await workerEnv.DB.prepare(
+      "SELECT count(*) AS total FROM identity_event WHERE type='administrator-invitation-accepted'",
+    ).first<{ total: number }>();
+    const credentialCount = await workerEnv.DB.prepare(
+      "SELECT count(*) AS total FROM admin_account WHERE provider_id='credential' AND user_id IN (SELECT id FROM admin_user WHERE lower(email)='concurrent-accept@example.com')",
+    ).first<{ total: number }>();
+    const invitationState = await workerEnv.DB.prepare(
+      "SELECT state FROM administrator_invitation WHERE normalized_email='concurrent-accept@example.com'",
+    ).first<{ state: string }>();
+    expect(adminCount?.total).toBe(1);
+    expect(acceptedEvents?.total).toBe(1);
+    expect(credentialCount?.total).toBe(1);
+    expect(invitationState?.state).toBe('accepted');
+  });
+
+  it('leases accepted resend dispatch when its durable no-redispatch marker write fails', async () => {
+    const actor = await bootstrapAdministrator();
+    const created = await postWithCookie(
+      '/v1/admin/administrator-invitations',
+      { email: 'accepted-marker-invite@example.com' },
+      actor.cookie,
+      { 'idempotency-key': 'accepted-marker-invite-create' },
+    );
+    const invitation = (await created.json()) as { id: string };
+    await workerEnv.DB.prepare(
+      `CREATE TRIGGER reject_invitation_dispatch_marker BEFORE UPDATE OF claim_token ON administrator_invitation
+       WHEN NEW.sealed_payload IS NULL AND NEW.claim_token LIKE 'dispatched:%'
+       BEGIN SELECT RAISE(FAIL, 'marker unavailable'); END`,
+    ).run();
+    let acceptedSchedules = 0;
+    const acceptedScheduler = createApp({
+      authMailer: mailer,
+      administratorMessageScheduler: () => {
+        acceptedSchedules += 1;
+        return Promise.resolve('accepted');
+      },
+    });
+    try {
+      const path = `/v1/admin/administrator-invitations/${invitation.id}/messages`;
+      const first = await postWithCookie(
+        path,
+        {},
+        actor.cookie,
+        { 'idempotency-key': 'accepted-invitation-dispatch' },
+        acceptedScheduler,
+      );
+      expect(first.status).toBe(503);
+      const retry = await postWithCookie(
+        path,
+        {},
+        actor.cookie,
+        { 'idempotency-key': 'accepted-invitation-dispatch' },
+        acceptedScheduler,
+      );
+      expect(retry.status).toBe(503);
+      expect(acceptedSchedules).toBe(1);
+      const stored = await workerEnv.DB.prepare(
+        'SELECT sealed_payload,claim_token,claim_expires_at FROM administrator_invitation WHERE id=?',
+      )
+        .bind(invitation.id)
+        .first<{
+          sealed_payload: string | null;
+          claim_token: string | null;
+          claim_expires_at: number | null;
+        }>();
+      expect(stored?.sealed_payload).not.toBeNull();
+      expect(stored?.claim_token).toMatch(/^dispatching:/);
+      expect(stored?.claim_expires_at).toBeGreaterThan(Date.now());
+      await workerEnv.DB.prepare(
+        'UPDATE administrator_invitation SET claim_expires_at=0 WHERE id=?',
+      )
+        .bind(invitation.id)
+        .run();
+      await workerEnv.DB.prepare('DROP TRIGGER reject_invitation_dispatch_marker').run();
+      const reclaimed = await postWithCookie(
+        path,
+        {},
+        actor.cookie,
+        { 'idempotency-key': 'accepted-invitation-dispatch' },
+        acceptedScheduler,
+      );
+      expect(reclaimed.status).toBe(202);
+      expect(acceptedSchedules).toBe(2);
+    } finally {
+      await workerEnv.DB.prepare('DROP TRIGGER IF EXISTS reject_invitation_dispatch_marker').run();
+    }
+  });
+
+  it('reserves an email only in the Administrator realm', async () => {
+    const actor = await bootstrapAdministrator();
+    const reader = await post('/v1/auth/register', {
+      name: 'Independent Reader',
+      email: 'shared-realm@example.com',
+      password: 'Correct-horse-43',
+    });
+    expect(reader.status).toBe(201);
+    const invitation = await postWithCookie(
+      '/v1/admin/administrator-invitations',
+      { email: 'SHARED-REALM@example.com' },
+      actor.cookie,
+      { 'idempotency-key': 'shared-realm-invitation' },
+    );
+    expect(invitation.status).toBe(201);
+    expect(await invitation.json()).toMatchObject({
+      email: 'shared-realm@example.com',
+      state: 'pending',
+    });
+  });
+
+  it('materializes expiry once when a public token request detects it', async () => {
+    const actor = await bootstrapAdministrator();
+    const created = await postWithCookie(
+      '/v1/admin/administrator-invitations',
+      { email: 'expiry-invite@example.com' },
+      actor.cookie,
+      { 'idempotency-key': 'expiry-create-key' },
+    );
+    const invitation = (await created.json()) as { id: string };
+    const token = new URL(mailer.sent.at(-1)?.url ?? 'https://invalid').searchParams.get('token');
+    await workerEnv.DB.prepare('UPDATE administrator_invitation SET expires_at=0 WHERE id=?')
+      .bind(invitation.id)
+      .run();
+    const inspections = await Promise.all([
+      post('/v1/admin/auth/invitations/inspect', { token }),
+      post('/v1/admin/auth/invitations/inspect', { token }),
+    ]);
+    expect(inspections.map(({ status }) => status)).toEqual([200, 200]);
+    expect(await Promise.all(inspections.map((response) => response.json()))).toEqual([
+      expect.objectContaining({ state: 'expired' }),
+      expect.objectContaining({ state: 'expired' }),
+    ]);
+    const stored = await workerEnv.DB.prepare(
+      'SELECT state,revision FROM administrator_invitation WHERE id=?',
+    )
+      .bind(invitation.id)
+      .first<{ state: string; revision: number }>();
+    expect(stored).toEqual({ state: 'expired', revision: 2 });
+    const eventCount = await workerEnv.DB.prepare(
+      "SELECT count(*) AS total FROM identity_event WHERE type='administrator-invitation-expired'",
+    ).first<{ total: number }>();
+    expect(eventCount?.total).toBe(1);
+  });
+
+  it('rotates the one-time token on resend, replays by key, enforces cooldown and CAS cancellation', async () => {
+    const actor = await bootstrapAdministrator();
+    const created = await postWithCookie(
+      '/v1/admin/administrator-invitations',
+      { email: 'invite-flow@example.com' },
+      actor.cookie,
+      { 'idempotency-key': 'invite-create-flow' },
+    );
+    expect(created.status).toBe(201);
+    const invitation = (await created.json()) as { id: string; revision: number };
+    const oldToken = new URL(mailer.sent.at(-1)?.url ?? 'https://invalid').searchParams.get(
+      'token',
+    );
+    const path = `/v1/admin/administrator-invitations/${invitation.id}/messages`;
+    const failedSchedulerApp = createApp({
+      authMailer: mailer,
+      administratorMessageScheduler: () => Promise.resolve('rejected'),
+    });
+    const failed = await postWithCookie(
+      path,
+      {},
+      actor.cookie,
+      {
+        'idempotency-key': 'invite-resend-1',
+      },
+      failedSchedulerApp,
+    );
+    expect(failed.status).toBe(503);
+    const sent = await postWithCookie(path, {}, actor.cookie, {
+      'idempotency-key': 'invite-resend-1',
+    });
+    expect(sent.status).toBe(202);
+    const sentBody = await sent.json();
+    const newToken = new URL(mailer.sent.at(-1)?.url ?? 'https://invalid').searchParams.get(
+      'token',
+    );
+    expect(newToken).not.toBe(oldToken);
+    expect(
+      await (await post('/v1/admin/auth/invitations/inspect', { token: oldToken })).json(),
+    ).toMatchObject({ code: 'verification-invalid' });
+    expect(
+      await (await post('/v1/admin/auth/invitations/inspect', { token: newToken })).json(),
+    ).toMatchObject({ state: 'pending' });
+
+    const replay = await postWithCookie(path, {}, actor.cookie, {
+      'idempotency-key': 'invite-resend-1',
+    });
+    expect(replay.status).toBe(202);
+    expect(await replay.json()).toEqual(sentBody);
+    expect(mailer.sent.filter((message) => message.to === 'invite-flow@example.com')).toHaveLength(
+      2,
+    );
+    const cooldown = await postWithCookie(path, {}, actor.cookie, {
+      'idempotency-key': 'invite-resend-2',
+    });
+    expect(cooldown.status).toBe(429);
+    expect(cooldown.headers.get('retry-after')).not.toBeNull();
+
+    const cancelRequest = () =>
+      app.request(
+        `/v1/admin/administrator-invitations/${invitation.id}`,
+        {
+          method: 'DELETE',
+          headers: {
+            cookie: actor.cookie,
+            'if-match': '"2"',
+            'idempotency-key': 'invite-cancel-1',
+          },
+        },
+        testEnv(),
+        executionContext,
+      );
+    const cancels = await Promise.all([cancelRequest(), cancelRequest()]);
+    expect(cancels.map(({ status }) => status).sort()).toEqual([200, 200]);
+    const cancel = cancels[0];
+    expect(cancel.status).toBe(200);
+    expect(cancel.headers.get('etag')).toBe('"3"');
+    expect(await cancel.json()).toMatchObject({ state: 'cancelled', revision: 3 });
+    expect((await post('/v1/admin/auth/invitations/inspect', { token: newToken })).status).toBe(
+      200,
+    );
+    expect(
+      await (await post('/v1/admin/auth/invitations/inspect', { token: newToken })).json(),
+    ).toMatchObject({ state: 'cancelled' });
+  });
+
+  it('creates, safely inspects and atomically accepts an invitation without auto-login', async () => {
+    const actor = await bootstrapAdministrator();
+    const created = await postWithCookie(
+      '/v1/admin/administrator-invitations',
+      { email: 'Invitee@Example.com' },
+      actor.cookie,
+      { 'idempotency-key': 'invitation-create-1' },
+    );
+    expect(created.status).toBe(201);
+    const invitation = (await created.json()) as {
+      id: string;
+      email: string;
+      state: string;
+      revision: number;
+      expiresAt: string;
+      createdAt: string;
+    };
+    expect(invitation).toMatchObject({
+      email: 'invitee@example.com',
+      state: 'pending',
+      revision: 1,
+    });
+    expect(Date.parse(invitation.expiresAt) - Date.parse(invitation.createdAt)).toBe(86_400_000);
+    const ttl = Date.parse(invitation.expiresAt) - Date.parse(invitation.createdAt);
+    expect(ttl).toBe(86_400_000);
+    const createReplay = await postWithCookie(
+      '/v1/admin/administrator-invitations',
+      { email: 'Invitee@Example.com' },
+      actor.cookie,
+      { 'idempotency-key': 'invitation-create-1' },
+    );
+    expect(createReplay.status).toBe(201);
+    expect(await createReplay.json()).toEqual(invitation);
+    expect(
+      (
+        await postWithCookie(
+          '/v1/admin/administrator-invitations',
+          { email: 'different@example.com' },
+          actor.cookie,
+          { 'idempotency-key': 'invitation-create-1' },
+        )
+      ).status,
+    ).toBe(409);
+    const listed = await getWithCookie(
+      '/v1/admin/administrator-invitations?state=pending&limit=1&offset=0',
+      actor.cookie,
+    );
+    expect(listed.status).toBe(200);
+    expect(listed.headers.get('cache-control')).toContain('no-store');
+    expect(await listed.json()).toMatchObject({
+      total: 1,
+      items: [{ id: invitation.id, state: 'pending' }],
+    });
+    expect(
+      await workerEnv.DB.prepare(
+        "SELECT type FROM identity_event WHERE type='administrator-invitation-created'",
+      ).first(),
+    ).toEqual({ type: 'administrator-invitation-created' });
+    const token = new URL(mailer.sent.at(-1)?.url ?? 'https://invalid').searchParams.get('token');
+    expect(token).not.toBeNull();
+
+    const inspect = await post('/v1/admin/auth/invitations/inspect', { token });
+    expect(inspect.status).toBe(200);
+    expect(inspect.headers.get('cache-control')).toContain('no-store');
+    const safe = await inspect.json();
+    expect(safe).toMatchObject({ email: 'i***@e***.com', state: 'pending' });
+    expect(JSON.stringify(safe)).not.toContain(token);
+    expect(JSON.stringify(safe)).not.toContain('invitee@example.com');
+
+    const policyFailure = await post('/v1/admin/auth/invitations/accept', {
+      token,
+      name: 'Invited Admin',
+      password: 'weak',
+      passwordConfirmation: 'weak',
+    });
+    expect(policyFailure.status).toBe(400);
+    expect(
+      await (await post('/v1/admin/auth/invitations/inspect', { token })).json(),
+    ).toMatchObject({ state: 'pending' });
+
+    const accepted = await post('/v1/admin/auth/invitations/accept', {
+      token,
+      name: 'Invited Admin',
+      password: 'Correct-horse-42',
+      passwordConfirmation: 'Correct-horse-42',
+    });
+    expect(accepted.status).toBe(201);
+    expect(accepted.headers.get('set-cookie')).toBeNull();
+    expect(await accepted.json()).toEqual({ accepted: true });
+    expect(
+      (
+        await post('/v1/admin/auth/login', {
+          email: 'invitee@example.com',
+          password: 'Correct-horse-42',
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await post('/v1/admin/auth/invitations/accept', {
+          token,
+          name: 'Invited Admin',
+          password: 'Correct-horse-42',
+          passwordConfirmation: 'Correct-horse-42',
+        })
+      ).status,
+    ).toBe(404);
+  });
+  it('rolls back acceptance when a credential or lifecycle-event insert fails', async () => {
+    const actor = await bootstrapAdministrator();
+    const created = await postWithCookie(
+      '/v1/admin/administrator-invitations',
+      { email: 'rollback-accept@example.com' },
+      actor.cookie,
+      { 'idempotency-key': 'rollback-accept-create' },
+    );
+    expect(created.status).toBe(201);
+    const token = new URL(mailer.sent.at(-1)?.url ?? 'https://invalid').searchParams.get('token');
+    for (const failure of ['credential', 'event'] as const) {
+      const trigger = `reject_accept_${failure}`;
+      const sql =
+        failure === 'credential'
+          ? `CREATE TRIGGER ${trigger} BEFORE INSERT ON admin_account WHEN NEW.provider_id='credential' BEGIN SELECT RAISE(ABORT, 'injected credential failure'); END`
+          : `CREATE TRIGGER ${trigger} BEFORE INSERT ON identity_event WHEN NEW.type='administrator-invitation-accepted' BEGIN SELECT RAISE(ABORT, 'injected event failure'); END`;
+      await workerEnv.DB.prepare(sql).run();
+      try {
+        const response = await post('/v1/admin/auth/invitations/accept', {
+          token,
+          name: 'Rollback Admin',
+          password: 'Correct-horse-45',
+          passwordConfirmation: 'Correct-horse-45',
+        });
+        expect(response.status).toBe(500);
+        expect(
+          await workerEnv.DB.prepare(
+            "SELECT state FROM administrator_invitation WHERE normalized_email='rollback-accept@example.com'",
+          ).first(),
+        ).toEqual({ state: 'pending' });
+        expect(
+          await workerEnv.DB.prepare(
+            "SELECT count(*) AS n FROM admin_user WHERE lower(email)='rollback-accept@example.com'",
+          ).first(),
+        ).toEqual({ n: 0 });
+        expect(
+          await workerEnv.DB.prepare(
+            "SELECT count(*) AS n FROM admin_account WHERE provider_id='credential' AND user_id IN (SELECT id FROM admin_user WHERE lower(email)='rollback-accept@example.com')",
+          ).first(),
+        ).toEqual({ n: 0 });
+        expect(
+          await workerEnv.DB.prepare(
+            "SELECT count(*) AS n FROM identity_event WHERE type='administrator-invitation-accepted'",
+          ).first(),
+        ).toEqual({ n: 0 });
+      } finally {
+        await workerEnv.DB.prepare(`DROP TRIGGER IF EXISTS ${trigger}`).run();
+      }
+    }
+  });
+});
+
 beforeAll(async () => {
   await applyD1Migrations(workerEnv.DB, testMigrations);
 });
@@ -226,6 +1004,7 @@ beforeAll(async () => {
 beforeEach(async () => {
   const db = workerEnv.DB;
   await db.batch([
+    db.prepare('DELETE FROM administrator_invitation'),
     db.prepare('DELETE FROM identity_event'),
     db.prepare('DELETE FROM admin_idempotency_record'),
     db.prepare('DELETE FROM administrator_message_workflow'),

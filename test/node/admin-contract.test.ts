@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
   AdminAdministratorDetailSchema,
+  AdminAdministratorInvitationSchema,
   AdminReaderSessionSchema,
   AdminReaderSessionRevocationSchema,
   AdminReaderSessionsSchema,
@@ -16,8 +17,22 @@ const artifactPath = resolve(root, 'openapi', 'openapi.json');
 
 interface Operation {
   readonly operationId?: string;
-  readonly responses?: Record<string, { content?: Record<string, { schema?: unknown }> }>;
-  readonly parameters?: { readonly name?: string; readonly in?: string }[];
+  readonly responses?: Record<
+    string,
+    {
+      description?: string;
+      content?: Record<string, { schema?: unknown }>;
+      headers?: Record<
+        string,
+        { description?: string; schema?: { type?: string; minimum?: number } }
+      >;
+    }
+  >;
+  readonly parameters?: {
+    readonly name?: string;
+    readonly in?: string;
+    readonly required?: boolean;
+  }[];
 }
 
 async function document(): Promise<{
@@ -62,6 +77,111 @@ async function document(): Promise<{
 }
 
 describe('administration API contract', () => {
+  it('publishes invitation routes and strict safe invitation contracts', async () => {
+    const doc = await document();
+    const list = doc.paths['/v1/admin/administrator-invitations']?.get;
+    const create = doc.paths['/v1/admin/administrator-invitations']?.post;
+    const resend = doc.paths['/v1/admin/administrator-invitations/{invitationId}/messages']?.post;
+    const cancel = doc.paths['/v1/admin/administrator-invitations/{invitationId}']?.delete;
+    const inspect = doc.paths['/v1/admin/auth/invitations/inspect']?.post;
+    const accept = doc.paths['/v1/admin/auth/invitations/accept']?.post;
+    expect(list?.operationId).toBe('listAdminAdministratorInvitations');
+    expect(Object.keys(list?.responses ?? {}).sort()).toEqual(['200', '400', '401', '403', '500']);
+    expect(Object.keys(create?.responses ?? {}).sort()).toEqual([
+      '201',
+      '400',
+      '401',
+      '403',
+      '409',
+      '428',
+      '500',
+      '503',
+    ]);
+    expect(Object.keys(resend?.responses ?? {}).sort()).toEqual([
+      '202',
+      '400',
+      '401',
+      '403',
+      '404',
+      '409',
+      '428',
+      '429',
+      '500',
+      '503',
+    ]);
+    expect(Object.keys(cancel?.responses ?? {}).sort()).toEqual([
+      '200',
+      '400',
+      '401',
+      '403',
+      '404',
+      '409',
+      '412',
+      '428',
+      '500',
+    ]);
+    expect(Object.keys(inspect?.responses ?? {}).sort()).toEqual(['200', '400', '404']);
+    expect(Object.keys(accept?.responses ?? {}).sort()).toEqual([
+      '201',
+      '400',
+      '403',
+      '404',
+      '409',
+      '500',
+    ]);
+    expect(resend?.responses?.['404']?.description).toContain('invitation-not-found');
+    expect(resend?.responses?.['409']?.description).toContain('invalid-transition');
+    expect(resend?.responses?.['409']?.description).toContain('idempotency-key-reused');
+    expect(resend?.responses?.['429']?.description).toContain('cooldown-active');
+    expect(resend?.responses?.['429']?.headers?.['Retry-After']?.schema).toMatchObject({
+      type: 'integer',
+      minimum: 1,
+    });
+    expect(resend?.responses?.['503']?.description).toContain('delivery-scheduling-failed');
+    expect(cancel?.responses?.['412']?.description).toContain('stale-revision');
+    expect(cancel?.responses?.['428']?.description).toContain('If-Match and Idempotency-Key');
+    expect(inspect?.responses?.['404']?.description).toContain('Terminal workflows');
+    expect(accept?.responses?.['404']?.description).toContain('failure cases share');
+    const headerParameters = (operation: Operation | undefined) =>
+      operation?.parameters
+        ?.filter(({ in: location }) => location === 'header')
+        .map(({ name, in: location, required }) => ({ name, in: location, required }))
+        .sort((a, b) => (a.name ?? '').localeCompare(b.name ?? ''));
+    expect(headerParameters(create)).toEqual([
+      { name: 'idempotency-key', in: 'header', required: true },
+    ]);
+    expect(headerParameters(resend)).toEqual([
+      { name: 'idempotency-key', in: 'header', required: true },
+    ]);
+    expect(headerParameters(cancel)).toEqual([
+      { name: 'idempotency-key', in: 'header', required: true },
+      { name: 'if-match', in: 'header', required: true },
+    ]);
+    for (const operation of [list, create, resend, cancel, inspect, accept]) {
+      expect(operation?.responses?.default).toBeUndefined();
+      expect(
+        Object.values(operation?.responses ?? {}).every(
+          ({ description }) => description !== undefined,
+        ),
+      ).toBe(true);
+    }
+    expect(JSON.stringify([list, create, resend, cancel, inspect, accept])).not.toMatch(
+      /Reader not found|Reader state/i,
+    );
+    const parsed = AdminAdministratorInvitationSchema.safeParse({
+      id: 'opaque-invitation',
+      email: 'admin@example.com',
+      state: 'pending',
+      expiresAt: '2026-01-01T00:00:00.000Z',
+      revision: 1,
+      createdAt: '2025-12-31T00:00:00.000Z',
+    });
+    expect(parsed.success).toBe(true);
+    expect(
+      AdminAdministratorInvitationSchema.safeParse({ ...parsed.data, token: 'never' }).success,
+    ).toBe(false);
+  });
+
   it('publishes the additive safe Administrator message workflow detail projection', async () => {
     const doc = await document();
     const detail = doc.components.schemas.AdminAdministratorDetail;
